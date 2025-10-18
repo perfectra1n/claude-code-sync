@@ -37,11 +37,22 @@ impl ConflictReport {
                 remote_file: c.remote_file.display().to_string(),
                 local_messages: c.local_message_count,
                 remote_messages: c.remote_message_count,
-                local_timestamp: c.local_timestamp.clone().unwrap_or_else(|| "unknown".to_string()),
-                remote_timestamp: c.remote_timestamp.clone().unwrap_or_else(|| "unknown".to_string()),
+                local_timestamp: c
+                    .local_timestamp
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                remote_timestamp: c
+                    .remote_timestamp
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 resolution: match &c.resolution {
-                    ConflictResolution::KeepBoth { renamed_remote_file } => {
-                        format!("Keep both (remote renamed to {})", renamed_remote_file.display())
+                    ConflictResolution::KeepBoth {
+                        renamed_remote_file,
+                    } => {
+                        format!(
+                            "Keep both (remote renamed to {})",
+                            renamed_remote_file.display()
+                        )
                     }
                     ConflictResolution::KeepLocal => "Keep local".to_string(),
                     ConflictResolution::KeepRemote => "Keep remote".to_string(),
@@ -63,7 +74,10 @@ impl ConflictReport {
 
         output.push_str("# Claude Code Sync Conflict Report\n\n");
         output.push_str(&format!("**Generated:** {}\n", self.timestamp));
-        output.push_str(&format!("**Total Conflicts:** {}\n\n", self.total_conflicts));
+        output.push_str(&format!(
+            "**Total Conflicts:** {}\n\n",
+            self.total_conflicts
+        ));
 
         if self.conflicts.is_empty() {
             output.push_str("No conflicts detected.\n");
@@ -73,14 +87,21 @@ impl ConflictReport {
         output.push_str("## Conflicts\n\n");
 
         for (i, conflict) in self.conflicts.iter().enumerate() {
-            output.push_str(&format!("### {}. Session: `{}`\n\n", i + 1, conflict.session_id));
+            output.push_str(&format!(
+                "### {}. Session: `{}`\n\n",
+                i + 1,
+                conflict.session_id
+            ));
             output.push_str(&format!("- **Resolution:** {}\n", conflict.resolution));
             output.push_str(&format!("- **Local File:** `{}`\n", conflict.local_file));
             output.push_str(&format!("  - Messages: {}\n", conflict.local_messages));
             output.push_str(&format!("  - Last Updated: {}\n", conflict.local_timestamp));
             output.push_str(&format!("- **Remote File:** `{}`\n", conflict.remote_file));
             output.push_str(&format!("  - Messages: {}\n", conflict.remote_messages));
-            output.push_str(&format!("  - Last Updated: {}\n", conflict.remote_timestamp));
+            output.push_str(&format!(
+                "  - Last Updated: {}\n",
+                conflict.remote_timestamp
+            ));
             output.push_str("\n");
         }
 
@@ -96,7 +117,11 @@ impl ConflictReport {
     pub fn print_summary(&self) {
         println!("\n{}", "=== Conflict Report ===".bold().cyan());
         println!("{}: {}", "Timestamp".bold(), self.timestamp);
-        println!("{}: {}", "Total Conflicts".bold(), self.total_conflicts.to_string().yellow());
+        println!(
+            "{}: {}",
+            "Total Conflicts".bold(),
+            self.total_conflicts.to_string().yellow()
+        );
 
         if self.conflicts.is_empty() {
             println!("\n{}", "No conflicts detected!".green());
@@ -105,12 +130,17 @@ impl ConflictReport {
 
         println!("\n{}", "Conflicts:".bold());
         for (i, conflict) in self.conflicts.iter().enumerate() {
-            println!("\n{}. {}: {}",
+            println!(
+                "\n{}. {}: {}",
                 (i + 1).to_string().cyan(),
                 "Session".bold(),
                 conflict.session_id.yellow()
             );
-            println!("   {}: {}", "Resolution".bold(), conflict.resolution.green());
+            println!(
+                "   {}: {}",
+                "Resolution".bold(),
+                conflict.resolution.green()
+            );
             println!("   {}", "Local:".bold());
             println!("     File: {}", conflict.local_file);
             println!("     Messages: {}", conflict.local_messages);
@@ -134,7 +164,8 @@ impl ConflictReport {
         fs::write(path, content)
             .with_context(|| format!("Failed to write report to {}", path.display()))?;
 
-        println!("{} {}",
+        println!(
+            "{} {}",
             "Report saved to:".green().bold(),
             path.display().to_string().cyan()
         );
@@ -179,8 +210,8 @@ pub fn load_latest_report() -> Result<ConflictReport> {
     let content = fs::read_to_string(&report_path)
         .with_context(|| format!("Failed to read report from {}", report_path.display()))?;
 
-    let report: ConflictReport = serde_json::from_str(&content)
-        .context("Failed to parse conflict report")?;
+    let report: ConflictReport =
+        serde_json::from_str(&content).context("Failed to parse conflict report")?;
 
     Ok(report)
 }
@@ -188,8 +219,7 @@ pub fn load_latest_report() -> Result<ConflictReport> {
 /// Save a conflict report to the sync state
 pub fn save_conflict_report(report: &ConflictReport) -> Result<()> {
     let sync_state_path = get_sync_state_dir()?;
-    fs::create_dir_all(&sync_state_path)
-        .context("Failed to create sync state directory")?;
+    fs::create_dir_all(&sync_state_path).context("Failed to create sync state directory")?;
 
     let report_path = sync_state_path.join("latest-conflict-report.json");
     let content = report.to_json()?;
@@ -202,8 +232,7 @@ pub fn save_conflict_report(report: &ConflictReport) -> Result<()> {
 
 /// Get the sync state directory
 fn get_sync_state_dir() -> Result<std::path::PathBuf> {
-    let home = dirs::home_dir()
-        .context("Failed to get home directory")?;
+    let home = dirs::home_dir().context("Failed to get home directory")?;
     Ok(home.join(".claude-sync"))
 }
 

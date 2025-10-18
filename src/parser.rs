@@ -52,8 +52,8 @@ impl ConversationSession {
     /// Parse a JSONL file into a ConversationSession
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open file: {}", path.display()))?;
+        let file =
+            File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
 
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
@@ -68,10 +68,13 @@ impl ConversationSession {
                 continue;
             }
 
-            let entry: ConversationEntry = serde_json::from_str(&line)
-                .with_context(|| {
-                    format!("Failed to parse JSON at line {} in {}", line_num + 1, path.display())
-                })?;
+            let entry: ConversationEntry = serde_json::from_str(&line).with_context(|| {
+                format!(
+                    "Failed to parse JSON at line {} in {}",
+                    line_num + 1,
+                    path.display()
+                )
+            })?;
 
             // Extract session ID from first entry that has one
             if session_id.is_none() {
@@ -84,11 +87,18 @@ impl ConversationSession {
         }
 
         // If no session ID in entries, use filename (without extension) as session ID
-        let session_id = session_id.or_else(|| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-        }).with_context(|| format!("No session ID found in file or filename: {}", path.display()))?;
+        let session_id = session_id
+            .or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
+            .with_context(|| {
+                format!(
+                    "No session ID found in file or filename: {}",
+                    path.display()
+                )
+            })?;
 
         Ok(ConversationSession {
             session_id,
@@ -111,8 +121,8 @@ impl ConversationSession {
             .with_context(|| format!("Failed to create file: {}", path.display()))?;
 
         for entry in &self.entries {
-            let json = serde_json::to_string(entry)
-                .context("Failed to serialize conversation entry")?;
+            let json =
+                serde_json::to_string(entry).context("Failed to serialize conversation entry")?;
             writeln!(file, "{}", json)
                 .with_context(|| format!("Failed to write to file: {}", path.display()))?;
         }
@@ -159,7 +169,8 @@ mod tests {
 
     #[test]
     fn test_parse_conversation_entry() {
-        let json = r#"{"type":"user","uuid":"123","sessionId":"abc","timestamp":"2025-01-01T00:00:00Z"}"#;
+        let json =
+            r#"{"type":"user","uuid":"123","sessionId":"abc","timestamp":"2025-01-01T00:00:00Z"}"#;
         let entry: ConversationEntry = serde_json::from_str(json).unwrap();
         assert_eq!(entry.entry_type, "user");
         assert_eq!(entry.uuid.unwrap(), "123");
@@ -192,7 +203,9 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let session_file = temp_dir.path().join("248a0cdf-1466-48a7-b3d0-00f9e8e6e4ee.jsonl");
+        let session_file = temp_dir
+            .path()
+            .join("248a0cdf-1466-48a7-b3d0-00f9e8e6e4ee.jsonl");
 
         // Create file with entries that don't have sessionId field
         let mut file = File::create(&session_file).unwrap();

@@ -8,29 +8,37 @@ use walkdir::WalkDir;
 use crate::conflict::ConflictDetector;
 use crate::filter::FilterConfig;
 use crate::git::GitManager;
+use crate::history::{
+    ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
+};
 use crate::parser::ConversationSession;
-use crate::report::{ConflictReport, save_conflict_report};
+use crate::report::{save_conflict_report, ConflictReport};
+use crate::undo::Snapshot;
+
+/// Maximum number of conversations to display per project in pull summary
+const MAX_CONVERSATIONS_TO_DISPLAY: usize = 10;
 
 /// Sync state and configuration
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct SyncState {
-    sync_repo_path: PathBuf,
-    has_remote: bool,
+pub struct SyncState {
+    pub sync_repo_path: PathBuf,
+    pub has_remote: bool,
 }
 
 impl SyncState {
-    fn load() -> Result<Self> {
+    pub fn load() -> Result<Self> {
         let state_path = Self::state_file_path()?;
 
         if !state_path.exists() {
-            return Err(anyhow!("Sync not initialized. Run 'claude-sync init' first."));
+            return Err(anyhow!(
+                "Sync not initialized. Run 'claude-sync init' first."
+            ));
         }
 
-        let content = fs::read_to_string(&state_path)
-            .context("Failed to read sync state")?;
+        let content = fs::read_to_string(&state_path).context("Failed to read sync state")?;
 
-        let state: SyncState = serde_json::from_str(&content)
-            .context("Failed to parse sync state")?;
+        let state: SyncState =
+            serde_json::from_str(&content).context("Failed to parse sync state")?;
 
         Ok(state)
     }
@@ -42,39 +50,47 @@ impl SyncState {
             fs::create_dir_all(parent)?;
         }
 
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize sync state")?;
+        let content =
+            serde_json::to_string_pretty(self).context("Failed to serialize sync state")?;
 
-        fs::write(&state_path, content)
-            .context("Failed to write sync state")?;
+        fs::write(&state_path, content).context("Failed to write sync state")?;
 
         Ok(())
     }
 
     fn state_file_path() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .context("Failed to get home directory")?;
+        let home = dirs::home_dir().context("Failed to get home directory")?;
         Ok(home.join(".claude-sync").join("state.json"))
     }
 }
 
 /// Get the Claude Code projects directory
 fn claude_projects_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .context("Failed to get home directory")?;
+    let home = dirs::home_dir().context("Failed to get home directory")?;
     Ok(home.join(".claude").join("projects"))
 }
 
 /// Initialize a new sync repository
 pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> {
-    println!("{}", "Initializing Claude Code sync repository...".cyan().bold());
+    println!(
+        "{}",
+        "Initializing Claude Code sync repository...".cyan().bold()
+    );
 
     // Create/open the git repository
     let git_manager = if repo_path.exists() && repo_path.join(".git").exists() {
-        println!("  {} existing repository at {}", "Using".green(), repo_path.display());
+        println!(
+            "  {} existing repository at {}",
+            "Using".green(),
+            repo_path.display()
+        );
         GitManager::open(repo_path)?
     } else {
-        println!("  {} new repository at {}", "Creating".green(), repo_path.display());
+        println!(
+            "  {} new repository at {}",
+            "Creating".green(),
+            repo_path.display()
+        );
         GitManager::init(repo_path)?
     };
 
@@ -98,7 +114,10 @@ pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> 
     };
     state.save()?;
 
-    println!("{}", "Sync repository initialized successfully!".green().bold());
+    println!(
+        "{}",
+        "Sync repository initialized successfully!".green().bold()
+    );
     println!("\n{} claude-sync push", "Next steps:".cyan().bold());
 
     Ok(())
@@ -123,7 +142,8 @@ fn discover_sessions(base_path: &Path, filter: &FilterConfig) -> Result<Vec<Conv
             match ConversationSession::from_file(path) {
                 Ok(session) => sessions.push(session),
                 Err(e) => {
-                    eprintln!("{} Failed to parse {}: {}",
+                    eprintln!(
+                        "{} Failed to parse {}: {}",
                         "Warning:".yellow(),
                         path.display(),
                         e
@@ -137,7 +157,12 @@ fn discover_sessions(base_path: &Path, filter: &FilterConfig) -> Result<Vec<Conv
 }
 
 /// Push local Claude Code history to sync repository
-pub fn push_history(commit_message: Option<&str>, push_remote: bool, branch: Option<&str>, exclude_attachments: bool) -> Result<()> {
+pub fn push_history(
+    commit_message: Option<&str>,
+    push_remote: bool,
+    branch: Option<&str>,
+    exclude_attachments: bool,
+) -> Result<()> {
     println!("{}", "Pushing Claude Code history...".cyan().bold());
 
     let state = SyncState::load()?;
@@ -150,54 +175,275 @@ pub fn push_history(commit_message: Option<&str>, push_remote: bool, branch: Opt
     }
     let claude_dir = claude_projects_dir()?;
 
+    // Get the current branch name for operation record
+    let branch_name = branch
+        .map(|s| s.to_string())
+        .or_else(|| git_manager.current_branch().ok())
+        .unwrap_or_else(|| "main".to_string());
+
     // Discover all sessions
     println!("  {} conversation sessions...", "Discovering".cyan());
     let sessions = discover_sessions(&claude_dir, &filter)?;
     println!("  {} {} sessions", "Found".green(), sessions.len());
 
-    // Copy sessions to sync repo
+    // ============================================================================
+    // COPY SESSIONS AND TRACK CHANGES
+    // ============================================================================
     let projects_dir = state.sync_repo_path.join("projects");
     fs::create_dir_all(&projects_dir)?;
 
+    // Discover existing sessions in sync repo to determine operation type
     println!("  {} sessions to sync repository...", "Copying".cyan());
+    let existing_sessions = discover_sessions(&projects_dir, &filter)?;
+    let existing_map: HashMap<_, _> = existing_sessions
+        .iter()
+        .map(|s| (s.session_id.clone(), s))
+        .collect();
+
+    // Track pushed conversations for operation record
+    let mut pushed_conversations: Vec<ConversationSummary> = Vec::new();
+    let mut added_count = 0;
+    let mut modified_count = 0;
+    let mut unchanged_count = 0;
+
     for session in &sessions {
         let relative_path = Path::new(&session.file_path)
             .strip_prefix(&claude_dir)
             .unwrap_or(Path::new(&session.file_path));
 
         let dest_path = projects_dir.join(relative_path);
+
+        // Determine operation type based on existing state
+        let operation = if let Some(existing) = existing_map.get(&session.session_id) {
+            if existing.content_hash() == session.content_hash() {
+                unchanged_count += 1;
+                SyncOperation::Unchanged
+            } else {
+                modified_count += 1;
+                SyncOperation::Modified
+            }
+        } else {
+            added_count += 1;
+            SyncOperation::Added
+        };
+
+        // Write the session file
         session.write_to_file(&dest_path)?;
+
+        // Track this session in pushed conversations
+        let relative_path_str = relative_path.to_string_lossy().to_string();
+        match ConversationSummary::new(
+            session.session_id.clone(),
+            relative_path_str.clone(),
+            session.latest_timestamp(),
+            session.message_count(),
+            operation,
+        ) {
+            Ok(summary) => pushed_conversations.push(summary),
+            Err(e) => eprintln!(
+                "{} Failed to create summary for {}: {}",
+                "Warning:".yellow(),
+                relative_path_str,
+                e
+            ),
+        }
     }
 
-    // Commit changes
+    // ============================================================================
+    // COMMIT AND PUSH CHANGES
+    // ============================================================================
     git_manager.stage_all()?;
 
-    if git_manager.has_changes()? {
-        let default_message = format!("Sync {} sessions at {}", sessions.len(), chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
+    let has_changes = git_manager.has_changes()?;
+    if has_changes {
+        // ============================================================================
+        // SNAPSHOT CREATION: Create a snapshot before committing changes
+        // ============================================================================
+        println!("  {} snapshot before push...", "Creating".cyan());
+
+        // Get the current commit hash before making any changes
+        // This allows us to undo the push later by resetting to this commit
+        let commit_before_push = git_manager
+            .current_commit_hash()
+            .context("Failed to get current commit hash")?;
+
+        // Collect all file paths in the sync repository that will be affected
+        // For push operations, we snapshot the sync repository state, not local files
+        let sync_repo_files: Vec<PathBuf> = sessions
+            .iter()
+            .map(|s| {
+                let relative_path = Path::new(&s.file_path)
+                    .strip_prefix(&claude_dir)
+                    .unwrap_or(Path::new(&s.file_path));
+                state.sync_repo_path.join("projects").join(relative_path)
+            })
+            .collect();
+
+        // Create snapshot of sync repository state before push
+        // Note: Snapshot creation failure is fatal because we need to ensure users can
+        // safely undo this push operation if issues occur. Without a snapshot,
+        // there would be no way to restore the previous repository state.
+        let snapshot = Snapshot::create(
+            OperationType::Push,
+            sync_repo_files.iter(),
+            Some(&git_manager), // Pass git manager to capture commit hash
+        )
+        .context("Failed to create snapshot before push")?;
+
+        // Save snapshot to disk
+        let snapshot_path = snapshot
+            .save_to_disk(None)
+            .context("Failed to save snapshot to disk")?;
+
+        println!(
+            "  {} Snapshot created: {} (commit: {})",
+            "✓".green(),
+            snapshot_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| snapshot_path.display().to_string()),
+            &commit_before_push[..8]
+        );
+
+        let default_message = format!(
+            "Sync {} sessions at {}",
+            sessions.len(),
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+        );
         let message = commit_message.unwrap_or(&default_message);
 
         println!("  {} changes...", "Committing".cyan());
         git_manager.commit(message)?;
         println!("  {} Committed: {}", "✓".green(), message);
+
+        // Push to remote if configured
+        if push_remote && state.has_remote {
+            println!("  {} to remote...", "Pushing".cyan());
+
+            match git_manager.push("origin", &branch_name) {
+                Ok(_) => println!("  {} Pushed to origin/{}", "✓".green(), branch_name),
+                Err(e) => eprintln!("{} Failed to push: {}", "Warning:".yellow(), e),
+            }
+        }
+
+        // ============================================================================
+        // CREATE AND SAVE OPERATION RECORD
+        // ============================================================================
+        let mut operation_record = OperationRecord::new(
+            OperationType::Push,
+            Some(branch_name.clone()),
+            pushed_conversations.clone(),
+        );
+
+        // Attach the snapshot path to the operation record
+        operation_record.snapshot_path = Some(snapshot_path);
+
+        // Load operation history and add this operation
+        let mut history = match OperationHistory::load() {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!(
+                    "{} Failed to load operation history: {}",
+                    "Warning:".yellow(),
+                    e
+                );
+                eprintln!("  Creating new history...");
+                OperationHistory::default()
+            }
+        };
+
+        if let Err(e) = history.add_operation(operation_record) {
+            eprintln!(
+                "{} Failed to save operation to history: {}",
+                "Warning:".yellow(),
+                e
+            );
+            eprintln!("  Push completed successfully, but history was not updated.");
+        }
     } else {
         println!("  {} No changes to commit", "Note:".yellow());
     }
 
-    // Push to remote if configured
-    if push_remote && state.has_remote {
-        println!("  {} to remote...", "Pushing".cyan());
-        let branch_name = branch
-            .map(|s| s.to_string())
-            .or_else(|| git_manager.current_branch().ok())
-            .unwrap_or_else(|| "main".to_string());
+    // ============================================================================
+    // DISPLAY SUMMARY TO USER
+    // ============================================================================
+    println!("\n{}", "=== Push Summary ===".bold().cyan());
 
-        match git_manager.push("origin", &branch_name) {
-            Ok(_) => println!("  {} Pushed to origin/{}", "✓".green(), branch_name),
-            Err(e) => eprintln!("{} Failed to push: {}", "Warning:".yellow(), e),
+    // Show operation statistics
+    let stats_msg = format!(
+        "  {} Added    {} Modified    {} Unchanged",
+        format!("{}", added_count).green(),
+        format!("{}", modified_count).cyan(),
+        format!("{}", unchanged_count).dimmed(),
+    );
+    println!("{}", stats_msg);
+    println!();
+
+    // Group conversations by project (top-level directory)
+    let mut by_project: HashMap<String, Vec<&ConversationSummary>> = HashMap::new();
+    for conv in &pushed_conversations {
+        // Skip unchanged conversations in detailed output
+        if conv.operation == SyncOperation::Unchanged {
+            continue;
+        }
+
+        let project = conv
+            .project_path
+            .split('/')
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
+        by_project.entry(project).or_default().push(conv);
+    }
+
+    // Display conversations grouped by project
+    if !by_project.is_empty() {
+        println!("{}", "Pushed Conversations:".bold());
+
+        let mut projects: Vec<_> = by_project.keys().collect();
+        projects.sort();
+
+        for project in projects {
+            let conversations = &by_project[project];
+            println!("\n  {} {}/", "Project:".bold(), project.cyan());
+
+            for conv in conversations.iter().take(MAX_CONVERSATIONS_TO_DISPLAY) {
+                let operation_str = match conv.operation {
+                    SyncOperation::Added => "ADD".green(),
+                    SyncOperation::Modified => "MOD".cyan(),
+                    SyncOperation::Conflict => "CONFLICT".yellow(),
+                    SyncOperation::Unchanged => "---".dimmed(),
+                };
+
+                let timestamp_str = conv
+                    .timestamp
+                    .as_ref()
+                    .and_then(|t| {
+                        // Extract just the date portion for compact display
+                        t.split('T').next()
+                    })
+                    .unwrap_or("unknown");
+
+                println!(
+                    "    {} {} ({}msg, {})",
+                    operation_str,
+                    conv.project_path,
+                    conv.message_count,
+                    timestamp_str.dimmed()
+                );
+            }
+
+            if conversations.len() > MAX_CONVERSATIONS_TO_DISPLAY {
+                println!(
+                    "    {} ... and {} more conversations",
+                    "...".dimmed(),
+                    conversations.len() - MAX_CONVERSATIONS_TO_DISPLAY
+                );
+            }
         }
     }
 
-    println!("{}", "Push complete!".green().bold());
+    println!("\n{}", "Push complete!".green().bold());
     Ok(())
 }
 
@@ -210,13 +456,15 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
     let filter = FilterConfig::load()?;
     let claude_dir = claude_projects_dir()?;
 
+    // Get the current branch name for operation record
+    let branch_name = branch
+        .map(|s| s.to_string())
+        .or_else(|| git_manager.current_branch().ok())
+        .unwrap_or_else(|| "main".to_string());
+
     // Fetch from remote if configured
     if fetch_remote && state.has_remote {
         println!("  {} from remote...", "Fetching".cyan());
-        let branch_name = branch
-            .map(|s| s.to_string())
-            .or_else(|| git_manager.current_branch().ok())
-            .unwrap_or_else(|| "main".to_string());
 
         match git_manager.pull("origin", &branch_name) {
             Ok(_) => println!("  {} Pulled from origin/{}", "✓".green(), branch_name),
@@ -230,21 +478,74 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
     // Discover local sessions
     println!("  {} local sessions...", "Discovering".cyan());
     let local_sessions = discover_sessions(&claude_dir, &filter)?;
-    println!("  {} {} local sessions", "Found".green(), local_sessions.len());
+    println!(
+        "  {} {} local sessions",
+        "Found".green(),
+        local_sessions.len()
+    );
 
     // Discover remote sessions
     let remote_projects_dir = state.sync_repo_path.join("projects");
     println!("  {} remote sessions...", "Discovering".cyan());
     let remote_sessions = discover_sessions(&remote_projects_dir, &filter)?;
-    println!("  {} {} remote sessions", "Found".green(), remote_sessions.len());
+    println!(
+        "  {} {} remote sessions",
+        "Found".green(),
+        remote_sessions.len()
+    );
 
-    // Detect conflicts
+    // ============================================================================
+    // SNAPSHOT CREATION: Create a snapshot before merging any changes
+    // ============================================================================
+    println!("  {} snapshot before merge...", "Creating".cyan());
+
+    // Collect all local file paths that might be affected
+    let local_file_paths: Vec<PathBuf> = local_sessions
+        .iter()
+        .map(|s| claude_dir.join(&s.file_path))
+        .collect();
+
+    // Create snapshot of current state (before any changes)
+    // Note: Snapshot creation failure is fatal because we need to ensure users can
+    // safely undo this pull operation if conflicts or issues occur. Without a snapshot,
+    // there would be no way to restore the previous state.
+    let snapshot = Snapshot::create(
+        OperationType::Pull,
+        local_file_paths.iter(),
+        None, // No git manager needed for pull snapshots
+    )
+    .context("Failed to create snapshot before pull")?;
+
+    // Save snapshot to disk
+    let snapshot_path = snapshot
+        .save_to_disk(None)
+        .context("Failed to save snapshot to disk")?;
+
+    println!(
+        "  {} Snapshot created: {}",
+        "✓".green(),
+        snapshot_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| snapshot_path.display().to_string())
+    );
+
+    // ============================================================================
+    // CONFLICT DETECTION AND RESOLUTION
+    // ============================================================================
     println!("  {} conflicts...", "Detecting".cyan());
     let mut detector = ConflictDetector::new();
     detector.detect(&local_sessions, &remote_sessions);
 
+    // Track affected conversations for operation record
+    let mut affected_conversations: Vec<ConversationSummary> = Vec::new();
+
     if detector.has_conflicts() {
-        println!("  {} {} conflicts detected", "!".yellow(), detector.conflict_count());
+        println!(
+            "  {} {} conflicts detected",
+            "!".yellow(),
+            detector.conflict_count()
+        );
 
         // Resolve conflicts using "keep both" strategy
         let renames = detector.resolve_all_keep_both()?;
@@ -255,35 +556,57 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
 
         println!("\n{}", "Conflict Resolution:".yellow().bold());
         for (_original, renamed) in &renames {
-            let relative_renamed = renamed
-                .strip_prefix(&claude_dir)
-                .unwrap_or(renamed);
-            println!("  {} remote version saved as: {}",
+            let relative_renamed = renamed.strip_prefix(&claude_dir).unwrap_or(renamed);
+            println!(
+                "  {} remote version saved as: {}",
                 "→".yellow(),
                 relative_renamed.display().to_string().cyan()
             );
         }
 
-        // Apply renames and copy files
-        for (_, renamed_path) in &renames {
+        // Apply renames and copy files, tracking affected conversations
+        for (original_path, renamed_path) in &renames {
+            // Find the remote session that corresponds to this original path
             if let Some(session) = remote_sessions.iter().find(|s| {
-                Path::new(&s.file_path) == renamed_path.strip_prefix(&claude_dir).unwrap_or(renamed_path)
+                let remote_path = remote_projects_dir.join(&s.file_path);
+                &remote_path == original_path
             }) {
-                let dest = claude_dir.join(
-                    renamed_path.strip_prefix(&remote_projects_dir).unwrap_or(renamed_path)
-                );
-                session.write_to_file(&dest)?;
+                // Write the session to the renamed destination path
+                session.write_to_file(renamed_path)?;
+
+                // Track this conflict in affected conversations using the renamed path
+                let relative_path = renamed_path
+                    .strip_prefix(&claude_dir)
+                    .unwrap_or(renamed_path)
+                    .to_string_lossy()
+                    .to_string();
+
+                match ConversationSummary::new(
+                    session.session_id.clone(),
+                    relative_path.clone(),
+                    session.latest_timestamp(),
+                    session.message_count(),
+                    SyncOperation::Conflict,
+                ) {
+                    Ok(summary) => affected_conversations.push(summary),
+                    Err(e) => eprintln!(
+                        "{} Failed to create summary for conflict {}: {}",
+                        "Warning:".yellow(),
+                        relative_path,
+                        e
+                    ),
+                }
             }
         }
 
-        println!("\n{} View details with: claude-sync report",
-            "Hint:".cyan()
-        );
+        println!("\n{} View details with: claude-sync report", "Hint:".cyan());
     } else {
         println!("  {} No conflicts detected", "✓".green());
     }
 
-    // Copy non-conflicting sessions
+    // ============================================================================
+    // MERGE NON-CONFLICTING SESSIONS
+    // ============================================================================
     println!("  {} non-conflicting sessions...", "Merging".cyan());
     let local_map: HashMap<_, _> = local_sessions
         .iter()
@@ -291,30 +614,185 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
         .collect();
 
     let mut merged_count = 0;
+    let mut added_count = 0;
+    let mut modified_count = 0;
+    let mut unchanged_count = 0;
+
     for remote_session in &remote_sessions {
         // Skip if conflicts were detected
-        if detector.conflicts().iter().any(|c| c.session_id == remote_session.session_id) {
+        if detector
+            .conflicts()
+            .iter()
+            .any(|c| c.session_id == remote_session.session_id)
+        {
             continue;
-        }
-
-        // Copy if doesn't exist locally or is identical
-        if let Some(local) = local_map.get(&remote_session.session_id) {
-            if local.content_hash() == remote_session.content_hash() {
-                continue; // Already in sync
-            }
         }
 
         let relative_path = Path::new(&remote_session.file_path)
             .strip_prefix(&remote_projects_dir)
-            .unwrap_or(Path::new(&remote_session.file_path));
+            .ok()
+            .unwrap_or_else(|| Path::new(&remote_session.file_path));
 
         let dest_path = claude_dir.join(relative_path);
-        remote_session.write_to_file(&dest_path)?;
-        merged_count += 1;
+
+        // Determine operation type based on local state
+        let operation = if let Some(local) = local_map.get(&remote_session.session_id) {
+            if local.content_hash() == remote_session.content_hash() {
+                unchanged_count += 1;
+                SyncOperation::Unchanged
+            } else {
+                modified_count += 1;
+                SyncOperation::Modified
+            }
+        } else {
+            added_count += 1;
+            SyncOperation::Added
+        };
+
+        // Copy file if it's not unchanged
+        if operation != SyncOperation::Unchanged {
+            remote_session.write_to_file(&dest_path)?;
+            merged_count += 1;
+        }
+
+        // Track all sessions (including unchanged) in affected conversations
+        let relative_path_str = relative_path.to_string_lossy().to_string();
+        match ConversationSummary::new(
+            remote_session.session_id.clone(),
+            relative_path_str.clone(),
+            remote_session.latest_timestamp(),
+            remote_session.message_count(),
+            operation,
+        ) {
+            Ok(summary) => affected_conversations.push(summary),
+            Err(e) => eprintln!(
+                "{} Failed to create summary for {}: {}",
+                "Warning:".yellow(),
+                relative_path_str,
+                e
+            ),
+        }
     }
 
     println!("  {} Merged {} sessions", "✓".green(), merged_count);
-    println!("{}", "Pull complete!".green().bold());
+
+    // ============================================================================
+    // CREATE AND SAVE OPERATION RECORD
+    // ============================================================================
+    let mut operation_record = OperationRecord::new(
+        OperationType::Pull,
+        Some(branch_name.clone()),
+        affected_conversations.clone(),
+    );
+
+    // Attach the snapshot path to the operation record
+    operation_record.snapshot_path = Some(snapshot_path);
+
+    // Load operation history and add this operation
+    let mut history = match OperationHistory::load() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!(
+                "{} Failed to load operation history: {}",
+                "Warning:".yellow(),
+                e
+            );
+            eprintln!("  Creating new history...");
+            OperationHistory::default()
+        }
+    };
+
+    if let Err(e) = history.add_operation(operation_record) {
+        eprintln!(
+            "{} Failed to save operation to history: {}",
+            "Warning:".yellow(),
+            e
+        );
+        eprintln!("  Pull completed successfully, but history was not updated.");
+    }
+
+    // ============================================================================
+    // DISPLAY SUMMARY TO USER
+    // ============================================================================
+    println!("\n{}", "=== Pull Summary ===".bold().cyan());
+
+    // Show operation statistics
+    let conflict_count = detector.conflict_count();
+    let stats_msg = format!(
+        "  {} Added    {} Modified    {} Conflicts    {} Unchanged",
+        format!("{}", added_count).green(),
+        format!("{}", modified_count).cyan(),
+        format!("{}", conflict_count).yellow(),
+        format!("{}", unchanged_count).dimmed(),
+    );
+    println!("{}", stats_msg);
+    println!();
+
+    // Group conversations by project (top-level directory)
+    let mut by_project: HashMap<String, Vec<&ConversationSummary>> = HashMap::new();
+    for conv in &affected_conversations {
+        // Skip unchanged conversations in detailed output
+        if conv.operation == SyncOperation::Unchanged {
+            continue;
+        }
+
+        let project = conv
+            .project_path
+            .split('/')
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
+        by_project.entry(project).or_default().push(conv);
+    }
+
+    // Display conversations grouped by project
+    if !by_project.is_empty() {
+        println!("{}", "Affected Conversations:".bold());
+
+        let mut projects: Vec<_> = by_project.keys().collect();
+        projects.sort();
+
+        for project in projects {
+            let conversations = &by_project[project];
+            println!("\n  {} {}/", "Project:".bold(), project.cyan());
+
+            for conv in conversations.iter().take(MAX_CONVERSATIONS_TO_DISPLAY) {
+                let operation_str = match conv.operation {
+                    SyncOperation::Added => "ADD".green(),
+                    SyncOperation::Modified => "MOD".cyan(),
+                    SyncOperation::Conflict => "CONFLICT".yellow(),
+                    SyncOperation::Unchanged => "---".dimmed(),
+                };
+
+                let timestamp_str = conv
+                    .timestamp
+                    .as_ref()
+                    .and_then(|t| {
+                        // Extract just the date portion for compact display
+                        t.split('T').next()
+                    })
+                    .unwrap_or("unknown");
+
+                println!(
+                    "    {} {} ({}msg, {})",
+                    operation_str,
+                    conv.project_path,
+                    conv.message_count,
+                    timestamp_str.dimmed()
+                );
+            }
+
+            if conversations.len() > MAX_CONVERSATIONS_TO_DISPLAY {
+                println!(
+                    "    {} ... and {} more conversations",
+                    "...".dimmed(),
+                    conversations.len() - MAX_CONVERSATIONS_TO_DISPLAY
+                );
+            }
+        }
+    }
+
+    println!("\n{}", "Pull complete!".green().bold());
 
     Ok(())
 }
@@ -332,14 +810,28 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     // Repository info
     println!("{}", "Repository:".bold());
     println!("  Path: {}", state.sync_repo_path.display());
-    println!("  Remote: {}", if state.has_remote { "Configured".green() } else { "Not configured".yellow() });
+    println!(
+        "  Remote: {}",
+        if state.has_remote {
+            "Configured".green()
+        } else {
+            "Not configured".yellow()
+        }
+    );
 
     if let Ok(branch) = git_manager.current_branch() {
         println!("  Branch: {}", branch.cyan());
     }
 
     if let Ok(has_changes) = git_manager.has_changes() {
-        println!("  Uncommitted changes: {}", if has_changes { "Yes".yellow() } else { "No".green() });
+        println!(
+            "  Uncommitted changes: {}",
+            if has_changes {
+                "Yes".yellow()
+            } else {
+                "No".green()
+            }
+        );
     }
 
     // Session counts
@@ -362,7 +854,11 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
             let relative = Path::new(&session.file_path)
                 .strip_prefix(&claude_dir)
                 .unwrap_or(Path::new(&session.file_path));
-            println!("  {} ({} messages)", relative.display(), session.message_count());
+            println!(
+                "  {} ({} messages)",
+                relative.display(),
+                session.message_count()
+            );
         }
         if local_sessions.len() > 20 {
             println!("  ... and {} more", local_sessions.len() - 20);
@@ -393,7 +889,11 @@ pub fn show_remote() -> Result<()> {
     println!();
 
     // Show sync repository directory
-    println!("{} {}", "Sync Directory:".bold(), state.sync_repo_path.display().to_string().cyan());
+    println!(
+        "{} {}",
+        "Sync Directory:".bold(),
+        state.sync_repo_path.display().to_string().cyan()
+    );
 
     // Show current branch
     if let Ok(branch) = git_manager.current_branch() {
@@ -463,7 +963,8 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
         repo.remote_set_url(name, url)
             .with_context(|| format!("Failed to update remote '{}' URL", name))?;
 
-        println!("{} Updated remote '{}' to: {}",
+        println!(
+            "{} Updated remote '{}' to: {}",
             "✓".green().bold(),
             name.cyan(),
             url
@@ -473,7 +974,8 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
         repo.remote(name, url)
             .with_context(|| format!("Failed to create remote '{}'", name))?;
 
-        println!("{} Created remote '{}': {}",
+        println!(
+            "{} Created remote '{}': {}",
             "✓".green().bold(),
             name.cyan(),
             url
@@ -519,7 +1021,11 @@ pub fn remove_remote(name: &str) -> Result<()> {
 }
 
 /// Bidirectional sync: pull remote changes, then push local changes
-pub fn sync_bidirectional(commit_message: Option<&str>, branch: Option<&str>, exclude_attachments: bool) -> Result<()> {
+pub fn sync_bidirectional(
+    commit_message: Option<&str>,
+    branch: Option<&str>,
+    exclude_attachments: bool,
+) -> Result<()> {
     println!("{}", "=== Bidirectional Sync ===".bold().cyan());
     println!();
 
@@ -535,7 +1041,10 @@ pub fn sync_bidirectional(commit_message: Option<&str>, branch: Option<&str>, ex
 
     println!();
     println!("{}", "=== Sync Complete ===".green().bold());
-    println!("  {} Your local and remote histories are now in sync", "✓".green());
+    println!(
+        "  {} Your local and remote histories are now in sync",
+        "✓".green()
+    );
 
     Ok(())
 }
@@ -558,11 +1067,11 @@ mod tests {
             sync_repo_path: repo_path.clone(),
             has_remote: false,
         };
-        
+
         // Create state directory
         let state_path = dirs::home_dir().unwrap().join(".claude-sync");
         std::fs::create_dir_all(&state_path).unwrap();
-        
+
         let state_file = state_path.join("state.json");
         std::fs::write(&state_file, serde_json::to_string(&state).unwrap()).unwrap();
 

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
+use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use colored::Colorize;
 
 /// Filter configuration for syncing Claude Code history
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,8 +56,8 @@ impl FilterConfig {
         let content = fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
 
-        let config: FilterConfig = toml::from_str(&content)
-            .context("Failed to parse config file")?;
+        let config: FilterConfig =
+            toml::from_str(&content).context("Failed to parse config file")?;
 
         Ok(config)
     }
@@ -67,12 +67,12 @@ impl FilterConfig {
         let config_path = Self::config_path()?;
 
         if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
         }
 
-        let content = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
         fs::write(&config_path, content)
             .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
@@ -82,8 +82,7 @@ impl FilterConfig {
 
     /// Get the path to the config file
     fn config_path() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .context("Failed to get home directory")?;
+        let home = dirs::home_dir().context("Failed to get home directory")?;
         Ok(home.join(".claude-sync.toml"))
     }
 
@@ -196,28 +195,42 @@ pub fn update_config(
 
     if let Some(days) = exclude_older_than {
         config.exclude_older_than_days = Some(days);
-        println!("{}", format!("Set exclude_older_than_days to {} days", days).green());
+        println!(
+            "{}",
+            format!("Set exclude_older_than_days to {} days", days).green()
+        );
     }
 
     if let Some(includes) = include_projects {
-        config.include_patterns = includes.split(',')
+        config.include_patterns = includes
+            .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        println!("{}", format!("Set include patterns: {:?}", config.include_patterns).green());
+        println!(
+            "{}",
+            format!("Set include patterns: {:?}", config.include_patterns).green()
+        );
     }
 
     if let Some(excludes) = exclude_projects {
-        config.exclude_patterns = excludes.split(',')
+        config.exclude_patterns = excludes
+            .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        println!("{}", format!("Set exclude patterns: {:?}", config.exclude_patterns).green());
+        println!(
+            "{}",
+            format!("Set exclude patterns: {:?}", config.exclude_patterns).green()
+        );
     }
 
     if let Some(exclude_att) = exclude_attachments {
         config.exclude_attachments = exclude_att;
-        println!("{}", format!("Exclude attachments: {}", exclude_att).green());
+        println!(
+            "{}",
+            format!("Exclude attachments: {}", exclude_att).green()
+        );
     }
 
     config.save()?;
@@ -231,26 +244,46 @@ pub fn show_config() -> Result<()> {
     let config = FilterConfig::load()?;
 
     println!("{}", "Current Filter Configuration:".bold());
-    println!("  {}: {}",
+    println!(
+        "  {}: {}",
         "Exclude older than".cyan(),
-        config.exclude_older_than_days.map(|d| format!("{} days", d)).unwrap_or_else(|| "Not set".to_string())
+        config
+            .exclude_older_than_days
+            .map(|d| format!("{} days", d))
+            .unwrap_or_else(|| "Not set".to_string())
     );
-    println!("  {}: {}",
+    println!(
+        "  {}: {}",
         "Include patterns".cyan(),
-        if config.include_patterns.is_empty() { "None (all included)".to_string() } else { config.include_patterns.join(", ") }
+        if config.include_patterns.is_empty() {
+            "None (all included)".to_string()
+        } else {
+            config.include_patterns.join(", ")
+        }
     );
-    println!("  {}: {}",
+    println!(
+        "  {}: {}",
         "Exclude patterns".cyan(),
-        if config.exclude_patterns.is_empty() { "None".to_string() } else { config.exclude_patterns.join(", ") }
+        if config.exclude_patterns.is_empty() {
+            "None".to_string()
+        } else {
+            config.exclude_patterns.join(", ")
+        }
     );
-    println!("  {}: {} bytes ({:.2} MB)",
+    println!(
+        "  {}: {} bytes ({:.2} MB)",
         "Max file size".cyan(),
         config.max_file_size_bytes,
         config.max_file_size_bytes as f64 / (1024.0 * 1024.0)
     );
-    println!("  {}: {}",
+    println!(
+        "  {}: {}",
         "Exclude attachments".cyan(),
-        if config.exclude_attachments { "Yes (only .jsonl files)".green() } else { "No (all files)".yellow() }
+        if config.exclude_attachments {
+            "Yes (only .jsonl files)".green()
+        } else {
+            "No (all files)".yellow()
+        }
     );
 
     Ok(())

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use git2::{Repository, Signature, IndexAddOption};
+use git2::{IndexAddOption, Repository, Signature};
 use std::path::{Path, PathBuf};
 
 /// Git repository manager for Claude Code history
@@ -10,8 +10,12 @@ pub struct GitManager {
 impl GitManager {
     /// Open an existing repository
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let repo = Repository::open(path.as_ref())
-            .with_context(|| format!("Failed to open git repository at {}", path.as_ref().display()))?;
+        let repo = Repository::open(path.as_ref()).with_context(|| {
+            format!(
+                "Failed to open git repository at {}",
+                path.as_ref().display()
+            )
+        })?;
         Ok(GitManager { repo })
     }
 
@@ -21,49 +25,57 @@ impl GitManager {
         std::fs::create_dir_all(path)
             .with_context(|| format!("Failed to create directory: {}", path.display()))?;
 
-        let repo = Repository::init(path)
-            .with_context(|| format!("Failed to initialize git repository at {}", path.display()))?;
+        let repo = Repository::init(path).with_context(|| {
+            format!("Failed to initialize git repository at {}", path.display())
+        })?;
 
         Ok(GitManager { repo })
     }
 
     /// Add a remote to the repository
     pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
-        self.repo.remote(name, url)
+        self.repo
+            .remote(name, url)
             .with_context(|| format!("Failed to add remote '{}' with URL '{}'", name, url))?;
         Ok(())
     }
 
     /// Get the repository path
     pub fn path(&self) -> PathBuf {
-        self.repo.workdir()
+        self.repo
+            .workdir()
             .unwrap_or_else(|| self.repo.path())
             .to_path_buf()
     }
 
     /// Stage all changes in the working directory
     pub fn stage_all(&self) -> Result<()> {
-        let mut index = self.repo.index()
+        let mut index = self
+            .repo
+            .index()
             .context("Failed to get repository index")?;
 
-        index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        index
+            .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
             .context("Failed to stage files")?;
 
-        index.write()
-            .context("Failed to write index")?;
+        index.write().context("Failed to write index")?;
 
         Ok(())
     }
 
     /// Create a commit with all staged changes
     pub fn commit(&self, message: &str) -> Result<()> {
-        let mut index = self.repo.index()
+        let mut index = self
+            .repo
+            .index()
             .context("Failed to get repository index")?;
 
-        let tree_oid = index.write_tree()
-            .context("Failed to write tree")?;
+        let tree_oid = index.write_tree().context("Failed to write tree")?;
 
-        let tree = self.repo.find_tree(tree_oid)
+        let tree = self
+            .repo
+            .find_tree(tree_oid)
             .context("Failed to find tree")?;
 
         let signature = Signature::now("claude-sync", "noreply@claude-sync.local")
@@ -72,28 +84,36 @@ impl GitManager {
         let parent_commit = match self.repo.head() {
             Ok(head) => {
                 let oid = head.target().context("Failed to get HEAD target")?;
-                Some(self.repo.find_commit(oid).context("Failed to find parent commit")?)
+                Some(
+                    self.repo
+                        .find_commit(oid)
+                        .context("Failed to find parent commit")?,
+                )
             }
             Err(_) => None, // First commit
         };
 
         let parents: Vec<_> = parent_commit.iter().collect();
 
-        self.repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &parents,
-        ).context("Failed to create commit")?;
+        self.repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &parents,
+            )
+            .context("Failed to create commit")?;
 
         Ok(())
     }
 
     /// Push to remote
     pub fn push(&self, remote_name: &str, branch_name: &str) -> Result<()> {
-        let mut remote = self.repo.find_remote(remote_name)
+        let mut remote = self
+            .repo
+            .find_remote(remote_name)
             .with_context(|| format!("Failed to find remote '{}'", remote_name))?;
 
         let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
@@ -126,7 +146,9 @@ impl GitManager {
                     \n\
                     For HTTPS: Run 'git config --global credential.helper store' and try again\n\
                     For SSH: Ensure SSH keys are set up with 'ssh -T git@github.com'",
-                    remote_name, remote_url, e
+                    remote_name,
+                    remote_url,
+                    e
                 ))
             }
         }
@@ -134,7 +156,9 @@ impl GitManager {
 
     /// Fetch from remote
     pub fn fetch(&self, remote_name: &str) -> Result<()> {
-        let mut remote = self.repo.find_remote(remote_name)
+        let mut remote = self
+            .repo
+            .find_remote(remote_name)
             .with_context(|| format!("Failed to find remote '{}'", remote_name))?;
 
         // Set up callbacks for authentication
@@ -149,7 +173,8 @@ impl GitManager {
         let mut fetch_options = git2::FetchOptions::new();
         fetch_options.remote_callbacks(callbacks);
 
-        remote.fetch(&["main", "master"], Some(&mut fetch_options), None)
+        remote
+            .fetch(&["main", "master"], Some(&mut fetch_options), None)
             .context("Failed to fetch from remote")?;
 
         Ok(())
@@ -159,14 +184,20 @@ impl GitManager {
     pub fn pull(&self, remote_name: &str, branch_name: &str) -> Result<()> {
         self.fetch(remote_name)?;
 
-        let fetch_head = self.repo.find_reference("FETCH_HEAD")
+        let fetch_head = self
+            .repo
+            .find_reference("FETCH_HEAD")
             .context("Failed to find FETCH_HEAD")?;
 
-        let fetch_commit = self.repo.reference_to_annotated_commit(&fetch_head)
+        let fetch_commit = self
+            .repo
+            .reference_to_annotated_commit(&fetch_head)
             .context("Failed to get fetch commit")?;
 
         // Perform the merge
-        let analysis = self.repo.merge_analysis(&[&fetch_commit])
+        let analysis = self
+            .repo
+            .merge_analysis(&[&fetch_commit])
             .context("Failed to analyze merge")?;
 
         if analysis.0.is_up_to_date() {
@@ -175,16 +206,19 @@ impl GitManager {
         } else if analysis.0.is_fast_forward() {
             // Fast-forward merge
             let refname = format!("refs/heads/{}", branch_name);
-            let mut reference = self.repo.find_reference(&refname)
+            let mut reference = self
+                .repo
+                .find_reference(&refname)
                 .context("Failed to find branch reference")?;
 
-            reference.set_target(fetch_commit.id(), "Fast-forward merge")
+            reference
+                .set_target(fetch_commit.id(), "Fast-forward merge")
                 .context("Failed to set reference target")?;
 
-            self.repo.set_head(&refname)
-                .context("Failed to set HEAD")?;
+            self.repo.set_head(&refname).context("Failed to set HEAD")?;
 
-            self.repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+            self.repo
+                .checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
                 .context("Failed to checkout HEAD")?;
         } else {
             // Normal merge - we'll handle this in the sync module
@@ -196,7 +230,9 @@ impl GitManager {
 
     /// Check if repository has uncommitted changes
     pub fn has_changes(&self) -> Result<bool> {
-        let statuses = self.repo.statuses(None)
+        let statuses = self
+            .repo
+            .statuses(None)
             .context("Failed to get repository status")?;
 
         Ok(!statuses.is_empty())
@@ -204,10 +240,10 @@ impl GitManager {
 
     /// Get current branch name
     pub fn current_branch(&self) -> Result<String> {
-        let head = self.repo.head()
-            .context("Failed to get HEAD reference")?;
+        let head = self.repo.head().context("Failed to get HEAD reference")?;
 
-        let branch_name = head.shorthand()
+        let branch_name = head
+            .shorthand()
             .ok_or_else(|| anyhow!("Failed to get branch name"))?;
 
         Ok(branch_name.to_string())
@@ -217,13 +253,31 @@ impl GitManager {
     pub fn has_remote(&self, name: &str) -> bool {
         self.repo.find_remote(name).is_ok()
     }
+
+    /// Get the current commit hash (HEAD)
+    ///
+    /// Returns the full SHA-1 hash of the current HEAD commit.
+    /// This is useful for creating snapshots that track git state.
+    ///
+    /// # Returns
+    /// The commit hash as a 40-character hex string
+    ///
+    /// # Errors
+    /// Returns error if HEAD doesn't exist or points to invalid commit
+    pub fn current_commit_hash(&self) -> Result<String> {
+        let head = self.repo.head().context("Failed to get HEAD")?;
+        let commit = head
+            .peel_to_commit()
+            .context("Failed to get commit from HEAD")?;
+        Ok(commit.id().to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_init_repository() {
@@ -247,5 +301,31 @@ mod tests {
 
         // Verify commit was created
         assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_current_commit_hash() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create a test file
+        let test_file = temp_dir.path().join("test.txt");
+        fs::write(&test_file, "test content").unwrap();
+
+        // Stage and commit
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Initial commit").unwrap();
+
+        // Get the commit hash using the method
+        let hash = git_manager.current_commit_hash().unwrap();
+
+        // Verify it's a valid SHA-1 hash (40 hex characters)
+        assert_eq!(hash.len(), 40);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Verify it matches the actual HEAD commit
+        let repo = Repository::open(temp_dir.path()).unwrap();
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(hash, head_commit.id().to_string());
     }
 }

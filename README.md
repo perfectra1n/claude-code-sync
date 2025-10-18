@@ -11,20 +11,6 @@ A Rust CLI tool for syncing Claude Code conversation history across machines usi
 - **Version control**: Track changes to your conversations over time
 - **Conflict resolution**: Automatically handles divergent conversation histories
 
-## What's New in v0.1.1
-
-Version 0.1.1 introduces several new features based on user feedback:
-
-- **Bidirectional Sync**: New `sync` command that pulls then pushes in one operation
-- **Branch Support**: Specify which branch to push/pull with `--branch` flag
-- **Attachment Exclusion**: New `--exclude-attachments` flag to sync only .jsonl conversation files
-- **Remote Management**: New `remote` command to view/update git remote configuration
-- **Improved Parser**: Better handling of conversation files without explicit session IDs
-- **Better Git Auth**: Enhanced HTTPS authentication with credential helper support
-- **URL Validation**: Validates remote URLs to prevent common configuration mistakes
-
-See [CHANGELOG.md](CHANGELOG.md) for full details.
-
 ## How It Works
 
 Claude Code stores conversation history locally in `~/.claude/projects/` as JSONL (JSON Lines) files. Each project has its own directory, and each conversation is a separate `.jsonl` file.
@@ -281,6 +267,90 @@ claude-sync remote remove origin
 
 **Note:** The remote URL must start with `http://`, `https://`, or `git@` for SSH connections.
 
+### `undo`
+
+**NEW in v0.2.0!** Undo the last sync operation by restoring from automatic snapshots.
+
+```bash
+claude-sync undo <OPERATION>
+```
+
+**Operations:**
+- `pull`: Undo the last pull operation (restores local files to pre-pull state)
+- `push`: Undo the last push operation (resets git repository to previous commit)
+
+**Examples:**
+```bash
+# Undo the last pull operation
+claude-sync undo pull
+
+# Undo the last push operation
+claude-sync undo push
+```
+
+**How it works:**
+- Every pull/push operation automatically creates a snapshot before making changes
+- Snapshots are stored in `~/.claude-sync/snapshots/`
+- Undo operations restore files/git state from the snapshot
+- After successful undo, the snapshot is automatically deleted
+- Operation history is updated to reflect the undo
+
+**Note:** You can only undo the most recent operation of each type. Once you run a new pull/push, the previous snapshot is replaced.
+
+### `history`
+
+**NEW in v0.2.0!** View and manage operation history.
+
+```bash
+claude-sync history <COMMAND>
+```
+
+**Commands:**
+- `list`: List recent sync operations
+- `last`: Show detailed information about the last operation
+- `clear`: Clear all operation history
+
+**Options for `list`:**
+- `--limit, -l <N>`: Number of operations to show (default: 10)
+
+**Options for `last`:**
+- `--operation-type, -t <TYPE>`: Filter by operation type (`pull` or `push`)
+
+**Examples:**
+```bash
+# List the last 10 operations
+claude-sync history list
+
+# List the last 20 operations
+claude-sync history list --limit 20
+
+# Show details of the last operation (pull or push)
+claude-sync history last
+
+# Show details of the last pull operation only
+claude-sync history last -t pull
+
+# Show details of the last push operation only
+claude-sync history last -t push
+
+# Clear all operation history
+claude-sync history clear
+```
+
+**History Information:**
+Each history entry shows:
+- Operation type (PULL or PUSH)
+- Timestamp
+- Branch name
+- Number of conversations affected
+- Statistics (added, modified, conflicts, unchanged)
+- Snapshot availability for undo
+
+**History Storage:**
+- Operation history is stored in `~/.claude-sync/operation-history.json`
+- Up to 5 operations are kept (automatically rotated)
+- Each operation includes details about affected conversations
+
 ## Conflict Resolution
 
 When the same conversation session is modified on different machines, `claude-sync` detects this as a conflict.
@@ -320,6 +390,8 @@ max_file_size_bytes = 10485760
 
 Sync state is stored in `~/.claude-sync/`:
 - `state.json`: Current sync repository configuration
+- `operation-history.json`: History of sync operations (up to 5 entries)
+- `snapshots/`: Directory containing snapshots for undo operations
 - `latest-conflict-report.json`: Most recent conflict report
 
 ## Use Cases
@@ -367,10 +439,12 @@ Add to your crontab:
 
 - **parser.rs**: JSONL conversation file parser
 - **git.rs**: Git operations wrapper (using `git2` crate)
-- **sync.rs**: Core sync engine with push/pull logic
+- **sync.rs**: Core sync engine with push/pull logic and snapshot integration
 - **conflict.rs**: Conflict detection and resolution
 - **filter.rs**: Configuration and filtering system
 - **report.rs**: Conflict reporting in JSON/Markdown formats
+- **history.rs**: Operation history tracking and management
+- **undo.rs**: Snapshot-based undo functionality for pull/push operations
 - **main.rs**: CLI interface (using `clap`)
 
 ### File Format
@@ -396,6 +470,8 @@ Each line is a separate JSON object representing a conversation event.
 - `walkdir`: Directory traversal
 - `colored`: Terminal colors
 - `dirs`: Cross-platform directory paths
+- `uuid`: Snapshot identification
+- `base64`: Binary file encoding in snapshots
 
 ## Security Considerations
 
@@ -444,6 +520,12 @@ MIT License - See LICENSE file for details
 
 ## Roadmap
 
+Completed in v0.2.0:
+- [x] Undo functionality for pull/push operations
+- [x] Operation history tracking
+- [x] Automatic snapshot creation
+- [x] Enhanced operation summaries
+
 Completed in v0.1.1:
 - [x] Selective session sync (by project, date, attachment type)
 - [x] Branch specification for push/pull operations
@@ -458,3 +540,4 @@ Future enhancements:
 - [ ] Web UI for browsing history
 - [ ] Integration with Claude Code as a plugin
 - [ ] Interactive TUI for configuration management
+- [ ] Snapshot cleanup command for managing disk space

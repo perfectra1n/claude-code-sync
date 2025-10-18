@@ -22,9 +22,7 @@ pub struct Conflict {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ConflictResolution {
     /// Keep both versions, rename remote with conflict suffix
-    KeepBoth {
-        renamed_remote_file: PathBuf,
-    },
+    KeepBoth { renamed_remote_file: PathBuf },
     /// Keep local version only
     KeepLocal,
     /// Keep remote version only
@@ -52,20 +50,24 @@ impl Conflict {
 
     /// Resolve the conflict by keeping both versions
     pub fn resolve_keep_both(&mut self, conflict_suffix: &str) -> Result<PathBuf> {
-        let remote_file_name = self.remote_file
+        let remote_file_name = self
+            .remote_file
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
-        let remote_file_ext = self.remote_file
+        let remote_file_ext = self
+            .remote_file
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("jsonl");
 
-        let parent = self.remote_file.parent()
-            .unwrap_or_else(|| Path::new("."));
+        let parent = self.remote_file.parent().unwrap_or_else(|| Path::new("."));
 
-        let new_name = format!("{}-{}.{}", remote_file_name, conflict_suffix, remote_file_ext);
+        let new_name = format!(
+            "{}-{}.{}",
+            remote_file_name, conflict_suffix, remote_file_ext
+        );
         let renamed_path = parent.join(new_name);
 
         self.resolution = ConflictResolution::KeepBoth {
@@ -180,7 +182,11 @@ mod tests {
             entries.push(ConversationEntry {
                 entry_type: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
                 uuid: Some(format!("uuid-{}", i)),
-                parent_uuid: if i > 0 { Some(format!("uuid-{}", i - 1)) } else { None },
+                parent_uuid: if i > 0 {
+                    Some(format!("uuid-{}", i - 1))
+                } else {
+                    None
+                },
                 session_id: Some(session_id.to_string()),
                 timestamp: Some(format!("2025-01-01T{:02}:00:00Z", i)),
                 message: None,
