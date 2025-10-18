@@ -1,0 +1,46 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.fleet/
+.helix/
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+
+# Test artifacts
+/test-repos/
+/test-data/
+/coverage/
+
+# Claude sync test data
+.claude-sync-test/
+test-backup/
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Documentation build
+/book/
+/docs/_build/
+
+# Logs
+*.log
+*.log.*
