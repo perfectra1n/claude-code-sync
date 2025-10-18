@@ -40,6 +40,14 @@ enum Commands {
         /// Push to remote after committing
         #[arg(long, default_value_t = true)]
         push_remote: bool,
+
+        /// Branch to push to (default: current branch)
+        #[arg(short, long)]
+        branch: Option<String>,
+
+        /// Exclude file attachments (images, etc.) from sync
+        #[arg(long)]
+        exclude_attachments: bool,
     },
 
     /// Pull and merge history from the sync repository
@@ -47,6 +55,25 @@ enum Commands {
         /// Pull from remote before merging
         #[arg(long, default_value_t = true)]
         fetch_remote: bool,
+
+        /// Branch to pull from (default: current branch)
+        #[arg(short, long)]
+        branch: Option<String>,
+    },
+
+    /// Sync bidirectionally (pull then push)
+    Sync {
+        /// Commit message for push (optional)
+        #[arg(short, long)]
+        message: Option<String>,
+
+        /// Branch to sync with (default: current branch)
+        #[arg(short, long)]
+        branch: Option<String>,
+
+        /// Exclude file attachments (images, etc.) from sync
+        #[arg(long)]
+        exclude_attachments: bool,
     },
 
     /// Show sync status and conflicts
@@ -74,6 +101,10 @@ enum Commands {
         #[arg(long)]
         exclude_projects: Option<String>,
 
+        /// Exclude file attachments (images, etc.) from sync
+        #[arg(long)]
+        exclude_attachments: Option<bool>,
+
         /// Show current configuration
         #[arg(long)]
         show: bool,
@@ -89,6 +120,35 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+
+    /// Manage git remote configuration
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RemoteAction {
+    /// Show current remote URL
+    Show,
+
+    /// Set or update remote URL
+    Set {
+        /// Remote name (default: origin)
+        #[arg(short, long, default_value = "origin")]
+        name: String,
+
+        /// Remote URL (e.g., https://github.com/user/repo.git)
+        url: String,
+    },
+
+    /// Remove remote
+    Remove {
+        /// Remote name (default: origin)
+        #[arg(short, long, default_value = "origin")]
+        name: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -98,11 +158,14 @@ fn main() -> Result<()> {
         Commands::Init { repo, remote } => {
             sync::init_sync_repo(&repo, remote.as_deref())?;
         }
-        Commands::Push { message, push_remote } => {
-            sync::push_history(message.as_deref(), push_remote)?;
+        Commands::Push { message, push_remote, branch, exclude_attachments } => {
+            sync::push_history(message.as_deref(), push_remote, branch.as_deref(), exclude_attachments)?;
         }
-        Commands::Pull { fetch_remote } => {
-            sync::pull_history(fetch_remote)?;
+        Commands::Pull { fetch_remote, branch } => {
+            sync::pull_history(fetch_remote, branch.as_deref())?;
+        }
+        Commands::Sync { message, branch, exclude_attachments } => {
+            sync::sync_bidirectional(message.as_deref(), branch.as_deref(), exclude_attachments)?;
         }
         Commands::Status { show_conflicts, show_files } => {
             sync::show_status(show_conflicts, show_files)?;
@@ -111,16 +174,30 @@ fn main() -> Result<()> {
             exclude_older_than,
             include_projects,
             exclude_projects,
+            exclude_attachments,
             show,
         } => {
             if show {
                 filter::show_config()?;
             } else {
-                filter::update_config(exclude_older_than, include_projects, exclude_projects)?;
+                filter::update_config(exclude_older_than, include_projects, exclude_projects, exclude_attachments)?;
             }
         }
         Commands::Report { format, output } => {
             report::generate_report(&format, output.as_deref())?;
+        }
+        Commands::Remote { action } => {
+            match action {
+                RemoteAction::Show => {
+                    sync::show_remote()?;
+                }
+                RemoteAction::Set { name, url } => {
+                    sync::set_remote(&name, &url)?;
+                }
+                RemoteAction::Remove { name } => {
+                    sync::remove_remote(&name)?;
+                }
+            }
         }
     }
 

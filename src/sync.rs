@@ -137,12 +137,17 @@ fn discover_sessions(base_path: &Path, filter: &FilterConfig) -> Result<Vec<Conv
 }
 
 /// Push local Claude Code history to sync repository
-pub fn push_history(commit_message: Option<&str>, push_remote: bool) -> Result<()> {
+pub fn push_history(commit_message: Option<&str>, push_remote: bool, branch: Option<&str>, exclude_attachments: bool) -> Result<()> {
     println!("{}", "Pushing Claude Code history...".cyan().bold());
 
     let state = SyncState::load()?;
     let git_manager = GitManager::open(&state.sync_repo_path)?;
-    let filter = FilterConfig::load()?;
+    let mut filter = FilterConfig::load()?;
+
+    // Override exclude_attachments if specified in command
+    if exclude_attachments {
+        filter.exclude_attachments = true;
+    }
     let claude_dir = claude_projects_dir()?;
 
     // Discover all sessions
@@ -181,9 +186,13 @@ pub fn push_history(commit_message: Option<&str>, push_remote: bool) -> Result<(
     // Push to remote if configured
     if push_remote && state.has_remote {
         println!("  {} to remote...", "Pushing".cyan());
-        let branch = git_manager.current_branch().unwrap_or_else(|_| "main".to_string());
-        match git_manager.push("origin", &branch) {
-            Ok(_) => println!("  {} Pushed to origin/{}", "✓".green(), branch),
+        let branch_name = branch
+            .map(|s| s.to_string())
+            .or_else(|| git_manager.current_branch().ok())
+            .unwrap_or_else(|| "main".to_string());
+
+        match git_manager.push("origin", &branch_name) {
+            Ok(_) => println!("  {} Pushed to origin/{}", "✓".green(), branch_name),
             Err(e) => eprintln!("{} Failed to push: {}", "Warning:".yellow(), e),
         }
     }
@@ -193,7 +202,7 @@ pub fn push_history(commit_message: Option<&str>, push_remote: bool) -> Result<(
 }
 
 /// Pull and merge history from sync repository
-pub fn pull_history(fetch_remote: bool) -> Result<()> {
+pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
     println!("{}", "Pulling Claude Code history...".cyan().bold());
 
     let state = SyncState::load()?;
@@ -204,9 +213,13 @@ pub fn pull_history(fetch_remote: bool) -> Result<()> {
     // Fetch from remote if configured
     if fetch_remote && state.has_remote {
         println!("  {} from remote...", "Fetching".cyan());
-        let branch = git_manager.current_branch().unwrap_or_else(|_| "main".to_string());
-        match git_manager.pull("origin", &branch) {
-            Ok(_) => println!("  {} Pulled from origin/{}", "✓".green(), branch),
+        let branch_name = branch
+            .map(|s| s.to_string())
+            .or_else(|| git_manager.current_branch().ok())
+            .unwrap_or_else(|| "main".to_string());
+
+        match git_manager.pull("origin", &branch_name) {
+            Ok(_) => println!("  {} Pulled from origin/{}", "✓".green(), branch_name),
             Err(e) => {
                 eprintln!("{} Failed to pull: {}", "Warning:".yellow(), e);
                 eprintln!("  Continuing with local sync repository state...");
@@ -371,3 +384,236 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     Ok(())
 }
 
+/// Show current remote configuration
+pub fn show_remote() -> Result<()> {
+    let state = SyncState::load()?;
+    let git_manager = GitManager::open(&state.sync_repo_path)?;
+
+    println!("{}", "=== Git Remote Configuration ===".bold().cyan());
+    println!();
+
+    // Show sync repository directory
+    println!("{} {}", "Sync Directory:".bold(), state.sync_repo_path.display().to_string().cyan());
+
+    // Show current branch
+    if let Ok(branch) = git_manager.current_branch() {
+        println!("{} {}", "Current Branch:".bold(), branch.cyan());
+    }
+
+    println!();
+
+    // Get repository
+    let repo = git2::Repository::open(&state.sync_repo_path)?;
+
+    // List all remotes
+    let remotes = repo.remotes()?;
+
+    if remotes.is_empty() {
+        println!("{}", "No remotes configured".yellow());
+        println!("\n{} claude-sync remote set origin <url>", "Hint:".cyan());
+        return Ok(());
+    }
+
+    for remote_name in remotes.iter() {
+        if let Some(name) = remote_name {
+            if let Ok(remote) = repo.find_remote(name) {
+                println!("{} {}", "Remote:".bold(), name.cyan());
+
+                if let Some(url) = remote.url() {
+                    println!("  URL: {}", url);
+                } else {
+                    println!("  URL: {}", "None".yellow());
+                }
+
+                if let Some(push_url) = remote.pushurl() {
+                    println!("  Push URL: {}", push_url);
+                }
+
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Set or update remote URL
+pub fn set_remote(name: &str, url: &str) -> Result<()> {
+    let state = SyncState::load()?;
+    let repo = git2::Repository::open(&state.sync_repo_path)?;
+
+    // Validate URL format
+    if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("git@") {
+        return Err(anyhow!(
+            "Invalid URL format: {}\n\
+            \n\
+            URL must start with:\n\
+            - https:// (e.g., https://github.com/user/repo.git)\n\
+            - http:// (e.g., http://gitlab.com/user/repo.git)\n\
+            - git@ (e.g., git@github.com:user/repo.git)",
+            url
+        ));
+    }
+
+    // Check if remote exists
+    let remote_exists = repo.find_remote(name).is_ok();
+
+    if remote_exists {
+        // Update existing remote
+        repo.remote_set_url(name, url)
+            .with_context(|| format!("Failed to update remote '{}' URL", name))?;
+
+        println!("{} Updated remote '{}' to: {}",
+            "✓".green().bold(),
+            name.cyan(),
+            url
+        );
+    } else {
+        // Create new remote
+        repo.remote(name, url)
+            .with_context(|| format!("Failed to create remote '{}'", name))?;
+
+        println!("{} Created remote '{}': {}",
+            "✓".green().bold(),
+            name.cyan(),
+            url
+        );
+    }
+
+    // Update state if this is the origin remote
+    if name == "origin" {
+        let mut state = state;
+        state.has_remote = true;
+        state.save()?;
+    }
+
+    println!("\n{} claude-sync push", "Next:".cyan());
+
+    Ok(())
+}
+
+/// Remove a remote
+pub fn remove_remote(name: &str) -> Result<()> {
+    let state = SyncState::load()?;
+    let repo = git2::Repository::open(&state.sync_repo_path)?;
+
+    // Check if remote exists
+    if repo.find_remote(name).is_err() {
+        return Err(anyhow!("Remote '{}' not found", name));
+    }
+
+    // Remove the remote
+    repo.remote_delete(name)
+        .with_context(|| format!("Failed to remove remote '{}'", name))?;
+
+    println!("{} Removed remote '{}'", "✓".green().bold(), name.cyan());
+
+    // Update state if this was the origin remote
+    if name == "origin" {
+        let mut state = state;
+        state.has_remote = false;
+        state.save()?;
+    }
+
+    Ok(())
+}
+
+/// Bidirectional sync: pull remote changes, then push local changes
+pub fn sync_bidirectional(commit_message: Option<&str>, branch: Option<&str>, exclude_attachments: bool) -> Result<()> {
+    println!("{}", "=== Bidirectional Sync ===".bold().cyan());
+    println!();
+
+    // First, pull remote changes
+    println!("{}", "Step 1: Pulling remote changes...".bold());
+    pull_history(true, branch)?;
+
+    println!();
+
+    // Then, push local changes
+    println!("{}", "Step 2: Pushing local changes...".bold());
+    push_history(commit_message, true, branch, exclude_attachments)?;
+
+    println!();
+    println!("{}", "=== Sync Complete ===".green().bold());
+    println!("  {} Your local and remote histories are now in sync", "✓".green());
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_url_validation() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("test-repo");
+
+        // Initialize a test repo
+        GitManager::init(&repo_path).unwrap();
+
+        // Save a test state
+        let state = SyncState {
+            sync_repo_path: repo_path.clone(),
+            has_remote: false,
+        };
+        
+        // Create state directory
+        let state_path = dirs::home_dir().unwrap().join(".claude-sync");
+        std::fs::create_dir_all(&state_path).unwrap();
+        
+        let state_file = state_path.join("state.json");
+        std::fs::write(&state_file, serde_json::to_string(&state).unwrap()).unwrap();
+
+        // Valid HTTPS URL
+        let result = set_remote("origin", "https://github.com/user/repo.git");
+        assert!(result.is_ok());
+
+        // Valid HTTP URL
+        let result = set_remote("origin", "http://gitlab.com/user/repo.git");
+        assert!(result.is_ok());
+
+        // Valid SSH URL
+        let result = set_remote("origin", "git@github.com:user/repo.git");
+        assert!(result.is_ok());
+
+        // Invalid URL (missing protocol)
+        let result = set_remote("origin", "github.com/user/repo.git");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let error_msg = e.to_string();
+            assert!(error_msg.contains("Invalid URL format"));
+        }
+
+        // Cleanup
+        std::fs::remove_file(&state_file).ok();
+    }
+
+    #[test]
+    fn test_filter_with_attachments() {
+        let mut filter = FilterConfig::default();
+        filter.exclude_attachments = true;
+
+        // JSONL files should be included
+        assert!(filter.should_include(Path::new("session.jsonl")));
+        assert!(filter.should_include(Path::new("/path/to/session.jsonl")));
+
+        // Non-JSONL files should be excluded
+        assert!(!filter.should_include(Path::new("image.png")));
+        assert!(!filter.should_include(Path::new("document.pdf")));
+        assert!(!filter.should_include(Path::new("archive.zip")));
+        assert!(!filter.should_include(Path::new("/path/to/file.jpg")));
+    }
+
+    #[test]
+    fn test_filter_without_attachments_exclusion() {
+        let filter = FilterConfig::default();
+        // By default, exclude_attachments is false
+
+        // All files should be included (subject to other filters)
+        assert!(filter.should_include(Path::new("session.jsonl")));
+        assert!(filter.should_include(Path::new("image.png")));
+        assert!(filter.should_include(Path::new("document.pdf")));
+    }
+}

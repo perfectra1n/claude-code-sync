@@ -83,8 +83,12 @@ impl ConversationSession {
             entries.push(entry);
         }
 
-        let session_id = session_id
-            .with_context(|| format!("No session ID found in {}", path.display()))?;
+        // If no session ID in entries, use filename (without extension) as session ID
+        let session_id = session_id.or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        }).with_context(|| format!("No session ID found in file or filename: {}", path.display()))?;
 
         Ok(ConversationSession {
             session_id,
@@ -179,5 +183,63 @@ mod tests {
         let reloaded = ConversationSession::from_file(output_temp.path()).unwrap();
         assert_eq!(reloaded.session_id, session.session_id);
         assert_eq!(reloaded.entries.len(), session.entries.len());
+    }
+
+    #[test]
+    fn test_session_id_from_filename() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_file = temp_dir.path().join("248a0cdf-1466-48a7-b3d0-00f9e8e6e4ee.jsonl");
+
+        // Create file with entries that don't have sessionId field
+        let mut file = File::create(&session_file).unwrap();
+        writeln!(file, r#"{{"type":"file-history-snapshot","messageId":"abc","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"file-history-snapshot","messageId":"def","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+
+        // Parse should succeed using filename as session ID
+        let session = ConversationSession::from_file(&session_file).unwrap();
+        assert_eq!(session.session_id, "248a0cdf-1466-48a7-b3d0-00f9e8e6e4ee");
+        assert_eq!(session.entries.len(), 2);
+    }
+
+    #[test]
+    fn test_session_id_from_entry_preferred() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_file = temp_dir.path().join("filename-uuid.jsonl");
+
+        // Create file with sessionId in entries
+        let mut file = File::create(&session_file).unwrap();
+        writeln!(file, r#"{{"type":"user","sessionId":"entry-uuid","uuid":"1","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+
+        // Should prefer sessionId from entry over filename
+        let session = ConversationSession::from_file(&session_file).unwrap();
+        assert_eq!(session.session_id, "entry-uuid");
+    }
+
+    #[test]
+    fn test_mixed_entries_with_and_without_session_id() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_file = temp_dir.path().join("test-session.jsonl");
+
+        // Create file with mix of entries
+        let mut file = File::create(&session_file).unwrap();
+        writeln!(file, r#"{{"type":"file-history-snapshot","messageId":"abc","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"user","sessionId":"test-123","uuid":"1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+
+        // Should use sessionId from the entry that has it
+        let session = ConversationSession::from_file(&session_file).unwrap();
+        assert_eq!(session.session_id, "test-123");
+        assert_eq!(session.entries.len(), 2);
     }
 }

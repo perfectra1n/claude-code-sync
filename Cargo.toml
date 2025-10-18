@@ -1,6 +1,6 @@
 [package]
 name = "claude-sync"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Claude Code User"]
 description = "Sync Claude Code conversation history with git repositories"

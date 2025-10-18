@@ -22,6 +22,10 @@ pub struct FilterConfig {
     /// Maximum file size in bytes (default: 10MB)
     #[serde(default = "default_max_file_size")]
     pub max_file_size_bytes: u64,
+
+    /// Exclude file attachments (images, PDFs, etc.)
+    #[serde(default)]
+    pub exclude_attachments: bool,
 }
 
 fn default_max_file_size() -> u64 {
@@ -35,6 +39,7 @@ impl Default for FilterConfig {
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             max_file_size_bytes: default_max_file_size(),
+            exclude_attachments: false,
         }
     }
 }
@@ -84,6 +89,16 @@ impl FilterConfig {
 
     /// Check if a file should be included based on filters
     pub fn should_include(&self, file_path: &Path) -> bool {
+        // Only process .jsonl files (exclude attachments if configured)
+        if self.exclude_attachments {
+            if let Some(ext) = file_path.extension() {
+                if ext != "jsonl" {
+                    // This is an attachment (image, PDF, etc.)
+                    return false;
+                }
+            }
+        }
+
         // Check file size
         if let Ok(metadata) = fs::metadata(file_path) {
             if metadata.len() > self.max_file_size_bytes {
@@ -175,6 +190,7 @@ pub fn update_config(
     exclude_older_than: Option<u32>,
     include_projects: Option<String>,
     exclude_projects: Option<String>,
+    exclude_attachments: Option<bool>,
 ) -> Result<()> {
     let mut config = FilterConfig::load()?;
 
@@ -197,6 +213,11 @@ pub fn update_config(
             .filter(|s| !s.is_empty())
             .collect();
         println!("{}", format!("Set exclude patterns: {:?}", config.exclude_patterns).green());
+    }
+
+    if let Some(exclude_att) = exclude_attachments {
+        config.exclude_attachments = exclude_att;
+        println!("{}", format!("Exclude attachments: {}", exclude_att).green());
     }
 
     config.save()?;
@@ -227,6 +248,10 @@ pub fn show_config() -> Result<()> {
         config.max_file_size_bytes,
         config.max_file_size_bytes as f64 / (1024.0 * 1024.0)
     );
+    println!("  {}: {}",
+        "Exclude attachments".cyan(),
+        if config.exclude_attachments { "Yes (only .jsonl files)".green() } else { "No (all files)".yellow() }
+    );
 
     Ok(())
 }
@@ -249,5 +274,68 @@ mod tests {
         assert_eq!(config.exclude_older_than_days, None);
         assert!(config.include_patterns.is_empty());
         assert!(config.exclude_patterns.is_empty());
+        assert_eq!(config.exclude_attachments, false);
+    }
+
+    #[test]
+    fn test_exclude_attachments_filter() {
+        use std::path::PathBuf;
+
+        // Config with exclude_attachments = false (default)
+        let config_include_all = FilterConfig::default();
+
+        // Should include .jsonl files
+        assert!(config_include_all.should_include(&PathBuf::from("session.jsonl")));
+
+        // Should also include other files when exclude_attachments is false
+        assert!(config_include_all.should_include(&PathBuf::from("image.png")));
+        assert!(config_include_all.should_include(&PathBuf::from("document.pdf")));
+
+        // Config with exclude_attachments = true
+        let mut config_exclude = FilterConfig::default();
+        config_exclude.exclude_attachments = true;
+
+        // Should include .jsonl files
+        assert!(config_exclude.should_include(&PathBuf::from("session.jsonl")));
+
+        // Should exclude non-.jsonl files
+        assert!(!config_exclude.should_include(&PathBuf::from("image.png")));
+        assert!(!config_exclude.should_include(&PathBuf::from("image.jpg")));
+        assert!(!config_exclude.should_include(&PathBuf::from("document.pdf")));
+        assert!(!config_exclude.should_include(&PathBuf::from("archive.zip")));
+    }
+
+    #[test]
+    fn test_exclude_attachments_with_patterns() {
+        use std::path::PathBuf;
+
+        let mut config = FilterConfig::default();
+        config.exclude_attachments = true;
+        config.exclude_patterns = vec!["*test*".to_string()];
+
+        // Should exclude based on attachment filter
+        assert!(!config.should_include(&PathBuf::from("image.png")));
+
+        // Should exclude based on pattern even for .jsonl
+        assert!(!config.should_include(&PathBuf::from("/path/test/session.jsonl")));
+
+        // Should include .jsonl that doesn't match exclude pattern
+        assert!(config.should_include(&PathBuf::from("/path/prod/session.jsonl")));
+    }
+
+    #[test]
+    fn test_filter_config_serialization() {
+        let mut config = FilterConfig::default();
+        config.exclude_attachments = true;
+        config.exclude_older_than_days = Some(30);
+
+        // Test that it can be serialized
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("exclude_attachments"));
+
+        // Test that it can be deserialized
+        let deserialized: FilterConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.exclude_attachments, true);
+        assert_eq!(deserialized.exclude_older_than_days, Some(30));
     }
 }

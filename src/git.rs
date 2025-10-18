@@ -98,10 +98,38 @@ impl GitManager {
 
         let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
 
-        remote.push(&[&refspec], None)
-            .context("Failed to push to remote")?;
+        // Set up callbacks for authentication
+        let mut callbacks = git2::RemoteCallbacks::new();
 
-        Ok(())
+        // Use git credential helper for authentication
+        callbacks.credentials(|_url, username_from_url, _allowed_types| {
+            git2::Cred::credential_helper(&self.repo.config()?, _url, username_from_url)
+        });
+
+        // Set up push options with callbacks
+        let mut push_options = git2::PushOptions::new();
+        push_options.remote_callbacks(callbacks);
+
+        // Attempt push with detailed error handling
+        match remote.push(&[&refspec], Some(&mut push_options)) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let remote_url = remote.url().unwrap_or("unknown");
+                Err(anyhow!(
+                    "Failed to push to remote '{}' at '{}': {}\n\
+                    \n\
+                    Possible causes:\n\
+                    1. Authentication failed - ensure credentials are configured\n\
+                    2. No permission to push to this repository\n\
+                    3. Network connectivity issues\n\
+                    4. Remote branch protection rules\n\
+                    \n\
+                    For HTTPS: Run 'git config --global credential.helper store' and try again\n\
+                    For SSH: Ensure SSH keys are set up with 'ssh -T git@github.com'",
+                    remote_name, remote_url, e
+                ))
+            }
+        }
     }
 
     /// Fetch from remote
@@ -109,7 +137,19 @@ impl GitManager {
         let mut remote = self.repo.find_remote(remote_name)
             .with_context(|| format!("Failed to find remote '{}'", remote_name))?;
 
-        remote.fetch(&["main", "master"], None, None)
+        // Set up callbacks for authentication
+        let mut callbacks = git2::RemoteCallbacks::new();
+
+        // Use git credential helper for authentication
+        callbacks.credentials(|_url, username_from_url, _allowed_types| {
+            git2::Cred::credential_helper(&self.repo.config()?, _url, username_from_url)
+        });
+
+        // Set up fetch options with callbacks
+        let mut fetch_options = git2::FetchOptions::new();
+        fetch_options.remote_callbacks(callbacks);
+
+        remote.fetch(&["main", "master"], Some(&mut fetch_options), None)
             .context("Failed to fetch from remote")?;
 
         Ok(())
