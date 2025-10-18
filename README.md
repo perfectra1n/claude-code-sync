@@ -11,6 +11,20 @@ A Rust CLI tool for syncing Claude Code conversation history across machines usi
 - **Version control**: Track changes to your conversations over time
 - **Conflict resolution**: Automatically handles divergent conversation histories
 
+## What's New in v0.1.1
+
+Version 0.1.1 introduces several new features based on user feedback:
+
+- **Bidirectional Sync**: New `sync` command that pulls then pushes in one operation
+- **Branch Support**: Specify which branch to push/pull with `--branch` flag
+- **Attachment Exclusion**: New `--exclude-attachments` flag to sync only .jsonl conversation files
+- **Remote Management**: New `remote` command to view/update git remote configuration
+- **Improved Parser**: Better handling of conversation files without explicit session IDs
+- **Better Git Auth**: Enhanced HTTPS authentication with credential helper support
+- **URL Validation**: Validates remote URLs to prevent common configuration mistakes
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
 ## How It Works
 
 Claude Code stores conversation history locally in `~/.claude/projects/` as JSONL (JSON Lines) files. Each project has its own directory, and each conversation is a separate `.jsonl` file.
@@ -52,27 +66,31 @@ claude-sync init --repo ~/claude-history-backup
 claude-sync init --repo ~/claude-history-backup --remote git@github.com:username/claude-history.git
 ```
 
-### 2. Push Your History
+### 2. Sync Your History
 
 ```bash
+# Bidirectional sync (pull then push) - RECOMMENDED
+claude-sync sync
+
+# Or manually:
 # Push all conversation history
 claude-sync push
 
-# Push with custom commit message
-claude-sync push --message "Backup before system upgrade"
-
-# Push without pushing to remote
-claude-sync push --push-remote=false
+# Pull from remote
+claude-sync pull
 ```
 
-### 3. Pull and Merge (On Another Machine)
+### 3. Advanced Usage
 
 ```bash
-# Initialize on the new machine with the same remote
-claude-sync init --repo ~/claude-history-backup --remote git@github.com:username/claude-history.git
+# Exclude attachments (images, PDFs, etc.) - only sync .jsonl files
+claude-sync push --exclude-attachments
 
-# Pull and merge history
-claude-sync pull
+# Push to specific branch
+claude-sync push --branch main
+
+# Sync with custom message and exclude attachments
+claude-sync sync --message "Daily backup" --exclude-attachments
 ```
 
 ## Commands
@@ -94,21 +112,45 @@ claude-sync init --repo <path> [--remote <url>]
 claude-sync init --repo ~/claude-backup --remote git@github.com:user/claude-history.git
 ```
 
+### `sync`
+
+**NEW!** Bidirectional sync (pull remote changes, then push local changes).
+
+```bash
+claude-sync sync [OPTIONS]
+```
+
+**Options:**
+- `--message, -m <MSG>`: Custom commit message for push
+- `--branch, -b <BRANCH>`: Branch to sync with (default: current branch)
+- `--exclude-attachments`: Only sync .jsonl files, exclude images/PDFs/etc.
+
+**Example:**
+```bash
+claude-sync sync -m "Daily sync" --exclude-attachments
+```
+
 ### `push`
 
 Push local Claude Code history to the sync repository.
 
 ```bash
-claude-sync push [--message <MSG>] [--push-remote]
+claude-sync push [OPTIONS]
 ```
 
 **Options:**
 - `--message, -m <MSG>`: Custom commit message
 - `--push-remote`: Push to remote after committing (default: true)
+- `--branch, -b <BRANCH>`: Branch to push to (default: current branch)
+- `--exclude-attachments`: Only sync .jsonl files, exclude images/PDFs/etc.
 
-**Example:**
+**Examples:**
 ```bash
+# Basic push
 claude-sync push -m "Weekly backup"
+
+# Push to specific branch, excluding attachments
+claude-sync push --branch backup --exclude-attachments
 ```
 
 ### `pull`
@@ -116,15 +158,16 @@ claude-sync push -m "Weekly backup"
 Pull and merge history from the sync repository.
 
 ```bash
-claude-sync pull [--fetch-remote]
+claude-sync pull [OPTIONS]
 ```
 
 **Options:**
 - `--fetch-remote`: Pull from remote before merging (default: true)
+- `--branch, -b <BRANCH>`: Branch to pull from (default: current branch)
 
 **Example:**
 ```bash
-claude-sync pull
+claude-sync pull --branch main
 ```
 
 ### `status`
@@ -156,6 +199,7 @@ claude-sync config [OPTIONS] [--show]
 - `--exclude-older-than <DAYS>`: Exclude projects older than N days
 - `--include-projects <PATTERNS>`: Include only specific project paths (comma-separated)
 - `--exclude-projects <PATTERNS>`: Exclude specific project paths (comma-separated)
+- `--exclude-attachments <true|false>`: Exclude file attachments (images, PDFs, etc.)
 - `--show`: Show current configuration
 
 **Examples:**
@@ -168,6 +212,9 @@ claude-sync config --include-projects "*my-project*,*important-work*"
 
 # Exclude test projects
 claude-sync config --exclude-projects "*test*,*temp*"
+
+# Permanently exclude attachments from all syncs
+claude-sync config --exclude-attachments true
 
 # Show current config
 claude-sync config --show
@@ -196,6 +243,43 @@ claude-sync report --format json --output conflicts.json
 # View as markdown
 claude-sync report --format markdown | less
 ```
+
+### `remote`
+
+**NEW!** Manage git remote configuration.
+
+```bash
+claude-sync remote <COMMAND>
+```
+
+**Commands:**
+- `show`: Display current remote configuration and sync directory
+- `set`: Set or update remote URL
+- `remove`: Remove a remote
+
+**Options for `set`:**
+- `--name, -n <NAME>`: Remote name (default: origin)
+- `url`: Remote URL (e.g., https://github.com/user/repo.git or git@github.com:user/repo.git)
+
+**Options for `remove`:**
+- `--name, -n <NAME>`: Remote name (default: origin)
+
+**Examples:**
+```bash
+# Show current remote and sync directory
+claude-sync remote show
+
+# Set/update remote URL (HTTPS)
+claude-sync remote set origin https://github.com/user/claude-history.git
+
+# Set/update remote URL (SSH)
+claude-sync remote set origin git@github.com:user/claude-history.git
+
+# Remove remote
+claude-sync remote remove origin
+```
+
+**Note:** The remote URL must start with `http://`, `https://`, or `git@` for SSH connections.
 
 ## Conflict Resolution
 
@@ -360,11 +444,17 @@ MIT License - See LICENSE file for details
 
 ## Roadmap
 
+Completed in v0.1.1:
+- [x] Selective session sync (by project, date, attachment type)
+- [x] Branch specification for push/pull operations
+- [x] Bidirectional sync command
+- [x] Remote management commands
+
 Future enhancements:
-- [ ] Selective session sync (by project, date, etc.)
 - [ ] Export conversations to readable formats (Markdown, HTML)
 - [ ] Compression for large history files
 - [ ] Encryption support
 - [ ] Smart merge (combine non-conflicting conversation branches)
 - [ ] Web UI for browsing history
 - [ ] Integration with Claude Code as a plugin
+- [ ] Interactive TUI for configuration management
