@@ -19,7 +19,7 @@ use inquire::Confirm;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "claude-sync")]
+#[command(name = "claude-code-sync")]
 #[command(about = "Sync Claude Code conversation history with git repositories", long_about = None)]
 #[command(version)]
 struct Cli {
@@ -206,7 +206,7 @@ fn main() -> Result<()> {
     logger::rotate_log_if_needed().ok();  // Ignore errors during log rotation
     logger::init_logger().ok();  // Ignore errors during logger init
 
-    log::info!("claude-sync started");
+    log::info!("claude-code-sync started");
 
     let cli = Cli::parse();
 
@@ -384,7 +384,7 @@ fn handle_undo_push() -> Result<()> {
 
     // Load sync state to get repository path
     let state = sync::SyncState::load()
-        .context("Sync not initialized. Run 'claude-sync init' first.")?;
+        .context("Sync not initialized. Run 'claude-code-sync init' first.")?;
 
     // Check if we're in an interactive terminal
     let is_interactive = interactive_conflict::is_interactive();
@@ -642,7 +642,7 @@ fn handle_history_clear() -> Result<()> {
 // Onboarding & Initialization Helpers
 // ============================================================================
 
-/// Check if claude-sync has been initialized
+/// Check if claude-code-sync has been initialized
 fn is_initialized() -> Result<bool> {
     let state_path = config::ConfigManager::state_file_path()?;
     Ok(state_path.exists())

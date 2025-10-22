@@ -34,7 +34,7 @@ impl std::fmt::Display for CloneLocation {
             CloneLocation::Default => {
                 let default_path = ConfigManager::default_repo_dir()
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "~/.claude-sync/repo/".to_string());
+                    .unwrap_or_else(|_| "~/.claude-code-sync/repo/".to_string());
                 write!(f, "Default ({})", default_path)
             }
             CloneLocation::Custom => write!(f, "Custom path"),
@@ -45,7 +45,7 @@ impl std::fmt::Display for CloneLocation {
 /// Onboarding configuration result
 ///
 /// Contains all configuration settings gathered during the interactive onboarding process.
-/// This configuration determines how claude-sync will manage and sync Claude Code conversations.
+/// This configuration determines how claude-code-sync will manage and sync Claude Code conversations.
 #[derive(Debug)]
 pub struct OnboardingConfig {
     /// Path to the local git repository for storing conversation history.
@@ -96,7 +96,7 @@ pub struct OnboardingConfig {
 
 /// Run the interactive onboarding flow
 pub fn run_onboarding() -> Result<OnboardingConfig> {
-    println!("\n{}", "⚙️  First time setup detected. Let's configure claude-sync!".cyan().bold());
+    println!("\n{}", "⚙️  First time setup detected. Let's configure claude-code-sync!".cyan().bold());
     println!();
 
     // Step 1: Ask for repository type
@@ -135,7 +135,7 @@ pub fn run_onboarding() -> Result<OnboardingConfig> {
                 CloneLocation::Default => ConfigManager::default_repo_dir()?,
                 CloneLocation::Custom => {
                     let custom_path = Text::new("Enter custom clone path:")
-                        .with_placeholder("~/Documents/claude-sync-repo")
+                        .with_placeholder("~/Documents/claude-code-sync-repo")
                         .prompt()
                         .context("Failed to get custom path")?;
 
@@ -148,7 +148,7 @@ pub fn run_onboarding() -> Result<OnboardingConfig> {
         }
         RepoType::Local => {
             let path_str = Text::new("Enter local repository path:")
-                .with_placeholder("~/claude-sync-repo")
+                .with_placeholder("~/claude-code-sync-repo")
                 .with_help_message("Path to a new or existing git repository on your local filesystem")
                 .prompt()
                 .context("Failed to get local path")?;

@@ -14,7 +14,7 @@ fn setup_test_config_env() -> Result<TempDir> {
 fn test_config_manager_paths() -> Result<()> {
     // Test that all config paths can be retrieved
     let config_dir = ConfigManager::config_dir()?;
-    assert!(config_dir.to_string_lossy().contains("claude-sync"));
+    assert!(config_dir.to_string_lossy().contains("claude-code-sync"));
 
     let state_file = ConfigManager::state_file_path()?;
     assert!(state_file.ends_with("state.json"));

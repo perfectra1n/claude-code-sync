@@ -17,21 +17,21 @@ use crate::config::ConfigManager;
 /// - `RUST_LOG=trace` - Everything
 ///
 /// **File logging** always captures all levels and is stored at:
-/// - Linux: ~/.config/claude-sync/claude-sync.log or $XDG_CONFIG_HOME/claude-sync/claude-sync.log
-/// - macOS: ~/Library/Application Support/claude-sync/claude-sync.log
-/// - Windows: %APPDATA%\claude-sync\claude-sync.log
+/// - Linux: ~/.config/claude-code-sync/claude-code-sync.log or $XDG_CONFIG_HOME/claude-code-sync/claude-code-sync.log
+/// - macOS: ~/Library/Application Support/claude-code-sync/claude-code-sync.log
+/// - Windows: %APPDATA%\claude-code-sync\claude-code-sync.log
 ///
 /// ## Examples
 ///
 /// ```bash
 /// # Show all debug messages on console
-/// RUST_LOG=debug claude-sync sync
+/// RUST_LOG=debug claude-code-sync sync
 ///
 /// # Only show errors on console
-/// RUST_LOG=error claude-sync push
+/// RUST_LOG=error claude-code-sync push
 ///
 /// # No console output (file logging continues)
-/// RUST_LOG=off claude-sync pull
+/// RUST_LOG=off claude-code-sync pull
 /// ```
 pub fn init_logger() -> Result<()> {
     // Ensure config directory exists

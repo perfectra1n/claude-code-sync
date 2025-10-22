@@ -124,7 +124,7 @@ impl GitManager {
             .find_tree(tree_oid)
             .context("Failed to find tree")?;
 
-        let signature = Signature::now("claude-sync", "noreply@claude-sync.local")
+        let signature = Signature::now("claude-code-sync", "noreply@claude-code-sync.local")
             .context("Failed to create signature")?;
 
         let parent_commit = match self.repo.head() {

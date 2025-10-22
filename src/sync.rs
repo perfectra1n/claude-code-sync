@@ -77,7 +77,7 @@ impl SyncState {
     /// - The state file contains invalid JSON or cannot be deserialized
     ///
     /// If the sync is not initialized, the error message will instruct the user
-    /// to run `claude-sync init` first.
+    /// to run `claude-code-sync init` first.
     ///
     /// # Examples
     ///
@@ -97,7 +97,7 @@ impl SyncState {
 
         if !state_path.exists() {
             return Err(anyhow!(
-                "Sync not initialized. Run 'claude-sync init' first."
+                "Sync not initialized. Run 'claude-code-sync init' first."
             ));
         }
 
@@ -221,7 +221,7 @@ pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> 
         "{}",
         "Sync repository initialized successfully!".green().bold()
     );
-    println!("\n{} claude-sync push", "Next steps:".cyan().bold());
+    println!("\n{} claude-code-sync push", "Next steps:".cyan().bold());
 
     Ok(())
 }
@@ -850,7 +850,7 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
             }
         }
 
-        println!("\n{} View details with: claude-sync report", "Hint:".cyan());
+        println!("\n{} View details with: claude-code-sync report", "Hint:".cyan());
     } else {
         println!("  {} No conflicts detected", "✓".green());
     }
@@ -1161,7 +1161,7 @@ pub fn show_remote() -> Result<()> {
 
     if remotes.is_empty() {
         println!("{}", "No remotes configured".yellow());
-        println!("\n{} claude-sync remote set origin <url>", "Hint:".cyan());
+        println!("\n{} claude-code-sync remote set origin <url>", "Hint:".cyan());
         return Ok(());
     }
 
@@ -1240,7 +1240,7 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
         state.save()?;
     }
 
-    println!("\n{} claude-sync push", "Next:".cyan());
+    println!("\n{} claude-code-sync push", "Next:".cyan());
 
     Ok(())
 }

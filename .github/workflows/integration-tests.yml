@@ -100,5 +100,5 @@ jobs:
 
       - name: Test binary execution
         run: |
-          ./target/release/claude-sync --version
-          ./target/release/claude-sync --help
+          ./target/release/claude-code-sync --version
+          ./target/release/claude-code-sync --help

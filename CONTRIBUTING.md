@@ -1,6 +1,6 @@
-# Contributing to claude-sync
+# Contributing to claude-code-sync
 
-Thank you for your interest in contributing to claude-sync! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to claude-code-sync! This document provides guidelines and instructions for contributing.
 
 ## Code of Conduct
 
@@ -22,13 +22,13 @@ Thank you for your interest in contributing to claude-sync! This document provid
 1. Fork the repository on GitHub
 2. Clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/claude-sync.git
-   cd claude-sync
+   git clone https://github.com/YOUR_USERNAME/claude-code-sync.git
+   cd claude-code-sync
    ```
 
 3. Add the upstream repository:
    ```bash
-   git remote add upstream https://github.com/ORIGINAL_OWNER/claude-sync.git
+   git remote add upstream https://github.com/ORIGINAL_OWNER/claude-code-sync.git
    ```
 
 4. Install dependencies and build:
@@ -320,8 +320,8 @@ Include:
 A clear description of the bug
 
 **To Reproduce**
-1. Run `claude-sync init ...`
-2. Execute `claude-sync push`
+1. Run `claude-code-sync init ...`
+2. Execute `claude-code-sync push`
 3. See error
 
 **Expected behavior**
@@ -333,7 +333,7 @@ What actually happens
 **Environment**
 - OS: Ubuntu 22.04
 - Rust: 1.75.0
-- claude-sync: 0.1.0
+- claude-code-sync: 0.1.0
 
 **Logs**
 ```
@@ -368,4 +368,4 @@ Contributors will be:
 
 ---
 
-Thank you for contributing to claude-sync! 🎉
+Thank you for contributing to claude-code-sync! 🎉

@@ -1,10 +1,10 @@
-//! # claude-sync
+//! # claude-code-sync
 //!
 //! A command-line tool for synchronizing Claude Code conversation history with Git repositories.
 //!
 //! ## Overview
 //!
-//! `claude-sync` enables you to back up, version control, and share your Claude Code conversation
+//! `claude-code-sync` enables you to back up, version control, and share your Claude Code conversation
 //! history across multiple machines. It works by syncing conversation files (stored as JSONL) from
 //! your local Claude Code projects directory (`~/.claude/projects/`) to a Git repository, which
 //! can be pushed to a remote server for backup or collaboration.
@@ -30,7 +30,7 @@
 //! - User interface and reporting ([`onboarding`], [`report`], [`logger`])
 //! - Core synchronization logic ([`sync`])
 
-/// Platform-agnostic configuration directory management for claude-sync.
+/// Platform-agnostic configuration directory management for claude-code-sync.
 ///
 /// Provides utilities for locating and managing configuration files and directories
 /// following platform conventions (XDG on Linux, Application Support on macOS,

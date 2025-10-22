@@ -27,7 +27,7 @@ Thumbs.db
 /coverage/
 
 # Claude sync test data
-.claude-sync-test/
+.claude-code-sync-test/
 test-backup/
 
 # Build artifacts

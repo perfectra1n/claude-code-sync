@@ -1,6 +1,6 @@
-# claude-sync Examples
+# claude-code-sync Examples
 
-This document provides practical examples of using `claude-sync` in various scenarios.
+This document provides practical examples of using `claude-code-sync` in various scenarios.
 
 ## Basic Setup and First Sync
 
@@ -8,7 +8,7 @@ This document provides practical examples of using `claude-sync` in various scen
 
 ```bash
 # Create a local backup repository
-claude-sync init --repo ~/claude-backup
+claude-code-sync init --repo ~/claude-backup
 ```
 
 Output:
@@ -17,14 +17,14 @@ Initializing Claude Code sync repository...
   Creating new repository at /home/user/claude-backup
 Sync repository initialized successfully!
 
-Next steps: claude-sync push
+Next steps: claude-code-sync push
 ```
 
 ### Step 2: Push Your History
 
 ```bash
 # Push all conversation history
-claude-sync push
+claude-code-sync push
 ```
 
 Output:
@@ -46,24 +46,24 @@ Push complete!
 
 ```bash
 # 1. Initialize with GitHub remote
-claude-sync init \
+claude-code-sync init \
   --repo ~/claude-backup \
   --remote git@github.com:yourname/claude-history-private.git
 
 # 2. Push your work conversations
-claude-sync push
+claude-code-sync push
 ```
 
 **On Home Computer:**
 
 ```bash
 # 1. Clone the same repository
-claude-sync init \
+claude-code-sync init \
   --repo ~/claude-backup \
   --remote git@github.com:yourname/claude-history-private.git
 
 # 2. Pull conversations from work
-claude-sync pull
+claude-code-sync pull
 ```
 
 Output:
@@ -86,7 +86,7 @@ Pull complete!
 
 ```bash
 # Pull changes made at home
-claude-sync pull
+claude-code-sync pull
 ```
 
 ## Handling Conflicts
@@ -97,7 +97,7 @@ claude-sync pull
 
 ```bash
 # On Machine B, pull from Machine A
-claude-sync pull
+claude-code-sync pull
 ```
 
 Output:
@@ -115,13 +115,13 @@ Pulling Claude Code history...
 Conflict Resolution:
   → remote version saved as: -root-repos-my-project/abc-123-conflict-20250117-143022.jsonl
 
-Hint: View details with: claude-sync report
+Hint: View details with: claude-code-sync report
 ```
 
 **View conflict details:**
 
 ```bash
-claude-sync report
+claude-code-sync report
 ```
 
 Output:
@@ -150,7 +150,7 @@ Conflicts:
 
 ```bash
 # Only sync conversations from the last 30 days
-claude-sync config --exclude-older-than 30
+claude-code-sync config --exclude-older-than 30
 ```
 
 Output:
@@ -163,7 +163,7 @@ Configuration saved successfully!
 
 ```bash
 # Only sync specific projects
-claude-sync config --include-projects "*important*,*work*"
+claude-code-sync config --include-projects "*important*,*work*"
 ```
 
 Output:
@@ -176,7 +176,7 @@ Configuration saved successfully!
 
 ```bash
 # Exclude temporary or test projects
-claude-sync config --exclude-projects "*test*,*temp*,*playground*"
+claude-code-sync config --exclude-projects "*test*,*temp*,*playground*"
 ```
 
 Output:
@@ -188,7 +188,7 @@ Configuration saved successfully!
 ### View Current Configuration
 
 ```bash
-claude-sync config --show
+claude-code-sync config --show
 ```
 
 Output:
@@ -205,7 +205,7 @@ Current Filter Configuration:
 ### Check Sync Status
 
 ```bash
-claude-sync status
+claude-code-sync status
 ```
 
 Output:
@@ -226,7 +226,7 @@ Sessions:
 ### Detailed Status with Files
 
 ```bash
-claude-sync status --show-files
+claude-code-sync status --show-files
 ```
 
 Output:
@@ -253,7 +253,7 @@ Local session files:
 ### Check for Conflicts
 
 ```bash
-claude-sync status --show-conflicts
+claude-code-sync status --show-conflicts
 ```
 
 ## Generating Reports
@@ -261,7 +261,7 @@ claude-sync status --show-conflicts
 ### Markdown Report
 
 ```bash
-claude-sync report --format markdown
+claude-code-sync report --format markdown
 ```
 
 Output:
@@ -287,7 +287,7 @@ Output:
 ### JSON Report to File
 
 ```bash
-claude-sync report --format json --output conflicts.json
+claude-code-sync report --format json --output conflicts.json
 ```
 
 Output:
@@ -306,11 +306,11 @@ Create `~/bin/claude-backup.sh`:
 # Daily Claude Code backup script
 
 DATE=$(date +%Y-%m-%d)
-LOG_FILE=~/claude-sync-backup.log
+LOG_FILE=~/claude-code-sync-backup.log
 
 echo "[$DATE] Starting Claude Code backup..." >> "$LOG_FILE"
 
-if /usr/local/bin/claude-sync push --message "Automated backup $DATE" >> "$LOG_FILE" 2>&1; then
+if /usr/local/bin/claude-code-sync push --message "Automated backup $DATE" >> "$LOG_FILE" 2>&1; then
     echo "[$DATE] Backup completed successfully" >> "$LOG_FILE"
 else
     echo "[$DATE] Backup failed!" >> "$LOG_FILE"
@@ -328,7 +328,7 @@ Add to crontab:
 
 Create a systemd service to backup before shutdown (Linux):
 
-`/etc/systemd/system/claude-sync-shutdown.service`:
+`/etc/systemd/system/claude-code-sync-shutdown.service`:
 
 ```ini
 [Unit]
@@ -338,7 +338,7 @@ Before=shutdown.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/claude-sync push --message "Shutdown backup"
+ExecStart=/usr/local/bin/claude-code-sync push --message "Shutdown backup"
 TimeoutStartSec=30
 
 [Install]
@@ -347,7 +347,7 @@ WantedBy=shutdown.target
 
 Enable:
 ```bash
-sudo systemctl enable claude-sync-shutdown.service
+sudo systemctl enable claude-code-sync-shutdown.service
 ```
 
 ## Troubleshooting Examples
@@ -355,19 +355,19 @@ sudo systemctl enable claude-sync-shutdown.service
 ### Example: Sync Not Initialized
 
 ```bash
-$ claude-sync push
-Error: Sync not initialized. Run 'claude-sync init' first.
+$ claude-code-sync push
+Error: Sync not initialized. Run 'claude-code-sync init' first.
 ```
 
 **Solution:**
 ```bash
-claude-sync init --repo ~/claude-backup
+claude-code-sync init --repo ~/claude-backup
 ```
 
 ### Example: Git Authentication Issues
 
 ```bash
-$ claude-sync push
+$ claude-code-sync push
 Pushing Claude Code history...
   ...
   Pushing to remote...
@@ -390,8 +390,8 @@ If you have very large conversation files:
 
 ```bash
 # Set a size limit (5MB)
-claude-sync config
-# Edit ~/.claude-sync.toml manually:
+claude-code-sync config
+# Edit ~/.claude-code-sync.toml manually:
 # max_file_size_bytes = 5242880
 ```
 
@@ -402,26 +402,26 @@ claude-sync config
 Set up automated daily backups:
 ```bash
 # Add to crontab
-0 23 * * * /usr/local/bin/claude-sync push --message "Daily backup $(date +\%Y-\%m-\%d)"
+0 23 * * * /usr/local/bin/claude-code-sync push --message "Daily backup $(date +\%Y-\%m-\%d)"
 ```
 
 ### 2. Before Major System Changes
 
 ```bash
 # Before OS upgrade
-claude-sync push --message "Pre-upgrade backup $(date)"
+claude-code-sync push --message "Pre-upgrade backup $(date)"
 ```
 
 ### 3. Starting Work on Different Machine
 
 ```bash
 # Always pull first
-claude-sync pull
+claude-code-sync pull
 
 # Work...
 
 # Push when done
-claude-sync push
+claude-code-sync push
 ```
 
 ### 4. Handling Frequent Conflicts

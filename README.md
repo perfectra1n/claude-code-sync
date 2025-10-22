@@ -1,8 +1,8 @@
-# claude-sync
+# claude-code-sync
 
-[![Unit Tests](https://github.com/perfectra1n/claude-sync/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-sync/actions/workflows/unit-tests.yml)
-[![Integration Tests](https://github.com/perfectra1n/claude-sync/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-sync/actions/workflows/integration-tests.yml)
-[![Build](https://github.com/perfectra1n/claude-sync/actions/workflows/build.yml/badge.svg)](https://github.com/perfectra1n/claude-sync/actions/workflows/build.yml)
+[![Unit Tests](https://github.com/perfectra1n/claude-code-sync/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/unit-tests.yml)
+[![Integration Tests](https://github.com/perfectra1n/claude-code-sync/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/integration-tests.yml)
+[![Build](https://github.com/perfectra1n/claude-code-sync/actions/workflows/build.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/build.yml)
 
 A Rust CLI tool for syncing Claude Code conversation history across machines using git repositories.
 
@@ -10,7 +10,7 @@ A Rust CLI tool for syncing Claude Code conversation history across machines usi
 
 | Feature | Description |
 |---------|-------------|
-| **Smart Merge** ✨ **NEW** | Automatically combines non-conflicting conversation changes |
+| **Smart Merge** | Automatically combines non-conflicting conversation changes |
 | **Bidirectional Sync** | Pull and push changes in one command with `sync` |
 | **Interactive Onboarding** | First-time setup wizard guides you through configuration |
 | **Smart Conflict Resolution** | Interactive TUI for resolving conflicts with preview |
@@ -24,7 +24,7 @@ A Rust CLI tool for syncing Claude Code conversation history across machines usi
 
 ## Overview
 
-`claude-sync` helps you backup and synchronize your Claude Code conversation history by pushing it to a git repository. This enables:
+`claude-code-sync` helps you backup and synchronize your Claude Code conversation history by pushing it to a git repository. This enables:
 
 - **Backup**: Never lose your Claude Code conversations
 - **Multi-machine sync**: Keep conversation history consistent across multiple computers
@@ -35,7 +35,7 @@ A Rust CLI tool for syncing Claude Code conversation history across machines usi
 
 Claude Code stores conversation history locally in `~/.claude/projects/` as JSONL (JSON Lines) files. Each project has its own directory, and each conversation is a separate `.jsonl` file.
 
-`claude-sync`:
+`claude-code-sync`:
 1. Discovers all conversation files in your local Claude Code history
 2. Copies them to a git repository
 3. Commits and optionally pushes to a remote
@@ -49,9 +49,9 @@ Claude Code stores conversation history locally in `~/.claude/projects/` as JSON
 
 ```bash
 git clone <repository-url>
-cd claude-sync
+cd claude-code-sync
 cargo build --release
-sudo cp target/release/claude-sync /usr/local/bin/
+sudo cp target/release/claude-code-sync /usr/local/bin/
 ```
 
 ### Using Cargo
@@ -64,14 +64,14 @@ cargo install --path .
 
 ### First-Time Setup (Interactive Onboarding)
 
-When you run `claude-sync` for the first time, an interactive onboarding wizard will guide you through setup:
+When you run `claude-code-sync` for the first time, an interactive onboarding wizard will guide you through setup:
 
 ```bash
 # Simply run any command - onboarding starts automatically
-claude-sync sync
+claude-code-sync sync
 
 # Or explicitly run onboarding
-claude-sync init
+claude-code-sync init
 ```
 
 The onboarding wizard will ask you:
@@ -94,37 +94,37 @@ If you prefer to skip onboarding, you can initialize manually:
 
 ```bash
 # Create a local sync repository
-claude-sync init --repo ~/claude-history-backup
+claude-code-sync init --repo ~/claude-history-backup
 
 # Or with a remote git repository
-claude-sync init --repo ~/claude-history-backup --remote git@github.com:username/claude-history.git
+claude-code-sync init --repo ~/claude-history-backup --remote git@github.com:username/claude-history.git
 ```
 
 ### 2. Sync Your History
 
 ```bash
 # Bidirectional sync (pull then push) - RECOMMENDED
-claude-sync sync
+claude-code-sync sync
 
 # Or manually:
 # Push all conversation history
-claude-sync push
+claude-code-sync push
 
 # Pull from remote
-claude-sync pull
+claude-code-sync pull
 ```
 
 ### 3. Advanced Usage
 
 ```bash
 # Exclude attachments (images, PDFs, etc.) - only sync .jsonl files
-claude-sync push --exclude-attachments
+claude-code-sync push --exclude-attachments
 
 # Push to specific branch
-claude-sync push --branch main
+claude-code-sync push --branch main
 
 # Sync with custom message and exclude attachments
-claude-sync sync --message "Daily backup" --exclude-attachments
+claude-code-sync sync --message "Daily backup" --exclude-attachments
 ```
 
 ## Commands
@@ -134,7 +134,7 @@ claude-sync sync --message "Daily backup" --exclude-attachments
 Initialize a new sync repository.
 
 ```bash
-claude-sync init --repo <path> [--remote <url>]
+claude-code-sync init --repo <path> [--remote <url>]
 ```
 
 **Options:**
@@ -143,7 +143,7 @@ claude-sync init --repo <path> [--remote <url>]
 
 **Example:**
 ```bash
-claude-sync init --repo ~/claude-backup --remote git@github.com:user/claude-history.git
+claude-code-sync init --repo ~/claude-backup --remote git@github.com:user/claude-history.git
 ```
 
 ### `sync`
@@ -151,7 +151,7 @@ claude-sync init --repo ~/claude-backup --remote git@github.com:user/claude-hist
 **NEW!** Bidirectional sync (pull remote changes, then push local changes).
 
 ```bash
-claude-sync sync [OPTIONS]
+claude-code-sync sync [OPTIONS]
 ```
 
 **Options:**
@@ -161,7 +161,7 @@ claude-sync sync [OPTIONS]
 
 **Example:**
 ```bash
-claude-sync sync -m "Daily sync" --exclude-attachments
+claude-code-sync sync -m "Daily sync" --exclude-attachments
 ```
 
 ### `push`
@@ -169,7 +169,7 @@ claude-sync sync -m "Daily sync" --exclude-attachments
 Push local Claude Code history to the sync repository.
 
 ```bash
-claude-sync push [OPTIONS]
+claude-code-sync push [OPTIONS]
 ```
 
 **Options:**
@@ -181,10 +181,10 @@ claude-sync push [OPTIONS]
 **Examples:**
 ```bash
 # Basic push
-claude-sync push -m "Weekly backup"
+claude-code-sync push -m "Weekly backup"
 
 # Push to specific branch, excluding attachments
-claude-sync push --branch backup --exclude-attachments
+claude-code-sync push --branch backup --exclude-attachments
 ```
 
 ### `pull`
@@ -192,7 +192,7 @@ claude-sync push --branch backup --exclude-attachments
 Pull and merge history from the sync repository.
 
 ```bash
-claude-sync pull [OPTIONS]
+claude-code-sync pull [OPTIONS]
 ```
 
 **Options:**
@@ -201,7 +201,7 @@ claude-sync pull [OPTIONS]
 
 **Example:**
 ```bash
-claude-sync pull --branch main
+claude-code-sync pull --branch main
 ```
 
 ### `status`
@@ -209,7 +209,7 @@ claude-sync pull --branch main
 Show sync status and information.
 
 ```bash
-claude-sync status [--show-conflicts] [--show-files]
+claude-code-sync status [--show-conflicts] [--show-files]
 ```
 
 **Options:**
@@ -218,7 +218,7 @@ claude-sync status [--show-conflicts] [--show-files]
 
 **Example:**
 ```bash
-claude-sync status --show-conflicts --show-files
+claude-code-sync status --show-conflicts --show-files
 ```
 
 ### `config`
@@ -226,7 +226,7 @@ claude-sync status --show-conflicts --show-files
 Configure sync filters and settings.
 
 ```bash
-claude-sync config [OPTIONS] [--show]
+claude-code-sync config [OPTIONS] [--show]
 ```
 
 **Options:**
@@ -239,19 +239,19 @@ claude-sync config [OPTIONS] [--show]
 **Examples:**
 ```bash
 # Exclude conversations older than 30 days
-claude-sync config --exclude-older-than 30
+claude-code-sync config --exclude-older-than 30
 
 # Include only specific projects
-claude-sync config --include-projects "*my-project*,*important-work*"
+claude-code-sync config --include-projects "*my-project*,*important-work*"
 
 # Exclude test projects
-claude-sync config --exclude-projects "*test*,*temp*"
+claude-code-sync config --exclude-projects "*test*,*temp*"
 
 # Permanently exclude attachments from all syncs
-claude-sync config --exclude-attachments true
+claude-code-sync config --exclude-attachments true
 
 # Show current config
-claude-sync config --show
+claude-code-sync config --show
 ```
 
 ### `report`
@@ -259,7 +259,7 @@ claude-sync config --show
 View conflict reports from previous syncs.
 
 ```bash
-claude-sync report [--format <FORMAT>] [--output <FILE>]
+claude-code-sync report [--format <FORMAT>] [--output <FILE>]
 ```
 
 **Options:**
@@ -269,13 +269,13 @@ claude-sync report [--format <FORMAT>] [--output <FILE>]
 **Examples:**
 ```bash
 # Print markdown report to console
-claude-sync report
+claude-code-sync report
 
 # Save JSON report to file
-claude-sync report --format json --output conflicts.json
+claude-code-sync report --format json --output conflicts.json
 
 # View as markdown
-claude-sync report --format markdown | less
+claude-code-sync report --format markdown | less
 ```
 
 ### `remote`
@@ -283,7 +283,7 @@ claude-sync report --format markdown | less
 **NEW!** Manage git remote configuration.
 
 ```bash
-claude-sync remote <COMMAND>
+claude-code-sync remote <COMMAND>
 ```
 
 **Commands:**
@@ -301,16 +301,16 @@ claude-sync remote <COMMAND>
 **Examples:**
 ```bash
 # Show current remote and sync directory
-claude-sync remote show
+claude-code-sync remote show
 
 # Set/update remote URL (HTTPS)
-claude-sync remote set origin https://github.com/user/claude-history.git
+claude-code-sync remote set origin https://github.com/user/claude-history.git
 
 # Set/update remote URL (SSH)
-claude-sync remote set origin git@github.com:user/claude-history.git
+claude-code-sync remote set origin git@github.com:user/claude-history.git
 
 # Remove remote
-claude-sync remote remove origin
+claude-code-sync remote remove origin
 ```
 
 **Note:** The remote URL must start with `http://`, `https://`, or `git@` for SSH connections.
@@ -320,7 +320,7 @@ claude-sync remote remove origin
 **NEW in v0.2.0!** Undo the last sync operation by restoring from automatic snapshots.
 
 ```bash
-claude-sync undo <OPERATION>
+claude-code-sync undo <OPERATION>
 ```
 
 **Operations:**
@@ -330,15 +330,15 @@ claude-sync undo <OPERATION>
 **Examples:**
 ```bash
 # Undo the last pull operation
-claude-sync undo pull
+claude-code-sync undo pull
 
 # Undo the last push operation
-claude-sync undo push
+claude-code-sync undo push
 ```
 
 **How it works:**
 - Every pull/push operation automatically creates a snapshot before making changes
-- Snapshots are stored in `~/.claude-sync/snapshots/`
+- Snapshots are stored in `~/.claude-code-sync/snapshots/`
 - Undo operations restore files/git state from the snapshot
 - After successful undo, the snapshot is automatically deleted
 - Operation history is updated to reflect the undo
@@ -350,7 +350,7 @@ claude-sync undo push
 **NEW in v0.2.0!** View and manage operation history.
 
 ```bash
-claude-sync history <COMMAND>
+claude-code-sync history <COMMAND>
 ```
 
 **Commands:**
@@ -367,22 +367,22 @@ claude-sync history <COMMAND>
 **Examples:**
 ```bash
 # List the last 10 operations
-claude-sync history list
+claude-code-sync history list
 
 # List the last 20 operations
-claude-sync history list --limit 20
+claude-code-sync history list --limit 20
 
 # Show details of the last operation (pull or push)
-claude-sync history last
+claude-code-sync history last
 
 # Show details of the last pull operation only
-claude-sync history last -t pull
+claude-code-sync history last -t pull
 
 # Show details of the last push operation only
-claude-sync history last -t push
+claude-code-sync history last -t push
 
 # Clear all operation history
-claude-sync history clear
+claude-code-sync history clear
 ```
 
 **History Information:**
@@ -395,17 +395,17 @@ Each history entry shows:
 - Snapshot availability for undo
 
 **History Storage:**
-- Operation history is stored in `~/.claude-sync/operation-history.json`
+- Operation history is stored in `~/.claude-code-sync/operation-history.json`
 - Up to 5 operations are kept (automatically rotated)
 - Each operation includes details about affected conversations
 
 ## Conflict Resolution
 
-When the same conversation session is modified on different machines, `claude-sync` detects this as a conflict.
+When the same conversation session is modified on different machines, `claude-code-sync` detects this as a conflict.
 
 ### Smart Merge (NEW!)
 
-**Smart merge is now the default conflict resolution strategy!** When conflicts are detected, `claude-sync` automatically attempts to intelligently merge both versions by:
+**Smart merge is now the default conflict resolution strategy!** When conflicts are detected, `claude-code-sync` automatically attempts to intelligently merge both versions by:
 
 - **Analyzing message UUIDs and parent relationships**: Builds a message tree to understand conversation structure
 - **Resolving edited messages by timestamp**: If the same message was edited on both machines, keeps the newer version
@@ -423,14 +423,14 @@ If smart merge fails (e.g., due to corrupted data), the system falls back to int
 
 ### Interactive Conflict Resolution (New!)
 
-When running in an interactive terminal, `claude-sync` now provides a **TUI (Text User Interface)** for resolving conflicts:
+When running in an interactive terminal, `claude-code-sync` now provides a **TUI (Text User Interface)** for resolving conflicts:
 
 ```bash
 # Pull with interactive conflict resolution
-claude-sync pull
+claude-code-sync pull
 
 # Or sync (pull + push)
-claude-sync sync
+claude-code-sync sync
 ```
 
 **Interactive Features:**
@@ -503,7 +503,7 @@ You can then manually review both versions and decide which to keep.
 
 ## Configuration File
 
-Configuration is stored in `~/.claude-sync.toml`:
+Configuration is stored in `~/.claude-code-sync.toml`:
 
 ```toml
 # Exclude projects older than N days
@@ -521,7 +521,7 @@ max_file_size_bytes = 10485760
 
 ## Sync State
 
-Sync state is stored in `~/.claude-sync/`:
+Sync state is stored in `~/.claude-code-sync/`:
 - `state.json`: Current sync repository configuration
 - `operation-history.json`: History of sync operations (up to 5 entries)
 - `snapshots/`: Directory containing snapshots for undo operations
@@ -533,28 +533,28 @@ Sync state is stored in `~/.claude-sync/`:
 
 ```bash
 # At the end of each day
-claude-sync push -m "Daily backup $(date +%Y-%m-%d)"
+claude-code-sync push -m "Daily backup $(date +%Y-%m-%d)"
 ```
 
 ### Multi-Machine Development
 
 **On Machine A:**
 ```bash
-claude-sync init --repo ~/claude-backup --remote git@github.com:user/claude-history.git
-claude-sync push
+claude-code-sync init --repo ~/claude-backup --remote git@github.com:user/claude-history.git
+claude-code-sync push
 ```
 
 **On Machine B:**
 ```bash
-claude-sync init --repo ~/claude-backup --remote git@github.com:user/claude-history.git
-claude-sync pull
+claude-code-sync init --repo ~/claude-backup --remote git@github.com:user/claude-history.git
+claude-code-sync pull
 # Work on Machine B
-claude-sync push
+claude-code-sync push
 ```
 
 **Back on Machine A:**
 ```bash
-claude-sync pull  # Merges Machine B's changes
+claude-code-sync pull  # Merges Machine B's changes
 ```
 
 ### Automated Backup (Cron)
@@ -563,7 +563,7 @@ Add to your crontab:
 
 ```bash
 # Backup Claude Code history every night at 2 AM
-0 2 * * * /usr/local/bin/claude-sync push --message "Automated backup" >> ~/claude-sync.log 2>&1
+0 2 * * * /usr/local/bin/claude-code-sync push --message "Automated backup" >> ~/claude-code-sync.log 2>&1
 ```
 
 ## Architecture
@@ -623,7 +623,7 @@ Each line is a separate JSON object representing a conversation event.
 
 ## Logging
 
-`claude-sync` provides comprehensive logging to help you track operations and troubleshoot issues.
+`claude-code-sync` provides comprehensive logging to help you track operations and troubleshoot issues.
 
 ### Console Logging
 
@@ -631,19 +631,19 @@ Control console output with the `RUST_LOG` environment variable:
 
 ```bash
 # Show all debug messages
-RUST_LOG=debug claude-sync sync
+RUST_LOG=debug claude-code-sync sync
 
 # Only show errors
-RUST_LOG=error claude-sync push
+RUST_LOG=error claude-code-sync push
 
 # Only show warnings and errors
-RUST_LOG=warn claude-sync pull
+RUST_LOG=warn claude-code-sync pull
 
 # Show info, warnings, and errors (default)
-claude-sync sync
+claude-code-sync sync
 
 # Disable console output (file logging continues)
-RUST_LOG=off claude-sync status
+RUST_LOG=off claude-code-sync status
 ```
 
 **Log Levels:**
@@ -659,9 +659,9 @@ RUST_LOG=off claude-sync status
 All operations are automatically logged to a file, regardless of console settings:
 
 **Log File Locations:**
-- **Linux**: `~/.config/claude-sync/claude-sync.log` or `$XDG_CONFIG_HOME/claude-sync/claude-sync.log`
-- **macOS**: `~/Library/Application Support/claude-sync/claude-sync.log`
-- **Windows**: `%APPDATA%\claude-sync\claude-sync.log`
+- **Linux**: `~/.config/claude-code-sync/claude-code-sync.log` or `$XDG_CONFIG_HOME/claude-code-sync/claude-code-sync.log`
+- **macOS**: `~/Library/Application Support/claude-code-sync/claude-code-sync.log`
+- **Windows**: `%APPDATA%\claude-code-sync\claude-code-sync.log`
 
 **File Logging Features:**
 - ✅ Captures all log levels (trace to error)
@@ -672,17 +672,17 @@ All operations are automatically logged to a file, regardless of console setting
 **Example:**
 ```bash
 # Run sync silently, check logs later
-RUST_LOG=off claude-sync sync
+RUST_LOG=off claude-code-sync sync
 
 # View the log file
-cat ~/.config/claude-sync/claude-sync.log
+cat ~/.config/claude-code-sync/claude-code-sync.log
 ```
 
 ## Troubleshooting
 
 ### "Sync not initialized"
 
-Run `claude-sync init` first to set up the sync repository, or let the interactive onboarding guide you.
+Run `claude-code-sync init` first to set up the sync repository, or let the interactive onboarding guide you.
 
 ### "Failed to push to remote"
 

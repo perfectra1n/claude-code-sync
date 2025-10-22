@@ -1,10 +1,10 @@
 # Git Authentication Setup Guide
 
-This guide explains how to set up git authentication for `claude-sync` to work with remote repositories.
+This guide explains how to set up git authentication for `claude-code-sync` to work with remote repositories.
 
 ## Overview
 
-`claude-sync` uses git's built-in credential system, which means it works with whatever git authentication you already have configured on your system.
+`claude-code-sync` uses git's built-in credential system, which means it works with whatever git authentication you already have configured on your system.
 
 ---
 
@@ -27,7 +27,7 @@ git push origin main
 
 **What this does:**
 - Saves credentials to `~/.git-credentials` (plain text - see security note below)
-- Automatically used by `claude-sync` for all operations
+- Automatically used by `claude-code-sync` for all operations
 - No additional setup needed
 
 ### Option 2: Git Credential Cache (More Secure)
@@ -68,9 +68,9 @@ git config --global credential.helper 'cache --timeout=28800'
    # Password: paste-your-token-here
    ```
 
-3. **Now claude-sync will work automatically**
+3. **Now claude-code-sync will work automatically**
    ```bash
-   claude-sync push
+   claude-code-sync push
    ```
 
 ### Troubleshooting HTTPS
@@ -147,7 +147,7 @@ SSH is more secure and doesn't require entering credentials.
 
 5. **Use SSH URL when initializing**
    ```bash
-   claude-sync init \
+   claude-code-sync init \
      --repo ~/claude-backup \
      --remote git@github.com:username/claude-history.git
    ```
@@ -245,14 +245,14 @@ git config --global credential.helper store
 After setup, verify everything works:
 
 ```bash
-# 1. Initialize claude-sync
-claude-sync init --repo ~/claude-backup --remote YOUR_REPO_URL
+# 1. Initialize claude-code-sync
+claude-code-sync init --repo ~/claude-backup --remote YOUR_REPO_URL
 
 # 2. Push (should not prompt for credentials)
-claude-sync push
+claude-code-sync push
 
 # 3. Check status
-claude-sync status
+claude-code-sync status
 
 # 4. If successful, you'll see:
 # ✓ Pushed to origin/main
@@ -274,7 +274,7 @@ cd ~/claude-backup
 git push origin main
 
 # Enter credentials when prompted
-# Then claude-sync will work
+# Then claude-code-sync will work
 ```
 
 ### "Failed to push: could not read Username"
@@ -285,7 +285,7 @@ git push origin main
 git config --global credential.helper store
 
 # For SSH: Use SSH URL instead
-claude-sync init --repo ~/backup --remote git@github.com:user/repo.git
+claude-code-sync init --repo ~/backup --remote git@github.com:user/repo.git
 ```
 
 ### "Failed to push: network error"
@@ -311,8 +311,8 @@ git remote -v
 - Or push to a different branch:
   ```bash
   cd ~/claude-backup
-  git checkout -b claude-sync-backup
-  git push origin claude-sync-backup
+  git checkout -b claude-code-sync-backup
+  git push origin claude-code-sync-backup
   ```
 
 ---
@@ -331,13 +331,13 @@ cat ~/.ssh/id_ed25519.pub  # Copy to GitHub/GitLab
 ssh -T git@github.com  # Test
 
 # Initialize with remote
-claude-sync init --repo ~/backup --remote git@github.com:user/repo.git
+claude-code-sync init --repo ~/backup --remote git@github.com:user/repo.git
 
 # Push
-claude-sync push
+claude-code-sync push
 
 # Check if it worked
-claude-sync status
+claude-code-sync status
 ```
 
 ---
@@ -359,10 +359,10 @@ If you're still having issues:
 
 3. **Enable debug output:**
    ```bash
-   GIT_TRACE=1 GIT_CURL_VERBOSE=1 claude-sync push
+   GIT_TRACE=1 GIT_CURL_VERBOSE=1 claude-code-sync push
    ```
 
-4. **Check the full error message** - `claude-sync` now provides detailed error messages with suggestions
+4. **Check the full error message** - `claude-code-sync` now provides detailed error messages with suggestions
 
 ---
 

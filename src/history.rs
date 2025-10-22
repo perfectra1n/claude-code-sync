@@ -125,7 +125,7 @@ pub struct OperationRecord {
     /// - Complete state of all conversation files before the operation
     /// - Metadata about the sync operation for context
     /// - Timestamp and operation type for verification
-    /// This will enable a future `claude-sync undo` command to restore
+    /// This will enable a future `claude-code-sync undo` command to restore
     /// the previous state if a sync operation needs to be reversed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot_path: Option<PathBuf>,
@@ -150,7 +150,7 @@ impl OperationRecord {
     /// Get a summary string for this operation
     ///
     /// This method will be used in future CLI commands to display
-    /// operation history to users (e.g., `claude-sync history`).
+    /// operation history to users (e.g., `claude-code-sync history`).
     pub fn summary(&self) -> String {
         format!(
             "{} operation on {} at {} ({} conversations affected)",
@@ -305,7 +305,7 @@ impl OperationHistory {
 
     /// Get all operation records
     ///
-    /// This will be used by the `claude-sync history` command to display
+    /// This will be used by the `claude-code-sync history` command to display
     /// the full history of sync operations to the user.
     pub fn list_operations(&self) -> &[OperationRecord] {
         &self.operations
@@ -313,7 +313,7 @@ impl OperationHistory {
 
     /// Clear all operation history
     ///
-    /// This will be used by a future `claude-sync history clear` command
+    /// This will be used by a future `claude-code-sync history clear` command
     /// to allow users to reset their operation history.
     pub fn clear(&mut self) -> Result<()> {
         self.operations.clear();

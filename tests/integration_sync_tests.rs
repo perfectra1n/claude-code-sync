@@ -177,7 +177,7 @@ fn test_full_push_pull_cycle() {
     git_manager.commit("Test push").unwrap();
 
     // Create operation history for the push
-    let history_path = config_dir.path().join(".claude-sync").join("operation-history.json");
+    let history_path = config_dir.path().join(".claude-code-sync").join("operation-history.json");
     let history = OperationHistory::from_path(Some(history_path.clone())).unwrap();
 
     let mut conversations = Vec::new();
