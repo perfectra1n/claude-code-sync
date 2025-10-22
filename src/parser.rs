@@ -8,34 +8,80 @@ use std::path::Path;
 /// Represents a single line/entry in the JSONL conversation file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationEntry {
+    /// The type of this entry (e.g., "user", "assistant", "file-history-snapshot")
+    ///
+    /// This field identifies what kind of entry this is in the conversation.
+    /// Common types include user messages, assistant responses, and system events.
     #[serde(rename = "type")]
     pub entry_type: String,
 
+    /// Unique identifier for this conversation entry
+    ///
+    /// Each entry may have its own UUID to uniquely identify it within the conversation.
+    /// Not all entry types require a UUID, hence this is optional.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
 
+    /// UUID of the parent entry in the conversation thread
+    ///
+    /// This links entries together in a conversation tree, allowing for branching
+    /// and threading of messages. If present, it references the UUID of the entry
+    /// that this entry is responding to or following from.
     #[serde(rename = "parentUuid", skip_serializing_if = "Option::is_none")]
     pub parent_uuid: Option<String>,
 
+    /// Session identifier grouping related conversation entries together
+    ///
+    /// All entries within a single conversation session share the same session ID.
+    /// This is used to associate entries across multiple files or to reconstruct
+    /// conversation context. If not present in the entry, the filename may be used.
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 
+    /// ISO 8601 timestamp indicating when this entry was created
+    ///
+    /// Format is typically "YYYY-MM-DDTHH:MM:SS.sssZ" (e.g., "2025-01-01T00:00:00.000Z").
+    /// Used for sorting entries chronologically and determining the latest activity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
 
+    /// The actual message content as a JSON value
+    ///
+    /// Contains the text and structured data of the user or assistant message.
+    /// Stored as a generic JSON value to accommodate different message formats
+    /// and structures without strict schema requirements.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<Value>,
 
+    /// Current working directory at the time this entry was created
+    ///
+    /// Stores the filesystem path of the working directory, providing context
+    /// about where the conversation or command was executed. Useful for
+    /// reproducing environments and understanding file references.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 
+    /// Version string of the Claude Code CLI that created this entry
+    ///
+    /// Records which version of the tool generated this conversation entry,
+    /// helpful for debugging compatibility issues and tracking feature support.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 
+    /// Git branch name active when this entry was created
+    ///
+    /// Captures the current git branch context, allowing conversation entries
+    /// to be associated with specific branches in version control. Useful for
+    /// tracking which branch work was performed on.
     #[serde(rename = "gitBranch", skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
 
-    // Catch-all for other fields we don't explicitly parse
+    /// Catch-all field for additional JSON properties not explicitly defined
+    ///
+    /// Preserves any extra fields in the JSON that aren't part of the explicit schema.
+    /// This allows forward compatibility - newer versions can add fields without breaking
+    /// older parsers. The flattened serde attribute merges these fields at the same level
+    /// as the named fields when serializing/deserializing.
     #[serde(flatten)]
     pub extra: Value,
 }
@@ -43,8 +89,25 @@ pub struct ConversationEntry {
 /// Represents a complete conversation session
 #[derive(Debug, Clone)]
 pub struct ConversationSession {
+    /// Unique identifier for this conversation session
+    ///
+    /// Either extracted from the first entry that contains a sessionId field,
+    /// or derived from the filename (without extension) if no entries contain
+    /// a session ID. Used to group related conversation entries together.
     pub session_id: String,
+
+    /// All conversation entries in chronological order
+    ///
+    /// Contains the complete sequence of entries from the JSONL file, including
+    /// user messages, assistant responses, and system events like file history
+    /// snapshots. Preserves the original order from the file.
     pub entries: Vec<ConversationEntry>,
+
+    /// Path to the JSONL file this session was loaded from
+    ///
+    /// Stores the filesystem path of the source file, used for tracking the
+    /// origin of the conversation data and for potential file operations like
+    /// rewriting or updating the session.
     pub file_path: String,
 }
 

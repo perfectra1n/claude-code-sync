@@ -43,12 +43,54 @@ impl std::fmt::Display for CloneLocation {
 }
 
 /// Onboarding configuration result
+///
+/// Contains all configuration settings gathered during the interactive onboarding process.
+/// This configuration determines how claude-sync will manage and sync Claude Code conversations.
 #[derive(Debug)]
 pub struct OnboardingConfig {
+    /// Path to the local git repository for storing conversation history.
+    ///
+    /// This can be either:
+    /// - A directory where a remote repository will be cloned
+    /// - A path to an existing local git repository
+    /// - A path where a new git repository will be initialized
     pub repo_path: PathBuf,
+
+    /// Optional remote git repository URL for syncing conversations.
+    ///
+    /// If present, this URL will be used to:
+    /// - Clone the repository (when `is_cloned` is true)
+    /// - Configure the remote origin for pushing/pulling changes
+    ///
+    /// Supported URL formats:
+    /// - HTTPS: `https://github.com/user/repo.git`
+    /// - SSH: `git@github.com:user/repo.git`
+    /// - SSH protocol: `ssh://git@github.com/user/repo.git`
+    ///
+    /// None indicates a local-only repository with no remote configured.
     pub remote_url: Option<String>,
+
+    /// Indicates whether the repository should be cloned from the remote URL.
+    ///
+    /// - `true`: The repository will be cloned from `remote_url` to `repo_path`
+    /// - `false`: Use an existing local repository at `repo_path`, or initialize a new one
     pub is_cloned: bool,
+
+    /// Whether to exclude file attachments when syncing conversations.
+    ///
+    /// - `true`: Only sync `.jsonl` conversation files, excluding images, PDFs, and other attachments
+    /// - `false`: Sync all conversation data including attachments
+    ///
+    /// Excluding attachments reduces storage size and sync time while preserving conversation text.
     pub exclude_attachments: bool,
+
+    /// Optional threshold (in days) for excluding old conversations from sync.
+    ///
+    /// If set, only conversations modified within the last N days will be synced.
+    /// Conversations older than this threshold will be excluded.
+    ///
+    /// - `Some(30)`: Only sync conversations modified in the last 30 days
+    /// - `None`: Sync all conversations regardless of age
     pub exclude_older_than_days: Option<u32>,
 }
 

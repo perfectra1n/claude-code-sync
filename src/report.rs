@@ -6,23 +6,86 @@ use std::path::Path;
 
 use crate::conflict::{Conflict, ConflictResolution};
 
-/// Report of sync conflicts
+/// Report of sync conflicts encountered during Claude Code synchronization
+///
+/// This structure contains a summary of all conflicts detected when syncing
+/// conversation files between local and remote storage. It provides metadata
+/// about when the conflicts were detected and details about each individual conflict.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConflictReport {
+    /// ISO 8601 timestamp indicating when this report was generated
+    ///
+    /// Generated using `chrono::Utc::now().to_rfc3339()` at the time of report creation.
     pub timestamp: String,
+
+    /// Total number of conflicts detected in this sync operation
+    ///
+    /// This count matches the length of the `conflicts` vector.
     pub total_conflicts: usize,
+
+    /// Detailed information about each individual conflict
+    ///
+    /// Each entry provides comprehensive information about a specific conflict,
+    /// including file paths, message counts, timestamps, and resolution status.
     pub conflicts: Vec<ConflictDetail>,
 }
 
+/// Detailed information about a specific conflict between local and remote conversation files
+///
+/// This structure captures all relevant information about a conflict, including the session
+/// identifier, file paths, message counts, timestamps, and the resolution strategy applied
+/// or pending. It is used to track and report on conflicts during synchronization operations.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConflictDetail {
+    /// Unique identifier for the Claude Code conversation session
+    ///
+    /// This ID links the conflicting files to their original conversation session
+    /// and is used to identify which conversation has diverged between local and remote.
     pub session_id: String,
+
+    /// Path to the local conversation file
+    ///
+    /// This is the absolute path to the conversation file stored on the local machine,
+    /// represented as a string for serialization purposes.
     pub local_file: String,
+
+    /// Path to the remote conversation file
+    ///
+    /// This is the absolute path to the conversation file stored in remote storage,
+    /// represented as a string for serialization purposes.
     pub remote_file: String,
+
+    /// Number of messages in the local conversation file
+    ///
+    /// This count helps determine which version has more recent activity
+    /// and can inform conflict resolution decisions.
     pub local_messages: usize,
+
+    /// Number of messages in the remote conversation file
+    ///
+    /// This count helps determine which version has more recent activity
+    /// and can inform conflict resolution decisions.
     pub remote_messages: usize,
+
+    /// Last modification timestamp of the local conversation file
+    ///
+    /// ISO 8601 formatted timestamp string, or "unknown" if the timestamp
+    /// could not be determined from the file metadata.
     pub local_timestamp: String,
+
+    /// Last modification timestamp of the remote conversation file
+    ///
+    /// ISO 8601 formatted timestamp string, or "unknown" if the timestamp
+    /// could not be determined from the file metadata.
     pub remote_timestamp: String,
+
+    /// The resolution strategy applied or pending for this conflict
+    ///
+    /// Possible values include:
+    /// - "Keep both (remote renamed to `<path>`)" - Both versions preserved with remote renamed
+    /// - "Keep local" - Local version kept, remote discarded
+    /// - "Keep remote" - Remote version kept, local overwritten
+    /// - "Pending" - No resolution applied yet, user intervention required
     pub resolution: String,
 }
 

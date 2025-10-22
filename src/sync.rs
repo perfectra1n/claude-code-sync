@@ -19,16 +19,79 @@ use crate::undo::Snapshot;
 const MAX_CONVERSATIONS_TO_DISPLAY: usize = 10;
 
 /// Sync state and configuration
+///
+/// This struct stores the persistent state of the Claude Code sync system.
+/// It tracks where the sync repository is located, whether it's configured
+/// with a remote, and whether it was originally cloned from a remote URL.
+///
+/// The state is serialized to JSON and stored in the user's configuration
+/// directory, allowing the sync system to remember its configuration across
+/// multiple command invocations.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SyncState {
+    /// Path to the local git repository used for syncing Claude Code conversations
+    ///
+    /// This is the directory where all conversation sessions are stored in git format.
+    /// The conversations are organized under a `projects/` subdirectory within this path.
+    /// This repository can be a local-only git repository or one that's synchronized
+    /// with a remote origin.
     pub sync_repo_path: PathBuf,
+
+    /// Whether the sync repository has a remote configured
+    ///
+    /// When `true`, the repository has a remote (typically named "origin") configured,
+    /// allowing push and pull operations to synchronize with a remote git service
+    /// (e.g., GitHub, GitLab). When `false`, the repository is local-only and cannot
+    /// push to or pull from remote servers.
     pub has_remote: bool,
+
     /// Whether the repository was cloned from a remote URL
+    ///
+    /// This field distinguishes between repositories that were:
+    /// - Cloned from an existing remote repository (`true`)
+    /// - Initialized locally and optionally had a remote added later (`false`)
+    ///
+    /// This affects certain initialization behaviors, as cloned repositories
+    /// may already have existing content and history.
     #[serde(default)]
     pub is_cloned_repo: bool,
 }
 
 impl SyncState {
+    /// Loads the sync state from the user's configuration directory
+    ///
+    /// This function reads the persisted sync configuration from disk and deserializes
+    /// it into a `SyncState` instance. The state file is stored in the user's Claude
+    /// configuration directory and contains information about the sync repository location,
+    /// remote configuration, and initialization method.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the loaded `SyncState` on success.
+    ///
+    /// # Errors
+    ///
+    /// This function returns an error if:
+    /// - The sync system has not been initialized (state file doesn't exist)
+    /// - The state file cannot be read (permission errors, I/O errors)
+    /// - The state file contains invalid JSON or cannot be deserialized
+    ///
+    /// If the sync is not initialized, the error message will instruct the user
+    /// to run `claude-sync init` first.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use claude_sync::sync::SyncState;
+    ///
+    /// match SyncState::load() {
+    ///     Ok(state) => {
+    ///         println!("Sync repo: {}", state.sync_repo_path.display());
+    ///         println!("Has remote: {}", state.has_remote);
+    ///     }
+    ///     Err(e) => eprintln!("Failed to load sync state: {}", e),
+    /// }
+    /// ```
     pub fn load() -> Result<Self> {
         let state_path = Self::state_file_path()?;
 
@@ -587,40 +650,91 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
             detector.conflict_count()
         );
 
-        // Resolve conflicts using "keep both" strategy
-        let renames = detector.resolve_all_keep_both()?;
+        // Check if we can run interactively
+        let use_interactive = crate::interactive_conflict::is_interactive();
 
-        // Save conflict report
-        let report = ConflictReport::from_conflicts(detector.conflicts());
-        save_conflict_report(&report)?;
-
-        println!("\n{}", "Conflict Resolution:".yellow().bold());
-        for (_original, renamed) in &renames {
-            let relative_renamed = renamed.strip_prefix(&claude_dir).unwrap_or(renamed);
+        let renames = if use_interactive {
+            // Interactive conflict resolution
             println!(
-                "  {} remote version saved as: {}",
-                "→".yellow(),
-                relative_renamed.display().to_string().cyan()
+                "\n{} Running in interactive mode",
+                "→".cyan()
             );
-        }
 
-        // Apply renames and copy files, tracking affected conversations
-        for (original_path, renamed_path) in &renames {
-            // Find the remote session that corresponds to this original path
+            let conflicts = detector.conflicts_mut();
+            let resolution_result = crate::interactive_conflict::resolve_conflicts_interactive(conflicts)?;
+
+            // Apply the resolutions
+            let renames = crate::interactive_conflict::apply_resolutions(
+                &resolution_result,
+                &remote_sessions,
+                &claude_dir,
+                &remote_projects_dir,
+            )?;
+
+            // Save conflict report
+            let report = ConflictReport::from_conflicts(detector.conflicts());
+            save_conflict_report(&report)?;
+
+            renames
+        } else {
+            // Non-interactive mode: use default "keep both" strategy
+            println!(
+                "\n{} Using automatic conflict resolution (keep both versions)",
+                "→".cyan()
+            );
+
+            // Resolve conflicts using "keep both" strategy
+            let renames = detector.resolve_all_keep_both()?;
+
+            // Save conflict report
+            let report = ConflictReport::from_conflicts(detector.conflicts());
+            save_conflict_report(&report)?;
+
+            println!("\n{}", "Conflict Resolution:".yellow().bold());
+            for (_original, renamed) in &renames {
+                let relative_renamed = renamed.strip_prefix(&claude_dir).unwrap_or(renamed);
+                println!(
+                    "  {} remote version saved as: {}",
+                    "→".yellow(),
+                    relative_renamed.display().to_string().cyan()
+                );
+            }
+
+            // Apply renames and copy files
+            for (original_path, renamed_path) in &renames {
+                // Find the remote session that corresponds to this original path
+                if let Some(session) = remote_sessions.iter().find(|s| {
+                    let remote_path = remote_projects_dir.join(&s.file_path);
+                    &remote_path == original_path
+                }) {
+                    // Write the session to the renamed destination path
+                    session.write_to_file(renamed_path)?;
+                }
+            }
+
+            renames
+        };
+
+        // Track all conflicts in affected conversations
+        for (_original_path, renamed_path) in &renames {
+            let relative_path = renamed_path
+                .strip_prefix(&claude_dir)
+                .unwrap_or(renamed_path)
+                .to_string_lossy()
+                .to_string();
+
+            // Find the session ID from the renamed path
             if let Some(session) = remote_sessions.iter().find(|s| {
-                let remote_path = remote_projects_dir.join(&s.file_path);
-                &remote_path == original_path
+                let session_file = Path::new(&s.file_path).file_name();
+                let renamed_file = renamed_path.file_name();
+                // Try to match based on session ID in filename
+                session_file
+                    .and_then(|f| f.to_str())
+                    .and_then(|name| name.split('-').next())
+                    == renamed_file
+                        .and_then(|f| f.to_str())
+                        .and_then(|name| name.split('-').next())
             }) {
-                // Write the session to the renamed destination path
-                session.write_to_file(renamed_path)?;
-
-                // Track this conflict in affected conversations using the renamed path
-                let relative_path = renamed_path
-                    .strip_prefix(&claude_dir)
-                    .unwrap_or(renamed_path)
-                    .to_string_lossy()
-                    .to_string();
-
                 match ConversationSummary::new(
                     session.session_id.clone(),
                     relative_path.clone(),

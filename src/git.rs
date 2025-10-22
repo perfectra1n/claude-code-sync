@@ -325,53 +325,894 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    // =========================================================================
+    // init() tests
+    // =========================================================================
+
     #[test]
-    fn test_init_repository() {
+    fn test_init_creates_new_repository() {
         let temp_dir = TempDir::new().unwrap();
         let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Verify the repository path exists
         assert!(git_manager.path().exists());
+
+        // Verify .git directory was created
+        let git_dir = temp_dir.path().join(".git");
+        assert!(git_dir.exists());
+        assert!(git_dir.is_dir());
     }
 
     #[test]
-    fn test_commit_workflow() {
+    fn test_init_creates_parent_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let nested_path = temp_dir.path().join("parent").join("child").join("repo");
+
+        let git_manager = GitManager::init(&nested_path).unwrap();
+
+        assert!(git_manager.path().exists());
+        assert!(nested_path.join(".git").exists());
+    }
+
+    #[test]
+    fn test_init_empty_repository_has_no_commits() {
         let temp_dir = TempDir::new().unwrap();
         let git_manager = GitManager::init(temp_dir.path()).unwrap();
 
-        // Create a test file
-        let test_file = temp_dir.path().join("test.txt");
-        fs::write(&test_file, "test content").unwrap();
+        // Getting current commit hash should fail on empty repo
+        assert!(git_manager.current_commit_hash().is_err());
+    }
 
-        // Stage and commit
+    #[test]
+    fn test_init_can_be_called_multiple_times_on_same_path() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Initialize repository twice
+        let git_manager1 = GitManager::init(temp_dir.path()).unwrap();
+        let git_manager2 = GitManager::init(temp_dir.path()).unwrap();
+
+        // Both should succeed and reference the same path
+        assert_eq!(git_manager1.path(), git_manager2.path());
+    }
+
+    // =========================================================================
+    // open() tests
+    // =========================================================================
+
+    #[test]
+    fn test_open_existing_repository() {
+        let temp_dir = TempDir::new().unwrap();
+        GitManager::init(temp_dir.path()).unwrap();
+
+        // Open the same repository
+        let git_manager = GitManager::open(temp_dir.path()).unwrap();
+        assert_eq!(git_manager.path(), temp_dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_open_nonexistent_repository_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let nonexistent = temp_dir.path().join("nonexistent");
+
+        let result = GitManager::open(&nonexistent);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("Failed to open git repository"));
+        }
+    }
+
+    #[test]
+    fn test_open_non_git_directory_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path()).unwrap();
+
+        // Directory exists but is not a git repo
+        let result = GitManager::open(temp_dir.path());
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // path() tests
+    // =========================================================================
+
+    #[test]
+    fn test_path_returns_working_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        let path = git_manager.path();
+        assert_eq!(path, temp_dir.path().canonicalize().unwrap());
+    }
+
+    // =========================================================================
+    // add_remote() tests
+    // =========================================================================
+
+    #[test]
+    fn test_add_remote_origin() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        let result = git_manager.add_remote("origin", "https://github.com/test/repo.git");
+        assert!(result.is_ok());
+
+        // Verify remote was added
+        assert!(git_manager.has_remote("origin"));
+    }
+
+    #[test]
+    fn test_add_remote_custom_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        let result = git_manager.add_remote("upstream", "https://github.com/test/upstream.git");
+        assert!(result.is_ok());
+        assert!(git_manager.has_remote("upstream"));
+    }
+
+    #[test]
+    fn test_add_multiple_remotes() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        git_manager.add_remote("origin", "https://github.com/test/repo.git").unwrap();
+        git_manager.add_remote("upstream", "https://github.com/test/upstream.git").unwrap();
+        git_manager.add_remote("backup", "https://gitlab.com/test/repo.git").unwrap();
+
+        assert!(git_manager.has_remote("origin"));
+        assert!(git_manager.has_remote("upstream"));
+        assert!(git_manager.has_remote("backup"));
+    }
+
+    #[test]
+    fn test_add_remote_duplicate_name_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        git_manager.add_remote("origin", "https://github.com/test/repo.git").unwrap();
+
+        // Adding same remote name should fail
+        let result = git_manager.add_remote("origin", "https://github.com/test/other.git");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_remote_ssh_url() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        let result = git_manager.add_remote("origin", "git@github.com:test/repo.git");
+        assert!(result.is_ok());
+        assert!(git_manager.has_remote("origin"));
+    }
+
+    // =========================================================================
+    // has_remote() tests
+    // =========================================================================
+
+    #[test]
+    fn test_has_remote_returns_false_when_no_remotes() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        assert!(!git_manager.has_remote("origin"));
+        assert!(!git_manager.has_remote("upstream"));
+    }
+
+    #[test]
+    fn test_has_remote_returns_true_after_adding() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        git_manager.add_remote("origin", "https://github.com/test/repo.git").unwrap();
+
+        assert!(git_manager.has_remote("origin"));
+        assert!(!git_manager.has_remote("upstream"));
+    }
+
+    // =========================================================================
+    // stage_all() tests
+    // =========================================================================
+
+    #[test]
+    fn test_stage_all_empty_repository() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Staging in empty repo should succeed
+        let result = git_manager.stage_all();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stage_all_single_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create a file
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
         git_manager.stage_all().unwrap();
-        git_manager.commit("Initial commit").unwrap();
 
-        // Verify commit was created
+        // Verify file is staged (has changes before commit)
+        assert!(git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_stage_all_multiple_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create multiple files
+        fs::write(temp_dir.path().join("file1.txt"), "content1").unwrap();
+        fs::write(temp_dir.path().join("file2.txt"), "content2").unwrap();
+        fs::write(temp_dir.path().join("file3.txt"), "content3").unwrap();
+
+        git_manager.stage_all().unwrap();
+        assert!(git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_stage_all_nested_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create nested directory structure
+        let nested_dir = temp_dir.path().join("dir1").join("dir2").join("dir3");
+        fs::create_dir_all(&nested_dir).unwrap();
+
+        fs::write(temp_dir.path().join("root.txt"), "root").unwrap();
+        fs::write(temp_dir.path().join("dir1").join("level1.txt"), "level1").unwrap();
+        fs::write(nested_dir.join("deep.txt"), "deep").unwrap();
+
+        git_manager.stage_all().unwrap();
+        assert!(git_manager.has_changes().unwrap());
+
+        // Commit to verify all files were staged
+        git_manager.commit("Test nested files").unwrap();
         assert!(!git_manager.has_changes().unwrap());
     }
 
     #[test]
-    fn test_current_commit_hash() {
+    fn test_stage_all_with_modifications() {
         let temp_dir = TempDir::new().unwrap();
         let git_manager = GitManager::init(temp_dir.path()).unwrap();
 
-        // Create a test file
-        let test_file = temp_dir.path().join("test.txt");
-        fs::write(&test_file, "test content").unwrap();
-
-        // Stage and commit
+        // Create and commit initial file
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "original").unwrap();
         git_manager.stage_all().unwrap();
-        git_manager.commit("Initial commit").unwrap();
+        git_manager.commit("Initial").unwrap();
 
-        // Get the commit hash using the method
+        // Modify the file
+        fs::write(&file_path, "modified").unwrap();
+
+        // Stage modifications
+        git_manager.stage_all().unwrap();
+        assert!(git_manager.has_changes().unwrap());
+    }
+
+    // =========================================================================
+    // commit() tests
+    // =========================================================================
+
+    #[test]
+    fn test_commit_first_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create and stage a file
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+
+        let result = git_manager.commit("First commit");
+        assert!(result.is_ok());
+
+        // Verify no uncommitted changes
+        assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_commit_subsequent_commits() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // First commit
+        fs::write(temp_dir.path().join("file1.txt"), "content1").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("First commit").unwrap();
+
+        // Second commit
+        fs::write(temp_dir.path().join("file2.txt"), "content2").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Second commit").unwrap();
+
+        // Third commit
+        fs::write(temp_dir.path().join("file3.txt"), "content3").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Third commit").unwrap();
+
+        assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_commit_with_empty_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+
+        // Empty message should still work
+        let result = git_manager.commit("");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_commit_with_multiline_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+
+        let message = "Title line\n\nDetailed description\nwith multiple lines";
+        let result = git_manager.commit(message);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_commit_without_staged_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Try to commit without staging anything - this should succeed
+        // (creates an empty tree commit)
+        let result = git_manager.commit("Empty commit");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_commit_updates_current_commit_hash() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // First commit
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("First").unwrap();
+        let hash1 = git_manager.current_commit_hash().unwrap();
+
+        // Second commit
+        fs::write(temp_dir.path().join("test.txt"), "modified").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Second").unwrap();
+        let hash2 = git_manager.current_commit_hash().unwrap();
+
+        // Hashes should be different
+        assert_ne!(hash1, hash2);
+    }
+
+    // =========================================================================
+    // has_changes() tests
+    // =========================================================================
+
+    #[test]
+    fn test_has_changes_clean_repository() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Empty repo has no changes
+        assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_has_changes_with_untracked_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create untracked file
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        assert!(git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_has_changes_with_staged_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+
+        assert!(git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_has_changes_after_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Commit").unwrap();
+
+        // After commit, no changes should remain
+        assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_has_changes_with_modified_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Commit initial file
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "original").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Initial").unwrap();
+
+        // Modify the file
+        fs::write(&file_path, "modified").unwrap();
+
+        assert!(git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_has_changes_with_deleted_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Commit initial file
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Initial").unwrap();
+
+        // Delete the file
+        fs::remove_file(&file_path).unwrap();
+
+        assert!(git_manager.has_changes().unwrap());
+    }
+
+    // =========================================================================
+    // current_branch() tests
+    // =========================================================================
+
+    #[test]
+    fn test_current_branch_default_is_master() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create initial commit so HEAD points to a branch
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Initial").unwrap();
+
+        let branch = git_manager.current_branch().unwrap();
+        // Default branch is usually "master" in git2
+        assert!(branch == "master" || branch == "main");
+    }
+
+    #[test]
+    fn test_current_branch_fails_on_empty_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Empty repo without commits has no HEAD
+        let result = git_manager.current_branch();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_current_branch_after_creating_branch() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create initial commit
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Initial").unwrap();
+
+        // Create and checkout new branch using git2
+        let head = git_manager.repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        git_manager.repo.branch("feature-branch", &commit, false).unwrap();
+        git_manager.repo.set_head("refs/heads/feature-branch").unwrap();
+
+        let branch = git_manager.current_branch().unwrap();
+        assert_eq!(branch, "feature-branch");
+    }
+
+    // =========================================================================
+    // current_commit_hash() tests
+    // =========================================================================
+
+    #[test]
+    fn test_current_commit_hash_format() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Commit").unwrap();
+
         let hash = git_manager.current_commit_hash().unwrap();
 
         // Verify it's a valid SHA-1 hash (40 hex characters)
         assert_eq!(hash.len(), 40);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 
-        // Verify it matches the actual HEAD commit
+    #[test]
+    fn test_current_commit_hash_fails_on_empty_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Empty repo has no commits
+        let result = git_manager.current_commit_hash();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_current_commit_hash_matches_git2_api() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Commit").unwrap();
+
+        let hash = git_manager.current_commit_hash().unwrap();
+
+        // Verify it matches the actual HEAD commit from git2
         let repo = Repository::open(temp_dir.path()).unwrap();
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
         assert_eq!(hash, head_commit.id().to_string());
+    }
+
+    #[test]
+    fn test_current_commit_hash_different_for_different_commits() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // First commit
+        fs::write(temp_dir.path().join("file1.txt"), "content1").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("First").unwrap();
+        let hash1 = git_manager.current_commit_hash().unwrap();
+
+        // Second commit
+        fs::write(temp_dir.path().join("file2.txt"), "content2").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Second").unwrap();
+        let hash2 = git_manager.current_commit_hash().unwrap();
+
+        // Third commit
+        fs::write(temp_dir.path().join("file3.txt"), "content3").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Third").unwrap();
+        let hash3 = git_manager.current_commit_hash().unwrap();
+
+        // All hashes should be different
+        assert_ne!(hash1, hash2);
+        assert_ne!(hash2, hash3);
+        assert_ne!(hash1, hash3);
+    }
+
+    // =========================================================================
+    // Integration tests - combining multiple operations
+    // =========================================================================
+
+    #[test]
+    fn test_integration_full_workflow() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Initialize repository
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+        assert!(git_manager.path().exists());
+
+        // Add remote
+        git_manager.add_remote("origin", "https://github.com/test/repo.git").unwrap();
+        assert!(git_manager.has_remote("origin"));
+
+        // Create files
+        fs::write(temp_dir.path().join("file1.txt"), "content1").unwrap();
+        fs::write(temp_dir.path().join("file2.txt"), "content2").unwrap();
+
+        // Stage and commit
+        assert!(git_manager.has_changes().unwrap());
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Initial commit").unwrap();
+        assert!(!git_manager.has_changes().unwrap());
+
+        // Verify commit hash
+        let hash = git_manager.current_commit_hash().unwrap();
+        assert_eq!(hash.len(), 40);
+
+        // Verify branch name
+        let branch = git_manager.current_branch().unwrap();
+        assert!(branch == "master" || branch == "main");
+    }
+
+    #[test]
+    fn test_integration_multiple_commits_with_modifications() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // First commit
+        fs::write(temp_dir.path().join("test.txt"), "v1").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Version 1").unwrap();
+        let hash1 = git_manager.current_commit_hash().unwrap();
+
+        // Second commit - modify file
+        fs::write(temp_dir.path().join("test.txt"), "v2").unwrap();
+        assert!(git_manager.has_changes().unwrap());
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Version 2").unwrap();
+        let hash2 = git_manager.current_commit_hash().unwrap();
+
+        // Third commit - add new file
+        fs::write(temp_dir.path().join("new.txt"), "new content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Version 3").unwrap();
+        let hash3 = git_manager.current_commit_hash().unwrap();
+
+        // Verify all commits have different hashes
+        assert_ne!(hash1, hash2);
+        assert_ne!(hash2, hash3);
+        assert_ne!(hash1, hash3);
+
+        // No uncommitted changes
+        assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_integration_init_and_reopen() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Initialize and create a commit
+        let git_manager1 = GitManager::init(temp_dir.path()).unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager1.stage_all().unwrap();
+        git_manager1.commit("Initial").unwrap();
+        let hash1 = git_manager1.current_commit_hash().unwrap();
+
+        // Drop the first manager and reopen
+        drop(git_manager1);
+        let git_manager2 = GitManager::open(temp_dir.path()).unwrap();
+
+        // Should be able to read the same commit hash
+        let hash2 = git_manager2.current_commit_hash().unwrap();
+        assert_eq!(hash1, hash2);
+
+        // Should have no changes
+        assert!(!git_manager2.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_integration_nested_directory_workflow() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create complex directory structure
+        let src_dir = temp_dir.path().join("src");
+        let tests_dir = temp_dir.path().join("tests");
+        let docs_dir = temp_dir.path().join("docs").join("api");
+
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&tests_dir).unwrap();
+        fs::create_dir_all(&docs_dir).unwrap();
+
+        // Create files in different directories
+        fs::write(temp_dir.path().join("README.md"), "# Project").unwrap();
+        fs::write(src_dir.join("main.rs"), "fn main() {}").unwrap();
+        fs::write(src_dir.join("lib.rs"), "pub fn test() {}").unwrap();
+        fs::write(tests_dir.join("test.rs"), "#[test]").unwrap();
+        fs::write(docs_dir.join("index.md"), "# API Docs").unwrap();
+
+        // Stage and commit all
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Initial project structure").unwrap();
+
+        // Verify clean state
+        assert!(!git_manager.has_changes().unwrap());
+
+        // Modify files in different directories
+        fs::write(src_dir.join("main.rs"), "fn main() { println!(\"hello\"); }").unwrap();
+        fs::write(docs_dir.join("changelog.md"), "# Changelog").unwrap();
+
+        // Should detect changes
+        assert!(git_manager.has_changes().unwrap());
+
+        // Commit changes
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Update files").unwrap();
+        assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_integration_multiple_remotes_workflow() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Add multiple remotes
+        git_manager.add_remote("origin", "https://github.com/user/repo.git").unwrap();
+        git_manager.add_remote("upstream", "https://github.com/org/repo.git").unwrap();
+        git_manager.add_remote("backup", "git@gitlab.com:user/repo.git").unwrap();
+
+        // Verify all remotes exist
+        assert!(git_manager.has_remote("origin"));
+        assert!(git_manager.has_remote("upstream"));
+        assert!(git_manager.has_remote("backup"));
+        assert!(!git_manager.has_remote("nonexistent"));
+
+        // Create commit
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Test").unwrap();
+
+        // Remotes should still be available after commits
+        assert!(git_manager.has_remote("origin"));
+        assert!(git_manager.has_remote("upstream"));
+        assert!(git_manager.has_remote("backup"));
+    }
+
+    // =========================================================================
+    // Edge case tests
+    // =========================================================================
+
+    #[test]
+    fn test_edge_case_commit_same_content_multiple_times() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        let file_path = temp_dir.path().join("test.txt");
+
+        // First commit
+        fs::write(&file_path, "same content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("First").unwrap();
+        let hash1 = git_manager.current_commit_hash().unwrap();
+
+        // Modify and restore to same content
+        fs::write(&file_path, "different").unwrap();
+        fs::write(&file_path, "same content").unwrap();
+
+        // Should have no changes (content is identical)
+        assert!(!git_manager.has_changes().unwrap());
+
+        // Change to actually different content
+        fs::write(&file_path, "actually different").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Second").unwrap();
+        let hash2 = git_manager.current_commit_hash().unwrap();
+
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_edge_case_empty_directory_not_tracked() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create empty directory
+        fs::create_dir_all(temp_dir.path().join("empty_dir")).unwrap();
+
+        // Git doesn't track empty directories
+        assert!(!git_manager.has_changes().unwrap());
+
+        // Add file to directory
+        fs::write(temp_dir.path().join("empty_dir").join("file.txt"), "content").unwrap();
+        assert!(git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_edge_case_stage_after_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create and commit file
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "content").unwrap();
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Initial").unwrap();
+
+        // Delete file
+        fs::remove_file(&file_path).unwrap();
+        assert!(git_manager.has_changes().unwrap());
+
+        // Stage deletion
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Delete file").unwrap();
+
+        assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_edge_case_large_number_of_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create 100 files
+        for i in 0..100 {
+            fs::write(temp_dir.path().join(format!("file_{}.txt", i)), format!("content {}", i)).unwrap();
+        }
+
+        assert!(git_manager.has_changes().unwrap());
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Add 100 files").unwrap();
+
+        assert!(!git_manager.has_changes().unwrap());
+
+        let hash = git_manager.current_commit_hash().unwrap();
+        assert_eq!(hash.len(), 40);
+    }
+
+    #[test]
+    fn test_edge_case_unicode_filenames() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        // Create files with unicode names
+        fs::write(temp_dir.path().join("test_日本語.txt"), "Japanese").unwrap();
+        fs::write(temp_dir.path().join("test_émojis_🚀.txt"), "Emoji").unwrap();
+        fs::write(temp_dir.path().join("test_Ελληνικά.txt"), "Greek").unwrap();
+
+        git_manager.stage_all().unwrap();
+        git_manager.commit("Unicode files").unwrap();
+
+        assert!(!git_manager.has_changes().unwrap());
+    }
+
+    #[test]
+    fn test_edge_case_very_long_commit_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+
+        // Very long commit message
+        let long_message = "A".repeat(10000);
+        let result = git_manager.commit(&long_message);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_edge_case_special_characters_in_commit_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+        git_manager.stage_all().unwrap();
+
+        let message = "Special chars: !@#$%^&*()[]{}|\\:;\"'<>,.?/~`±§";
+        let result = git_manager.commit(message);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_edge_case_rapid_sequential_commits() {
+        let temp_dir = TempDir::new().unwrap();
+        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+
+        let mut hashes = Vec::new();
+
+        // Create 10 commits rapidly
+        for i in 0..10 {
+            fs::write(temp_dir.path().join(format!("file{}.txt", i)), format!("content{}", i)).unwrap();
+            git_manager.stage_all().unwrap();
+            git_manager.commit(&format!("Commit {}", i)).unwrap();
+            hashes.push(git_manager.current_commit_hash().unwrap());
+        }
+
+        // All hashes should be unique
+        for i in 0..hashes.len() {
+            for j in (i + 1)..hashes.len() {
+                assert_ne!(hashes[i], hashes[j]);
+            }
+        }
     }
 }
