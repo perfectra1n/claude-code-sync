@@ -1,6 +1,26 @@
 # claude-sync
 
+[![Unit Tests](https://github.com/perfectra1n/claude-sync/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-sync/actions/workflows/unit-tests.yml)
+[![Integration Tests](https://github.com/perfectra1n/claude-sync/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-sync/actions/workflows/integration-tests.yml)
+[![Build](https://github.com/perfectra1n/claude-sync/actions/workflows/build.yml/badge.svg)](https://github.com/perfectra1n/claude-sync/actions/workflows/build.yml)
+
 A Rust CLI tool for syncing Claude Code conversation history across machines using git repositories.
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Smart Merge** ✨ **NEW** | Automatically combines non-conflicting conversation changes |
+| **Bidirectional Sync** | Pull and push changes in one command with `sync` |
+| **Interactive Onboarding** | First-time setup wizard guides you through configuration |
+| **Smart Conflict Resolution** | Interactive TUI for resolving conflicts with preview |
+| **Selective Sync** | Filter by project, date, or exclude attachments |
+| **Undo Operations** | Rollback pull/push with automatic snapshots |
+| **Operation History** | Track and review past sync operations |
+| **Branch Management** | Sync to different branches, manage remotes |
+| **Detailed Logging** | Console and file logging with configurable levels |
+| **Conflict Tracking** | Comprehensive conflict reports in JSON/Markdown |
+| **Flexible Configuration** | TOML-based config with CLI overrides |
 
 ## Overview
 
@@ -42,7 +62,35 @@ cargo install --path .
 
 ## Quick Start
 
-### 1. Initialize Sync Repository
+### First-Time Setup (Interactive Onboarding)
+
+When you run `claude-sync` for the first time, an interactive onboarding wizard will guide you through setup:
+
+```bash
+# Simply run any command - onboarding starts automatically
+claude-sync sync
+
+# Or explicitly run onboarding
+claude-sync init
+```
+
+The onboarding wizard will ask you:
+- Whether to use a remote repository or local directory
+- Where to store your sync repository
+- Remote URL (for remote repos) or path (for local)
+- Whether to exclude file attachments (images, PDFs, etc.)
+- How old conversations to sync (e.g., last 30 days)
+
+**Benefits of Interactive Onboarding:**
+- ✅ Step-by-step guidance for first-time users
+- ✅ Validates Git repository URLs and paths
+- ✅ Automatically clones remote repositories
+- ✅ Sets up sensible defaults based on your choices
+- ✅ No need to remember command-line flags
+
+### Manual Initialization (Advanced)
+
+If you prefer to skip onboarding, you can initialize manually:
 
 ```bash
 # Create a local sync repository
@@ -355,6 +403,91 @@ Each history entry shows:
 
 When the same conversation session is modified on different machines, `claude-sync` detects this as a conflict.
 
+### Smart Merge (NEW!)
+
+**Smart merge is now the default conflict resolution strategy!** When conflicts are detected, `claude-sync` automatically attempts to intelligently merge both versions by:
+
+- **Analyzing message UUIDs and parent relationships**: Builds a message tree to understand conversation structure
+- **Resolving edited messages by timestamp**: If the same message was edited on both machines, keeps the newer version
+- **Preserving all conversation branches**: When conversations diverge (same parent, different continuations), keeps all branches intact
+- **Handling entries without UUIDs**: Falls back to timestamp-based merging for system events
+
+**Smart merge automatically handles:**
+- ✅ Non-overlapping changes (simple merge)
+- ✅ Message additions to different parts of the conversation
+- ✅ Conversation branches (multiple continuations from the same point)
+- ✅ Edited messages (resolved by timestamp)
+- ✅ Mixed UUID and non-UUID entries
+
+If smart merge fails (e.g., due to corrupted data), the system falls back to interactive or "keep both" resolution.
+
+### Interactive Conflict Resolution (New!)
+
+When running in an interactive terminal, `claude-sync` now provides a **TUI (Text User Interface)** for resolving conflicts:
+
+```bash
+# Pull with interactive conflict resolution
+claude-sync pull
+
+# Or sync (pull + push)
+claude-sync sync
+```
+
+**Interactive Features:**
+- 📋 **List all conflicts** with session IDs and project paths
+- 🔍 **Preview differences** between local and remote versions
+- 📊 **View statistics**: message counts, timestamps, file sizes
+- 🎯 **Choose resolution per conflict**:
+  - **Smart Merge** (combine both versions - recommended) ✨ NEW
+  - Keep Local (discard remote changes)
+  - Keep Remote (overwrite local file)
+  - Keep Both (save remote with conflict suffix)
+  - View Details (show full comparison)
+
+**Example Interactive Flow:**
+```
+Found 2 conflicts during pull:
+
+! 2 conflicts detected
+  Attempting smart merge...
+  ✓ Smart merged abc-123 (45 local + 52 remote = 90 total, 2 branches)
+  ✓ Smart merged def-456 (30 local + 35 remote = 65 total, 0 branches)
+  ✓ Successfully smart merged 2/2 conflicts
+
+Pull complete!
+```
+
+**Example: Smart Merge Failure with Interactive Fallback:**
+```
+Found 1 conflicts during pull:
+
+! 1 conflicts detected
+  Attempting smart merge...
+  ⚠ Smart merge failed for xyz-789: circular reference detected
+  Falling back to manual resolution...
+  ! 1 conflicts require manual resolution
+
+→ Running in interactive mode for remaining conflicts
+
+Conflict 1 of 1
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Session ID: xyz-789
+Project: my-project
+Local:  45 messages, last modified 2 hours ago (15.2 KB)
+Remote: 52 messages, last modified 1 hour ago (18.5 KB)
+
+How do you want to resolve this conflict?
+❯ Smart Merge (combine both versions - recommended)
+  Keep Local Version (discard remote)
+  Keep Remote Version (overwrite local)
+  Keep Both (save remote with conflict suffix)
+  View Detailed Comparison
+```
+
+### Automatic Resolution (Non-Interactive)
+
+When not in an interactive terminal (CI/CD, scripts), conflicts are automatically resolved:
+
 **Resolution Strategy:**
 - Local version: Kept as-is
 - Remote version: Saved with suffix `-conflict-<timestamp>.jsonl`
@@ -441,10 +574,14 @@ Add to your crontab:
 - **git.rs**: Git operations wrapper (using `git2` crate)
 - **sync.rs**: Core sync engine with push/pull logic and snapshot integration
 - **conflict.rs**: Conflict detection and resolution
+- **interactive_conflict.rs**: Interactive TUI for conflict resolution (NEW!)
 - **filter.rs**: Configuration and filtering system
+- **config.rs**: Configuration management and defaults (NEW!)
 - **report.rs**: Conflict reporting in JSON/Markdown formats
 - **history.rs**: Operation history tracking and management
 - **undo.rs**: Snapshot-based undo functionality for pull/push operations
+- **onboarding.rs**: Interactive first-time setup wizard (NEW!)
+- **logger.rs**: Enhanced logging system with file and console output (NEW!)
 - **main.rs**: CLI interface (using `clap`)
 
 ### File Format
@@ -472,6 +609,10 @@ Each line is a separate JSON object representing a conversation event.
 - `dirs`: Cross-platform directory paths
 - `uuid`: Snapshot identification
 - `base64`: Binary file encoding in snapshots
+- `inquire`: Interactive prompts and TUI menus
+- `log`: Logging facade
+- `env_logger`: Console logging implementation
+- `atty`: Terminal detection for interactive mode
 
 ## Security Considerations
 
@@ -480,11 +621,68 @@ Each line is a separate JSON object representing a conversation event.
 - Consider encrypting the git repository for additional security
 - SSH keys or access tokens are recommended for git authentication
 
+## Logging
+
+`claude-sync` provides comprehensive logging to help you track operations and troubleshoot issues.
+
+### Console Logging
+
+Control console output with the `RUST_LOG` environment variable:
+
+```bash
+# Show all debug messages
+RUST_LOG=debug claude-sync sync
+
+# Only show errors
+RUST_LOG=error claude-sync push
+
+# Only show warnings and errors
+RUST_LOG=warn claude-sync pull
+
+# Show info, warnings, and errors (default)
+claude-sync sync
+
+# Disable console output (file logging continues)
+RUST_LOG=off claude-sync status
+```
+
+**Log Levels:**
+- `trace` - Everything (very verbose)
+- `debug` - Debug information and above
+- `info` - Informational messages, warnings, and errors (default)
+- `warn` - Warnings and errors only
+- `error` - Errors only
+- `off` - No console output
+
+### File Logging
+
+All operations are automatically logged to a file, regardless of console settings:
+
+**Log File Locations:**
+- **Linux**: `~/.config/claude-sync/claude-sync.log` or `$XDG_CONFIG_HOME/claude-sync/claude-sync.log`
+- **macOS**: `~/Library/Application Support/claude-sync/claude-sync.log`
+- **Windows**: `%APPDATA%\claude-sync\claude-sync.log`
+
+**File Logging Features:**
+- ✅ Captures all log levels (trace to error)
+- ✅ Persists across sessions
+- ✅ Useful for debugging and audit trails
+- ✅ Automatically rotated to prevent excessive disk usage
+
+**Example:**
+```bash
+# Run sync silently, check logs later
+RUST_LOG=off claude-sync sync
+
+# View the log file
+cat ~/.config/claude-sync/claude-sync.log
+```
+
 ## Troubleshooting
 
 ### "Sync not initialized"
 
-Run `claude-sync init` first to set up the sync repository.
+Run `claude-sync init` first to set up the sync repository, or let the interactive onboarding guide you.
 
 ### "Failed to push to remote"
 
@@ -509,34 +707,13 @@ Contributions are welcome! Please:
 3. Add tests for new functionality
 4. Submit a pull request
 
-## License
-
-MIT License - See LICENSE file for details
-
-## Acknowledgments
-
-- Built with [Anthropic's Claude Code](https://docs.claude.com/claude-code)
-- Inspired by the need for cross-machine conversation continuity
-
 ## Roadmap
-
-Completed in v0.2.0:
-- [x] Undo functionality for pull/push operations
-- [x] Operation history tracking
-- [x] Automatic snapshot creation
-- [x] Enhanced operation summaries
-
-Completed in v0.1.1:
-- [x] Selective session sync (by project, date, attachment type)
-- [x] Branch specification for push/pull operations
-- [x] Bidirectional sync command
-- [x] Remote management commands
 
 Future enhancements:
 - [ ] Export conversations to readable formats (Markdown, HTML)
 - [ ] Compression for large history files
 - [ ] Encryption support
-- [ ] Smart merge (combine non-conflicting conversation branches)
+- [x] **Smart merge (combine non-conflicting conversation branches)** ✅ **COMPLETED!**
 - [ ] Web UI for browsing history
 - [ ] Integration with Claude Code as a plugin
 - [ ] Interactive TUI for configuration management
