@@ -1,0 +1,55 @@
+name: Renovate
+
+on:
+  # Run on PRs that modify renovate config
+  pull_request:
+    paths:
+      - '.github/workflows/renovate.yml'
+      - 'renovate.json'
+
+  # Run daily at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: 'Log level'
+        required: false
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - info
+          - warn
+          - error
+
+# Ensure only one Renovate run at a time
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    name: Renovate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Self-hosted Renovate
+        uses: renovatebot/github-action@v40.3.2
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
+          configurationFile: renovate.json
+
+        env:
+          # Use debug log level if triggered manually with debug option
+          LOG_LEVEL: ${{ github.event.inputs.logLevel || 'info' }}
+          # Enable platform autodiscover (will use GitHub automatically)
+          RENOVATE_PLATFORM: github
+          # Repository to run on
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          # Use GitHub's hosted Git implementation
+          RENOVATE_USE_GIT_CLI: 'true'
