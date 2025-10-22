@@ -35,7 +35,7 @@ impl std::fmt::Display for CloneLocation {
                 let default_path = ConfigManager::default_repo_dir()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| "~/.claude-code-sync/repo/".to_string());
-                write!(f, "Default ({})", default_path)
+                write!(f, "Default ({default_path})")
             }
             CloneLocation::Custom => write!(f, "Custom path"),
         }

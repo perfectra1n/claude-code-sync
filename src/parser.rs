@@ -186,7 +186,7 @@ impl ConversationSession {
         for entry in &self.entries {
             let json =
                 serde_json::to_string(entry).context("Failed to serialize conversation entry")?;
-            writeln!(file, "{}", json)
+            writeln!(file, "{json}")
                 .with_context(|| format!("Failed to write to file: {}", path.display()))?;
         }
 

@@ -371,7 +371,7 @@ fn handle_undo_pull() -> Result<()> {
     let summary = undo::undo_pull(None, None).context("Failed to undo pull operation")?;
 
     println!("\n{}", "SUCCESS".green().bold());
-    println!("{}", summary);
+    println!("{summary}");
 
     Ok(())
 }
@@ -413,7 +413,7 @@ fn handle_undo_push() -> Result<()> {
         undo::undo_push(&state.sync_repo_path, None).context("Failed to undo push operation")?;
 
     println!("\n{}", "SUCCESS".green().bold());
-    println!("{}", summary);
+    println!("{summary}");
 
     Ok(())
 }
@@ -500,8 +500,7 @@ fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
             "push" => history::OperationType::Push,
             _ => {
                 return Err(anyhow::anyhow!(
-                    "Invalid operation type '{}'. Must be 'pull' or 'push'.",
-                    op_type
+                    "Invalid operation type '{op_type}'. Must be 'pull' or 'push'."
                 ));
             }
         };
@@ -554,7 +553,7 @@ fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
                 history::SyncOperation::Conflict => "Conflicts".red(),
                 history::SyncOperation::Unchanged => "Unchanged".dimmed(),
             };
-            println!("  {} {}", label, count);
+            println!("  {label} {count}");
         }
     }
 
@@ -670,9 +669,11 @@ fn run_onboarding_flow() -> Result<()> {
     .context("Failed to initialize sync state")?;
 
     // Save filter configuration
-    let mut filter_config = filter::FilterConfig::default();
-    filter_config.exclude_attachments = onboarding_config.exclude_attachments;
-    filter_config.exclude_older_than_days = onboarding_config.exclude_older_than_days;
+    let filter_config = filter::FilterConfig {
+        exclude_attachments: onboarding_config.exclude_attachments,
+        exclude_older_than_days: onboarding_config.exclude_older_than_days,
+        ..Default::default()
+    };
     filter_config
         .save()
         .context("Failed to save filter configuration")?;

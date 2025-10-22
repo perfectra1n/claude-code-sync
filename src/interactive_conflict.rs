@@ -50,6 +50,12 @@ pub struct ResolutionResult {
     pub keep_both: Vec<Conflict>,
 }
 
+impl Default for ResolutionResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResolutionResult {
     /// Creates a new empty ResolutionResult with all conflict vectors initialized
     pub fn new() -> Self {
@@ -62,6 +68,7 @@ impl ResolutionResult {
     }
 
     /// Total number of conflicts resolved
+    #[allow(dead_code)]
     pub fn total(&self) -> usize {
         self.smart_merge.len()
             + self.keep_local.len()
@@ -190,7 +197,7 @@ pub fn resolve_conflicts_interactive_with_sessions(
 
     println!(
         "\n{}",
-        format!("Found {} conflicts to resolve", total_conflicts)
+        format!("Found {total_conflicts} conflicts to resolve")
             .yellow()
             .bold()
     );
@@ -398,7 +405,7 @@ pub fn apply_resolutions(
     // Handle "keep both" - save remote with conflict suffix
     for conflict in &result.keep_both {
         let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let conflict_suffix = format!("conflict-{}", timestamp);
+        let conflict_suffix = format!("conflict-{timestamp}");
 
         let renamed_path = conflict
             .clone()

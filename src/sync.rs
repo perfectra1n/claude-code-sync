@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::conflict::{ConflictDetector, ConflictResolution};
+use crate::conflict::ConflictDetector;
 use crate::filter::FilterConfig;
 use crate::git::GitManager;
 use crate::history::{
@@ -477,11 +477,11 @@ pub fn push_history(
     // Show operation statistics
     let stats_msg = format!(
         "  {} Added    {} Modified    {} Unchanged",
-        format!("{}", added_count).green(),
-        format!("{}", modified_count).cyan(),
-        format!("{}", unchanged_count).dimmed(),
+        format!("{added_count}").green(),
+        format!("{modified_count}").cyan(),
+        format!("{unchanged_count}").dimmed(),
     );
-    println!("{}", stats_msg);
+    println!("{stats_msg}");
     println!();
 
     // Group conversations by project (top-level directory)
@@ -783,7 +783,7 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
                 println!("\n{}", "Conflict Resolution:".yellow().bold());
                 for conflict in &smart_merge_failed_conflicts {
                     let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                    let conflict_suffix = format!("conflict-{}", timestamp);
+                    let conflict_suffix = format!("conflict-{timestamp}");
 
                     if let Ok(renamed_path) = conflict.clone().resolve_keep_both(&conflict_suffix) {
                         let relative_renamed = renamed_path
@@ -980,12 +980,12 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
     let conflict_count = detector.conflict_count();
     let stats_msg = format!(
         "  {} Added    {} Modified    {} Conflicts    {} Unchanged",
-        format!("{}", added_count).green(),
-        format!("{}", modified_count).cyan(),
-        format!("{}", conflict_count).yellow(),
-        format!("{}", unchanged_count).dimmed(),
+        format!("{added_count}").green(),
+        format!("{modified_count}").cyan(),
+        format!("{conflict_count}").yellow(),
+        format!("{unchanged_count}").dimmed(),
     );
-    println!("{}", stats_msg);
+    println!("{stats_msg}");
     println!();
 
     // Group conversations by project (top-level directory)
@@ -1177,23 +1177,21 @@ pub fn show_remote() -> Result<()> {
         return Ok(());
     }
 
-    for remote_name in remotes.iter() {
-        if let Some(name) = remote_name {
-            if let Ok(remote) = repo.find_remote(name) {
-                println!("{} {}", "Remote:".bold(), name.cyan());
+    for name in remotes.iter().flatten() {
+        if let Ok(remote) = repo.find_remote(name) {
+            println!("{} {}", "Remote:".bold(), name.cyan());
 
-                if let Some(url) = remote.url() {
-                    println!("  URL: {}", url);
-                } else {
-                    println!("  URL: {}", "None".yellow());
-                }
-
-                if let Some(push_url) = remote.pushurl() {
-                    println!("  Push URL: {}", push_url);
-                }
-
-                println!();
+            if let Some(url) = remote.url() {
+                println!("  URL: {url}");
+            } else {
+                println!("  URL: {}", "None".yellow());
             }
+
+            if let Some(push_url) = remote.pushurl() {
+                println!("  Push URL: {push_url}");
+            }
+
+            println!();
         }
     }
 
@@ -1208,13 +1206,12 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
     // Validate URL format
     if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("git@") {
         return Err(anyhow!(
-            "Invalid URL format: {}\n\
+            "Invalid URL format: {url}\n\
             \n\
             URL must start with:\n\
             - https:// (e.g., https://github.com/user/repo.git)\n\
             - http:// (e.g., http://gitlab.com/user/repo.git)\n\
-            - git@ (e.g., git@github.com:user/repo.git)",
-            url
+            - git@ (e.g., git@github.com:user/repo.git)"
         ));
     }
 
@@ -1224,7 +1221,7 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
     if remote_exists {
         // Update existing remote
         repo.remote_set_url(name, url)
-            .with_context(|| format!("Failed to update remote '{}' URL", name))?;
+            .with_context(|| format!("Failed to update remote '{name}' URL"))?;
 
         println!(
             "{} Updated remote '{}' to: {}",
@@ -1235,7 +1232,7 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
     } else {
         // Create new remote
         repo.remote(name, url)
-            .with_context(|| format!("Failed to create remote '{}'", name))?;
+            .with_context(|| format!("Failed to create remote '{name}'"))?;
 
         println!(
             "{} Created remote '{}': {}",
@@ -1264,12 +1261,12 @@ pub fn remove_remote(name: &str) -> Result<()> {
 
     // Check if remote exists
     if repo.find_remote(name).is_err() {
-        return Err(anyhow!("Remote '{}' not found", name));
+        return Err(anyhow!("Remote '{name}' not found"));
     }
 
     // Remove the remote
     repo.remote_delete(name)
-        .with_context(|| format!("Failed to remove remote '{}'", name))?;
+        .with_context(|| format!("Failed to remove remote '{name}'"))?;
 
     println!("{} Removed remote '{}'", "✓".green().bold(), name.cyan());
 
@@ -1333,7 +1330,7 @@ mod tests {
         };
 
         // Create state directory using ConfigManager
-        let state_path = crate::config::ConfigManager::ensure_config_dir().unwrap();
+        let _state_path = crate::config::ConfigManager::ensure_config_dir().unwrap();
         let state_file = crate::config::ConfigManager::state_file_path().unwrap();
         std::fs::write(&state_file, serde_json::to_string(&state).unwrap()).unwrap();
 
@@ -1363,8 +1360,10 @@ mod tests {
 
     #[test]
     fn test_filter_with_attachments() {
-        let mut filter = FilterConfig::default();
-        filter.exclude_attachments = true;
+        let filter = FilterConfig {
+            exclude_attachments: true,
+            ..Default::default()
+        };
 
         // JSONL files should be included
         assert!(filter.should_include(Path::new("session.jsonl")));

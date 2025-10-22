@@ -125,8 +125,9 @@ pub struct OperationRecord {
     /// - Complete state of all conversation files before the operation
     /// - Metadata about the sync operation for context
     /// - Timestamp and operation type for verification
-    /// This will enable a future `claude-code-sync undo` command to restore
-    /// the previous state if a sync operation needs to be reversed.
+    ///
+    ///   This will enable a future `claude-code-sync undo` command to restore
+    ///   the previous state if a sync operation needs to be reversed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot_path: Option<PathBuf>,
 }
@@ -151,6 +152,7 @@ impl OperationRecord {
     ///
     /// This method will be used in future CLI commands to display
     /// operation history to users (e.g., `claude-code-sync history`).
+    #[allow(dead_code)]
     pub fn summary(&self) -> String {
         format!(
             "{} operation on {} at {} ({} conversations affected)",
@@ -700,7 +702,7 @@ mod tests {
         // Add more than MAX_HISTORY_SIZE operations
         for i in 0..7 {
             let record =
-                OperationRecord::new(OperationType::Push, Some(format!("branch-{}", i)), vec![]);
+                OperationRecord::new(OperationType::Push, Some(format!("branch-{i}")), vec![]);
             history.operations.insert(0, record);
         }
 
@@ -966,7 +968,7 @@ mod tests {
                 } else {
                     OperationType::Push
                 },
-                Some(format!("branch-{}", i)),
+                Some(format!("branch-{i}")),
                 vec![],
             );
             history.operations.insert(0, record);

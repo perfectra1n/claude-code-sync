@@ -138,10 +138,9 @@ impl<'a> SmartMerger<'a> {
         }
 
         // Merge non-UUID entries by timestamp
-        let non_uuid_merged = self.merge_by_timestamp(
-            &local_non_uuid.into_iter().cloned().collect(),
-            &remote_non_uuid.into_iter().cloned().collect(),
-        );
+        let local_vec: Vec<_> = local_non_uuid.into_iter().cloned().collect();
+        let remote_vec: Vec<_> = remote_non_uuid.into_iter().cloned().collect();
+        let non_uuid_merged = self.merge_by_timestamp(&local_vec, &remote_vec);
 
         self.stats.timestamp_merged = non_uuid_merged.len();
 
@@ -306,6 +305,7 @@ impl<'a> SmartMerger<'a> {
     }
 
     /// Builds a message tree from entries
+    #[allow(dead_code)]
     fn build_tree(
         &mut self,
         entries: &[&ConversationEntry],
@@ -383,6 +383,7 @@ impl<'a> SmartMerger<'a> {
     }
 
     /// Merges two message trees, keeping all branches
+    #[allow(dead_code)]
     fn merge_trees(
         &mut self,
         local_roots: Vec<MessageNode>,
@@ -433,6 +434,8 @@ impl<'a> SmartMerger<'a> {
     }
 
     /// Merges a node into the existing tree
+    #[allow(dead_code)]
+    #[allow(clippy::only_used_in_recursion)]
     fn merge_node_into(
         &mut self,
         node: &MessageNode,
@@ -483,6 +486,7 @@ impl<'a> SmartMerger<'a> {
     }
 
     /// Counts the number of branches in the tree
+    #[allow(dead_code)]
     fn count_branches(&mut self, nodes: &HashMap<String, MessageNode>) {
         for node in nodes.values() {
             if node.children.len() > 1 {
@@ -494,11 +498,11 @@ impl<'a> SmartMerger<'a> {
     /// Merges non-UUID entries by timestamp, removing duplicates
     fn merge_by_timestamp(
         &mut self,
-        local: &Vec<ConversationEntry>,
-        remote: &Vec<ConversationEntry>,
+        local: &[ConversationEntry],
+        remote: &[ConversationEntry],
     ) -> Vec<ConversationEntry> {
-        let mut all_entries = local.clone();
-        all_entries.extend(remote.clone());
+        let mut all_entries = local.to_owned();
+        all_entries.extend(remote.to_owned());
 
         // Sort by timestamp
         all_entries.sort_by(|a, b| {

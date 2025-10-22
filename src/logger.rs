@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use log::LevelFilter;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 
 use crate::config::ConfigManager;
@@ -62,8 +62,7 @@ pub fn init_logger() -> Result<()> {
 
     // Also log initialization to file
     log_to_file(&format!(
-        "Logger initialized with level: {:?}",
-        default_level
+        "Logger initialized with level: {default_level:?}"
     ))?;
 
     Ok(())
@@ -121,6 +120,7 @@ pub fn rotate_log_if_needed() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     #[test]
     fn test_init_logger_succeeds() {

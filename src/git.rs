@@ -83,11 +83,12 @@ impl GitManager {
     pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
         self.repo
             .remote(name, url)
-            .with_context(|| format!("Failed to add remote '{}' with URL '{}'", name, url))?;
+            .with_context(|| format!("Failed to add remote '{name}' with URL '{url}'"))?;
         Ok(())
     }
 
     /// Get the repository path
+    #[allow(dead_code)]
     pub fn path(&self) -> PathBuf {
         self.repo
             .workdir()
@@ -161,9 +162,9 @@ impl GitManager {
         let mut remote = self
             .repo
             .find_remote(remote_name)
-            .with_context(|| format!("Failed to find remote '{}'", remote_name))?;
+            .with_context(|| format!("Failed to find remote '{remote_name}'"))?;
 
-        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+        let refspec = format!("refs/heads/{branch_name}:refs/heads/{branch_name}");
 
         // Set up callbacks for authentication
         let mut callbacks = git2::RemoteCallbacks::new();
@@ -183,7 +184,7 @@ impl GitManager {
             Err(e) => {
                 let remote_url = remote.url().unwrap_or("unknown");
                 Err(anyhow!(
-                    "Failed to push to remote '{}' at '{}': {}\n\
+                    "Failed to push to remote '{remote_name}' at '{remote_url}': {e}\n\
                     \n\
                     Possible causes:\n\
                     1. Authentication failed - ensure credentials are configured\n\
@@ -192,10 +193,7 @@ impl GitManager {
                     4. Remote branch protection rules\n\
                     \n\
                     For HTTPS: Run 'git config --global credential.helper store' and try again\n\
-                    For SSH: Ensure SSH keys are set up with 'ssh -T git@github.com'",
-                    remote_name,
-                    remote_url,
-                    e
+                    For SSH: Ensure SSH keys are set up with 'ssh -T git@github.com'"
                 ))
             }
         }
@@ -206,7 +204,7 @@ impl GitManager {
         let mut remote = self
             .repo
             .find_remote(remote_name)
-            .with_context(|| format!("Failed to find remote '{}'", remote_name))?;
+            .with_context(|| format!("Failed to find remote '{remote_name}'"))?;
 
         // Set up callbacks for authentication
         let mut callbacks = git2::RemoteCallbacks::new();
@@ -252,7 +250,7 @@ impl GitManager {
             return Ok(());
         } else if analysis.0.is_fast_forward() {
             // Fast-forward merge
-            let refname = format!("refs/heads/{}", branch_name);
+            let refname = format!("refs/heads/{branch_name}");
             let mut reference = self
                 .repo
                 .find_reference(&refname)
@@ -1171,8 +1169,8 @@ mod tests {
         // Create 100 files
         for i in 0..100 {
             fs::write(
-                temp_dir.path().join(format!("file_{}.txt", i)),
-                format!("content {}", i),
+                temp_dir.path().join(format!("file_{i}.txt")),
+                format!("content {i}"),
             )
             .unwrap();
         }
@@ -1240,12 +1238,12 @@ mod tests {
         // Create 10 commits rapidly
         for i in 0..10 {
             fs::write(
-                temp_dir.path().join(format!("file{}.txt", i)),
-                format!("content{}", i),
+                temp_dir.path().join(format!("file{i}.txt")),
+                format!("content{i}"),
             )
             .unwrap();
             git_manager.stage_all().unwrap();
-            git_manager.commit(&format!("Commit {}", i)).unwrap();
+            git_manager.commit(&format!("Commit {i}")).unwrap();
             hashes.push(git_manager.current_commit_hash().unwrap());
         }
 

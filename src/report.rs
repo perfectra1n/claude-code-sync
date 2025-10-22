@@ -171,7 +171,7 @@ impl ConflictReport {
                 "  - Last Updated: {}\n",
                 conflict.remote_timestamp
             ));
-            output.push_str("\n");
+            output.push('\n');
         }
 
         output
@@ -227,7 +227,7 @@ impl ConflictReport {
         let content = match format.to_lowercase().as_str() {
             "json" => self.to_json()?,
             "markdown" | "md" => self.to_markdown(),
-            _ => return Err(anyhow::anyhow!("Unsupported format: {}", format)),
+            _ => return Err(anyhow::anyhow!("Unsupported format: {format}")),
         };
 
         fs::write(path, content)
@@ -307,8 +307,6 @@ fn get_sync_state_dir() -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conflict::{Conflict, ConflictResolution};
-    use std::path::PathBuf;
 
     #[test]
     fn test_empty_report() {

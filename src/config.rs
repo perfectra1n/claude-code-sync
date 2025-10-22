@@ -74,6 +74,7 @@ impl ConfigManager {
     }
 
     /// Get the latest conflict report path
+    #[allow(dead_code)]
     pub fn conflict_report_path() -> Result<PathBuf> {
         Ok(Self::config_dir()?.join("latest-conflict-report.json"))
     }
@@ -96,6 +97,7 @@ impl ConfigManager {
     }
 
     /// Ensure the snapshots directory exists
+    #[allow(dead_code)]
     pub fn ensure_snapshots_dir() -> Result<PathBuf> {
         let snapshots_dir = Self::snapshots_dir()?;
         std::fs::create_dir_all(&snapshots_dir).with_context(|| {

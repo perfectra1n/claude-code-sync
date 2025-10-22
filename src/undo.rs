@@ -307,6 +307,7 @@ impl Snapshot {
     /// Restore files from this snapshot
     ///
     /// This is a convenience wrapper that uses the home directory as the allowed base.
+    #[allow(dead_code)]
     pub fn restore(&self) -> Result<()> {
         self.restore_with_base(None)
     }
@@ -659,11 +660,11 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
 
     // Find the target commit
     let oid = git2::Oid::from_str(target_commit)
-        .with_context(|| format!("Invalid commit hash: {}", target_commit))?;
+        .with_context(|| format!("Invalid commit hash: {target_commit}"))?;
 
     let target_commit_obj = repo
         .find_commit(oid)
-        .with_context(|| format!("Failed to find commit: {}", target_commit))?;
+        .with_context(|| format!("Failed to find commit: {target_commit}"))?;
 
     // Check if we need to warn about remote (before reset)
     let branch_name = snapshot.branch.as_deref().unwrap_or("unknown");
@@ -713,8 +714,7 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
             "\n\n\
             WARNING: The remote repository was updated by the push.\n\
             You will need to force push to update the remote:\n\
-            git push --force origin {}",
-            branch_name
+            git push --force origin {branch_name}"
         ));
     }
 
@@ -1213,8 +1213,7 @@ mod tests {
             // Should contain security error message
             assert!(
                 err_msg.contains("Security") || err_msg.contains("outside home"),
-                "Error message should indicate security issue: {}",
-                err_msg
+                "Error message should indicate security issue: {err_msg}"
             );
         } else {
             // If it didn't error, verify the file wasn't written outside home
@@ -1440,7 +1439,7 @@ mod tests {
         // Create a snapshot with more than 10,000 files
         let mut files = HashMap::new();
         for i in 0..10_001 {
-            files.insert(format!("file_{}.txt", i), vec![0u8; 10]);
+            files.insert(format!("file_{i}.txt"), vec![0u8; 10]);
         }
 
         let snapshot = Snapshot {
@@ -1472,7 +1471,7 @@ mod tests {
         // Create a snapshot within limits
         let mut files = HashMap::new();
         for i in 0..100 {
-            files.insert(format!("file_{}.txt", i), b"small content".to_vec());
+            files.insert(format!("file_{i}.txt"), b"small content".to_vec());
         }
 
         let snapshot = Snapshot {

@@ -131,8 +131,7 @@ fn test_full_push_pull_cycle() {
     let file_count = count_jsonl_files(&claude_projects_dir);
     assert!(
         file_count >= 5,
-        "Expected at least 5 test files, found {}",
-        file_count
+        "Expected at least 5 test files, found {file_count}"
     );
 
     // Initialize sync repository (git init)
@@ -803,9 +802,9 @@ fn test_concurrent_push_pull_operations() {
         };
 
         let conv = ConversationSummary::new(
-            format!("session-{}", i),
-            format!("path/conv{}.jsonl", i),
-            Some(format!("2025-01-01T{:02}:00:00Z", i)),
+            format!("session-{i}"),
+            format!("path/conv{i}.jsonl"),
+            Some(format!("2025-01-01T{i:02}:00:00Z")),
             i + 1,
             SyncOperation::Modified,
         )

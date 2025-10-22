@@ -196,7 +196,7 @@ pub fn update_config(
         config.exclude_older_than_days = Some(days);
         println!(
             "{}",
-            format!("Set exclude_older_than_days to {} days", days).green()
+            format!("Set exclude_older_than_days to {days} days").green()
         );
     }
 
@@ -228,7 +228,7 @@ pub fn update_config(
         config.exclude_attachments = exclude_att;
         println!(
             "{}",
-            format!("Exclude attachments: {}", exclude_att).green()
+            format!("Exclude attachments: {exclude_att}").green()
         );
     }
 
@@ -248,7 +248,7 @@ pub fn show_config() -> Result<()> {
         "Exclude older than".cyan(),
         config
             .exclude_older_than_days
-            .map(|d| format!("{} days", d))
+            .map(|d| format!("{d} days"))
             .unwrap_or_else(|| "Not set".to_string())
     );
     println!(
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(config.exclude_older_than_days, None);
         assert!(config.include_patterns.is_empty());
         assert!(config.exclude_patterns.is_empty());
-        assert_eq!(config.exclude_attachments, false);
+        assert!(!config.exclude_attachments);
     }
 
     #[test]
@@ -324,8 +324,10 @@ mod tests {
         assert!(config_include_all.should_include(&PathBuf::from("document.pdf")));
 
         // Config with exclude_attachments = true
-        let mut config_exclude = FilterConfig::default();
-        config_exclude.exclude_attachments = true;
+        let config_exclude = FilterConfig {
+            exclude_attachments: true,
+            ..Default::default()
+        };
 
         // Should include .jsonl files
         assert!(config_exclude.should_include(&PathBuf::from("session.jsonl")));
@@ -341,9 +343,11 @@ mod tests {
     fn test_exclude_attachments_with_patterns() {
         use std::path::PathBuf;
 
-        let mut config = FilterConfig::default();
-        config.exclude_attachments = true;
-        config.exclude_patterns = vec!["*test*".to_string()];
+        let config = FilterConfig {
+            exclude_attachments: true,
+            exclude_patterns: vec!["*test*".to_string()],
+            ..Default::default()
+        };
 
         // Should exclude based on attachment filter
         assert!(!config.should_include(&PathBuf::from("image.png")));
@@ -357,9 +361,11 @@ mod tests {
 
     #[test]
     fn test_filter_config_serialization() {
-        let mut config = FilterConfig::default();
-        config.exclude_attachments = true;
-        config.exclude_older_than_days = Some(30);
+        let config = FilterConfig {
+            exclude_attachments: true,
+            exclude_older_than_days: Some(30),
+            ..Default::default()
+        };
 
         // Test that it can be serialized
         let serialized = toml::to_string(&config).unwrap();
@@ -367,7 +373,7 @@ mod tests {
 
         // Test that it can be deserialized
         let deserialized: FilterConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.exclude_attachments, true);
+        assert!(deserialized.exclude_attachments);
         assert_eq!(deserialized.exclude_older_than_days, Some(30));
     }
 }

@@ -319,8 +319,7 @@ fn test_complex_branching_scenario() {
     for expected_uuid in &["A", "B1", "B2", "C1", "C2", "D2"] {
         assert!(
             uuids.contains(&expected_uuid.to_string()),
-            "Should contain message {}",
-            expected_uuid
+            "Should contain message {expected_uuid}"
         );
     }
 }

@@ -62,8 +62,8 @@ fn test_sync_state_with_cloned_flag() -> Result<()> {
 
     let deserialized: SyncState = serde_json::from_str(&serialized)?;
     assert_eq!(deserialized.sync_repo_path, repo_path);
-    assert_eq!(deserialized.has_remote, true);
-    assert_eq!(deserialized.is_cloned_repo, true);
+    assert!(deserialized.has_remote);
+    assert!(deserialized.is_cloned_repo);
 
     Ok(())
 }
@@ -77,8 +77,8 @@ fn test_sync_state_backwards_compatible() -> Result<()> {
     }"#;
 
     let state: SyncState = serde_json::from_str(old_state_json)?;
-    assert_eq!(state.has_remote, true);
-    assert_eq!(state.is_cloned_repo, false); // Should default to false
+    assert!(state.has_remote);
+    assert!(!state.is_cloned_repo); // Should default to false
 
     Ok(())
 }
@@ -88,14 +88,16 @@ fn test_filter_config_save_and_load() -> Result<()> {
     // Note: This test modifies the actual user config
     // In a real-world scenario, you'd want to use a custom config path
 
-    let mut config = FilterConfig::default();
-    config.exclude_attachments = true;
-    config.exclude_older_than_days = Some(30);
+    let config = FilterConfig {
+        exclude_attachments: true,
+        exclude_older_than_days: Some(30),
+        ..Default::default()
+    };
 
     config.save()?;
 
     let loaded = FilterConfig::load()?;
-    assert_eq!(loaded.exclude_attachments, true);
+    assert!(loaded.exclude_attachments);
     assert_eq!(loaded.exclude_older_than_days, Some(30));
 
     Ok(())
@@ -115,7 +117,7 @@ fn test_git_manager_clone_validates_path() -> Result<()> {
 
     // The error should contain helpful information
     let err = result.err().unwrap();
-    let err_msg = format!("{}", err);
+    let err_msg = format!("{err}");
     assert!(err_msg.contains("Failed to clone"));
 
     Ok(())
@@ -135,8 +137,8 @@ fn test_init_from_onboarding() -> Result<()> {
     // Verify state was saved
     let state = SyncState::load()?;
     assert_eq!(state.sync_repo_path, repo_path);
-    assert_eq!(state.has_remote, false);
-    assert_eq!(state.is_cloned_repo, false);
+    assert!(!state.has_remote);
+    assert!(!state.is_cloned_repo);
 
     Ok(())
 }
@@ -159,8 +161,8 @@ fn test_init_from_onboarding_with_remote() -> Result<()> {
     // Verify state was saved
     let state = SyncState::load()?;
     assert_eq!(state.sync_repo_path, repo_path);
-    assert_eq!(state.has_remote, true);
-    assert_eq!(state.is_cloned_repo, true);
+    assert!(state.has_remote);
+    assert!(state.is_cloned_repo);
 
     Ok(())
 }
@@ -190,8 +192,10 @@ fn test_filter_config_with_attachments() -> Result<()> {
     use std::path::PathBuf;
 
     // Test exclude_attachments flag
-    let mut config = FilterConfig::default();
-    config.exclude_attachments = true;
+    let mut config = FilterConfig {
+        exclude_attachments: true,
+        ..Default::default()
+    };
 
     // Should include .jsonl files
     assert!(config.should_include(&PathBuf::from("session.jsonl")));
@@ -213,17 +217,19 @@ fn test_filter_config_with_attachments() -> Result<()> {
 fn test_multiple_config_operations() -> Result<()> {
     // This test is sensitive to ordering with other tests that modify config
     // We'll just verify the last saved state is loaded correctly
-    let loaded = FilterConfig::load()?;
+    let _loaded = FilterConfig::load()?;
 
     // Save a new config with known values
-    let mut config = FilterConfig::default();
-    config.exclude_attachments = true;
-    config.exclude_older_than_days = Some(99);
+    let config = FilterConfig {
+        exclude_attachments: true,
+        exclude_older_than_days: Some(99),
+        ..Default::default()
+    };
     config.save()?;
 
     // Verify it was saved
     let loaded2 = FilterConfig::load()?;
-    assert_eq!(loaded2.exclude_attachments, true);
+    assert!(loaded2.exclude_attachments);
     assert_eq!(loaded2.exclude_older_than_days, Some(99));
 
     Ok(())

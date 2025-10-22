@@ -263,8 +263,7 @@ impl Conflict {
         let parent = self.remote_file.parent().unwrap_or_else(|| Path::new("."));
 
         let new_name = format!(
-            "{}-{}.{}",
-            remote_file_name, conflict_suffix, remote_file_ext
+            "{remote_file_name}-{conflict_suffix}.{remote_file_ext}"
         );
         let renamed_path = parent.join(new_name);
 
@@ -374,12 +373,13 @@ impl ConflictDetector {
     }
 
     /// Resolve all conflicts using the "keep both" strategy
+    #[allow(dead_code)]
     pub fn resolve_all_keep_both(&mut self) -> Result<Vec<(PathBuf, PathBuf)>> {
         let mut renames = Vec::new();
 
         for conflict in &mut self.conflicts {
             let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-            let conflict_suffix = format!("conflict-{}", timestamp);
+            let conflict_suffix = format!("conflict-{timestamp}");
 
             let renamed_path = conflict.resolve_keep_both(&conflict_suffix)?;
             renames.push((conflict.remote_file.clone(), renamed_path));
@@ -426,14 +426,14 @@ mod tests {
         for i in 0..message_count {
             entries.push(ConversationEntry {
                 entry_type: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
-                uuid: Some(format!("uuid-{}", i)),
+                uuid: Some(format!("uuid-{i}")),
                 parent_uuid: if i > 0 {
                     Some(format!("uuid-{}", i - 1))
                 } else {
                     None
                 },
                 session_id: Some(session_id.to_string()),
-                timestamp: Some(format!("2025-01-01T{:02}:00:00Z", i)),
+                timestamp: Some(format!("2025-01-01T{i:02}:00:00Z")),
                 message: None,
                 cwd: None,
                 version: None,
@@ -445,7 +445,7 @@ mod tests {
         ConversationSession {
             session_id: session_id.to_string(),
             entries,
-            file_path: format!("/test/{}.jsonl", session_id),
+            file_path: format!("/test/{session_id}.jsonl"),
         }
     }
 

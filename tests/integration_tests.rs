@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 /// Test helper to create a mock Claude Code projects directory
@@ -63,7 +62,7 @@ fn test_end_to_end_sync_workflow() {
     // 6. Detecting and resolving conflicts
 
     // For now, we verify the test infrastructure works
-    assert!(true);
+    // Test infrastructure is set up correctly
 }
 
 #[test]
@@ -138,15 +137,14 @@ fn test_multiple_projects() {
 
     // Create multiple project directories
     for project in &["project-a", "project-b", "project-c"] {
-        let project_dir = projects_dir.join(format!("-root-repos-{}", project));
+        let project_dir = projects_dir.join(format!("-root-repos-{project}"));
         fs::create_dir_all(&project_dir).unwrap();
 
-        let session_file = project_dir.join(format!("{}-session.jsonl", project));
+        let session_file = project_dir.join(format!("{project}-session.jsonl"));
         fs::write(
             &session_file,
             format!(
-                r#"{{"type":"user","uuid":"1","sessionId":"{}-session","timestamp":"2025-01-01T00:00:00Z"}}"#,
-                project
+                r#"{{"type":"user","uuid":"1","sessionId":"{project}-session","timestamp":"2025-01-01T00:00:00Z"}}"#
             ),
         )
         .unwrap();
@@ -178,7 +176,7 @@ fn test_malformed_jsonl_handling() {
 
     // Verify file exists but contains invalid data
     let content = fs::read_to_string(&malformed_file).unwrap();
-    assert!(serde_json::from_str::<serde_json::Value>(&content.lines().next().unwrap()).is_err());
+    assert!(serde_json::from_str::<serde_json::Value>(content.lines().next().unwrap()).is_err());
 }
 
 #[test]
