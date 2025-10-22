@@ -82,8 +82,7 @@ impl FilterConfig {
 
     /// Get the path to the config file
     fn config_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("Failed to get home directory")?;
-        Ok(home.join(".claude-sync.toml"))
+        crate::config::ConfigManager::filter_config_path()
     }
 
     /// Check if a file should be included based on filters

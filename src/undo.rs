@@ -313,8 +313,7 @@ impl Snapshot {
 
     /// Get the default snapshots directory
     fn snapshots_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("Failed to get home directory")?;
-        Ok(home.join(".claude-sync").join("snapshots"))
+        crate::config::ConfigManager::snapshots_dir()
     }
 }
 

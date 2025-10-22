@@ -1,7 +1,10 @@
+mod config;
 mod conflict;
 mod filter;
 mod git;
 mod history;
+mod logger;
+mod onboarding;
 mod parser;
 mod report;
 mod sync;
@@ -18,7 +21,7 @@ use std::path::PathBuf;
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -196,9 +199,47 @@ enum HistoryAction {
 }
 
 fn main() -> Result<()> {
+    // Initialize logging (rotate log if needed, then set up logger)
+    logger::rotate_log_if_needed().ok();  // Ignore errors during log rotation
+    logger::init_logger().ok();  // Ignore errors during logger init
+
+    log::info!("claude-sync started");
+
     let cli = Cli::parse();
 
-    match cli.command {
+    // Check if initialization is needed (before processing any command)
+    let needs_onboarding = !is_initialized()?;
+
+    // Determine the actual command to run
+    let command = if let Some(cmd) = cli.command {
+        cmd
+    } else {
+        // No command provided
+        if needs_onboarding {
+            // Will trigger onboarding below, then default to sync
+            Commands::Sync {
+                message: None,
+                branch: None,
+                exclude_attachments: false,
+            }
+        } else {
+            // Already initialized, default to sync
+            Commands::Sync {
+                message: None,
+                branch: None,
+                exclude_attachments: false,
+            }
+        }
+    };
+
+    // Run onboarding if needed
+    if needs_onboarding {
+        log::info!("Running onboarding flow - first time setup detected");
+        run_onboarding_flow()?;
+        log::info!("Onboarding completed successfully");
+    }
+
+    match command {
         Commands::Init { repo, remote } => {
             sync::init_sync_repo(&repo, remote.as_deref())?;
         }
@@ -540,6 +581,57 @@ fn handle_history_clear() -> Result<()> {
         "SUCCESS:".green().bold(),
         count
     );
+
+    Ok(())
+}
+
+// ============================================================================
+// Onboarding & Initialization Helpers
+// ============================================================================
+
+/// Check if claude-sync has been initialized
+fn is_initialized() -> Result<bool> {
+    let state_path = config::ConfigManager::state_file_path()?;
+    Ok(state_path.exists())
+}
+
+/// Run the onboarding flow and initialize the system
+fn run_onboarding_flow() -> Result<()> {
+    use colored::Colorize;
+
+    // Run the interactive onboarding
+    let onboarding_config = onboarding::run_onboarding()
+        .context("Onboarding cancelled or failed")?;
+
+    // Handle cloning if needed
+    if onboarding_config.is_cloned {
+        if let Some(ref remote_url) = onboarding_config.remote_url {
+            println!();
+            println!("{}", "✓ Cloning repository...".cyan());
+
+            git::GitManager::clone(remote_url, &onboarding_config.repo_path)
+                .context("Failed to clone repository")?;
+
+            println!("{}", "✓ Repository cloned successfully!".green());
+        }
+    }
+
+    // Initialize sync state
+    sync::init_from_onboarding(
+        &onboarding_config.repo_path,
+        onboarding_config.remote_url.as_deref(),
+        onboarding_config.is_cloned,
+    )
+    .context("Failed to initialize sync state")?;
+
+    // Save filter configuration
+    let mut filter_config = filter::FilterConfig::default();
+    filter_config.exclude_attachments = onboarding_config.exclude_attachments;
+    filter_config.exclude_older_than_days = onboarding_config.exclude_older_than_days;
+    filter_config.save().context("Failed to save filter configuration")?;
+
+    println!("{}", "✓ Ready to sync!".green().bold());
+    println!();
 
     Ok(())
 }

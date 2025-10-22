@@ -11,7 +11,8 @@ use claude_sync::sync::SyncState;
 use claude_sync::undo::{undo_pull, undo_push, Snapshot};
 
 /// Path to test data directory
-const TEST_DATA_DIR: &str = "/root/repos/claude-sync/data";
+// Use relative path from the workspace root
+const TEST_DATA_DIR: &str = "data";
 
 /// Helper function to copy test data to a destination directory
 fn copy_test_data(dest_projects_dir: &Path) -> anyhow::Result<()> {
@@ -51,6 +52,7 @@ fn create_test_sync_state(sync_repo_path: &Path, state_dir: &Path) -> anyhow::Re
     let state = SyncState {
         sync_repo_path: sync_repo_path.to_path_buf(),
         has_remote: false,
+        is_cloned_repo: false,
     };
 
     let state_file = state_dir.join("state.json");

@@ -23,6 +23,9 @@ const MAX_CONVERSATIONS_TO_DISPLAY: usize = 10;
 pub struct SyncState {
     pub sync_repo_path: PathBuf,
     pub has_remote: bool,
+    /// Whether the repository was cloned from a remote URL
+    #[serde(default)]
+    pub is_cloned_repo: bool,
 }
 
 impl SyncState {
@@ -59,8 +62,7 @@ impl SyncState {
     }
 
     fn state_file_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("Failed to get home directory")?;
-        Ok(home.join(".claude-sync").join("state.json"))
+        crate::config::ConfigManager::state_file_path()
     }
 }
 
@@ -68,6 +70,43 @@ impl SyncState {
 fn claude_projects_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Failed to get home directory")?;
     Ok(home.join(".claude").join("projects"))
+}
+
+/// Initialize sync repository from onboarding config
+pub fn init_from_onboarding(
+    repo_path: &Path,
+    remote_url: Option<&str>,
+    is_cloned: bool,
+) -> Result<()> {
+    crate::config::ConfigManager::ensure_config_dir()?;
+
+    // If this is a cloned repo and it already exists, just open it
+    // Otherwise, initialize a new one
+    let git_manager = if repo_path.exists() && repo_path.join(".git").exists() {
+        GitManager::open(repo_path)?
+    } else {
+        GitManager::init(repo_path)?
+    };
+
+    // Add remote if specified
+    let has_remote = if let Some(url) = remote_url {
+        if !git_manager.has_remote("origin") {
+            git_manager.add_remote("origin", url)?;
+        }
+        true
+    } else {
+        false
+    };
+
+    // Save sync state
+    let state = SyncState {
+        sync_repo_path: repo_path.to_path_buf(),
+        has_remote,
+        is_cloned_repo: is_cloned,
+    };
+    state.save()?;
+
+    Ok(())
 }
 
 /// Initialize a new sync repository
@@ -111,6 +150,7 @@ pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> 
     let state = SyncState {
         sync_repo_path: repo_path.to_path_buf(),
         has_remote,
+        is_cloned_repo: false,
     };
     state.save()?;
 
@@ -1066,13 +1106,12 @@ mod tests {
         let state = SyncState {
             sync_repo_path: repo_path.clone(),
             has_remote: false,
+            is_cloned_repo: false,
         };
 
-        // Create state directory
-        let state_path = dirs::home_dir().unwrap().join(".claude-sync");
-        std::fs::create_dir_all(&state_path).unwrap();
-
-        let state_file = state_path.join("state.json");
+        // Create state directory using ConfigManager
+        let state_path = crate::config::ConfigManager::ensure_config_dir().unwrap();
+        let state_file = crate::config::ConfigManager::state_file_path().unwrap();
         std::fs::write(&state_file, serde_json::to_string(&state).unwrap()).unwrap();
 
         // Valid HTTPS URL

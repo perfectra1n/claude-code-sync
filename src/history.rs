@@ -192,8 +192,7 @@ impl OperationHistory {
 
     /// Get the path to the history file
     fn history_file_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("Failed to get home directory")?;
-        Ok(home.join(".claude-sync").join("operation-history.json"))
+        crate::config::ConfigManager::operation_history_path()
     }
 
     /// Load operation history from a custom path

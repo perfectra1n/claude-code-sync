@@ -32,6 +32,52 @@ impl GitManager {
         Ok(GitManager { repo })
     }
 
+    /// Clone a remote repository
+    pub fn clone<P: AsRef<Path>>(url: &str, path: P) -> Result<Self> {
+        let path = path.as_ref();
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directory: {}", parent.display()))?;
+        }
+
+        // Set up fetch options with credential helper
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(|_url, username_from_url, _allowed_types| {
+            // Try credential helper first
+            git2::Cred::credential_helper(&git2::Config::open_default()?, _url, username_from_url)
+                // Fall back to SSH agent if credential helper fails
+                .or_else(|_| git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git")))
+        });
+
+        let mut fetch_options = git2::FetchOptions::new();
+        fetch_options.remote_callbacks(callbacks);
+
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(fetch_options);
+
+        // Perform the clone
+        let repo = builder.clone(url, path).with_context(|| {
+            format!(
+                "Failed to clone repository from '{}' to '{}'.\n\
+                \n\
+                Possible causes:\n\
+                1. Authentication failed - ensure credentials are configured\n\
+                2. Invalid repository URL\n\
+                3. Network connectivity issues\n\
+                4. No permission to access this repository\n\
+                \n\
+                For HTTPS: Run 'git config --global credential.helper store' first\n\
+                For SSH: Ensure SSH keys are set up with 'ssh -T git@github.com'",
+                url,
+                path.display()
+            )
+        })?;
+
+        Ok(GitManager { repo })
+    }
+
     /// Add a remote to the repository
     pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
         self.repo

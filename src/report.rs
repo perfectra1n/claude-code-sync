@@ -232,8 +232,7 @@ pub fn save_conflict_report(report: &ConflictReport) -> Result<()> {
 
 /// Get the sync state directory
 fn get_sync_state_dir() -> Result<std::path::PathBuf> {
-    let home = dirs::home_dir().context("Failed to get home directory")?;
-    Ok(home.join(".claude-sync"))
+    crate::config::ConfigManager::config_dir()
 }
 
 #[cfg(test)]
