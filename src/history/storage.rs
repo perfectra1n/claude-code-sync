@@ -1,181 +1,13 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use super::record::OperationRecord;
+use super::types::OperationType;
+
 /// Maximum number of operation records to keep in history
 const MAX_HISTORY_SIZE: usize = 5;
-
-/// Type of sync operation performed
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OperationType {
-    /// Pull operation: syncing from remote to local
-    Pull,
-    /// Push operation: syncing from local to remote
-    Push,
-}
-
-impl OperationType {
-    /// Returns a human-readable string representation
-    pub fn as_str(&self) -> &str {
-        match self {
-            OperationType::Pull => "pull",
-            OperationType::Push => "push",
-        }
-    }
-}
-
-/// Type of operation performed on a specific conversation during sync
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SyncOperation {
-    /// Conversation was newly added
-    Added,
-    /// Existing conversation was modified
-    Modified,
-    /// Conflict detected that needs resolution
-    Conflict,
-    /// Conversation exists but was not changed
-    Unchanged,
-}
-
-impl SyncOperation {
-    /// Returns a human-readable string representation
-    pub fn as_str(&self) -> &str {
-        match self {
-            SyncOperation::Added => "added",
-            SyncOperation::Modified => "modified",
-            SyncOperation::Conflict => "conflict",
-            SyncOperation::Unchanged => "unchanged",
-        }
-    }
-}
-
-/// Summary of a conversation affected during a sync operation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ConversationSummary {
-    /// Unique identifier for the conversation session
-    pub session_id: String,
-
-    /// Relative path from claude projects directory
-    pub project_path: String,
-
-    /// Timestamp of the conversation (if available)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
-
-    /// Number of messages in the conversation
-    pub message_count: usize,
-
-    /// Type of operation performed on this conversation
-    pub operation: SyncOperation,
-}
-
-impl ConversationSummary {
-    /// Create a new conversation summary with validation
-    ///
-    /// # Errors
-    /// Returns an error if session_id or project_path are empty
-    pub fn new(
-        session_id: String,
-        project_path: String,
-        timestamp: Option<String>,
-        message_count: usize,
-        operation: SyncOperation,
-    ) -> Result<Self> {
-        if session_id.is_empty() {
-            anyhow::bail!("session_id cannot be empty");
-        }
-        if project_path.is_empty() {
-            anyhow::bail!("project_path cannot be empty");
-        }
-
-        Ok(Self {
-            session_id,
-            project_path,
-            timestamp,
-            message_count,
-            operation,
-        })
-    }
-}
-
-/// Record of a single sync operation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OperationRecord {
-    /// Type of operation (pull or push)
-    pub operation_type: OperationType,
-
-    /// When the operation was performed
-    pub timestamp: DateTime<Utc>,
-
-    /// Git branch the operation was performed on (if available)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-
-    /// List of conversations affected by this operation
-    pub affected_conversations: Vec<ConversationSummary>,
-
-    /// Path to snapshot for undo capability
-    ///
-    /// TODO(snapshot): Implement snapshot creation during sync operations
-    /// The snapshot should contain:
-    /// - Complete state of all conversation files before the operation
-    /// - Metadata about the sync operation for context
-    /// - Timestamp and operation type for verification
-    ///
-    ///   This will enable a future `claude-code-sync undo` command to restore
-    ///   the previous state if a sync operation needs to be reversed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub snapshot_path: Option<PathBuf>,
-}
-
-impl OperationRecord {
-    /// Create a new operation record
-    pub fn new(
-        operation_type: OperationType,
-        branch: Option<String>,
-        affected_conversations: Vec<ConversationSummary>,
-    ) -> Self {
-        Self {
-            operation_type,
-            timestamp: Utc::now(),
-            branch,
-            affected_conversations,
-            snapshot_path: None,
-        }
-    }
-
-    /// Get a summary string for this operation
-    ///
-    /// This method will be used in future CLI commands to display
-    /// operation history to users (e.g., `claude-code-sync history`).
-    #[allow(dead_code)]
-    pub fn summary(&self) -> String {
-        format!(
-            "{} operation on {} at {} ({} conversations affected)",
-            self.operation_type.as_str(),
-            self.branch.as_deref().unwrap_or("unknown branch"),
-            self.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
-            self.affected_conversations.len()
-        )
-    }
-
-    /// Count conversations by operation type
-    ///
-    /// This method will be used in future CLI commands to provide
-    /// statistics about sync operations (e.g., showing how many files
-    /// were added, modified, or had conflicts).
-    pub fn operation_stats(&self) -> std::collections::HashMap<SyncOperation, usize> {
-        let mut stats = std::collections::HashMap::new();
-        for conv in &self.affected_conversations {
-            *stats.entry(conv.operation).or_insert(0) += 1;
-        }
-        stats
-    }
-}
 
 /// Manages operation history with persistence to disk
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,6 +204,8 @@ impl Default for OperationHistory {
 
 #[cfg(test)]
 mod tests {
+    use super::super::summary::ConversationSummary;
+    use super::super::types::SyncOperation;
     use super::*;
     use std::fs;
     use tempfile::TempDir;
@@ -381,209 +215,6 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let history_path = temp_dir.path().join("operation-history.json");
         (temp_dir, history_path)
-    }
-
-    #[test]
-    fn test_operation_type_as_str() {
-        assert_eq!(OperationType::Pull.as_str(), "pull");
-        assert_eq!(OperationType::Push.as_str(), "push");
-    }
-
-    #[test]
-    fn test_operation_type_serde() {
-        let pull = OperationType::Pull;
-        let serialized = serde_json::to_string(&pull).unwrap();
-        assert_eq!(serialized, r#""pull""#);
-
-        let push = OperationType::Push;
-        let serialized = serde_json::to_string(&push).unwrap();
-        assert_eq!(serialized, r#""push""#);
-
-        let deserialized: OperationType = serde_json::from_str(r#""pull""#).unwrap();
-        assert_eq!(deserialized, OperationType::Pull);
-    }
-
-    #[test]
-    fn test_sync_operation_as_str() {
-        assert_eq!(SyncOperation::Added.as_str(), "added");
-        assert_eq!(SyncOperation::Modified.as_str(), "modified");
-        assert_eq!(SyncOperation::Conflict.as_str(), "conflict");
-        assert_eq!(SyncOperation::Unchanged.as_str(), "unchanged");
-    }
-
-    #[test]
-    fn test_sync_operation_serde() {
-        let added = SyncOperation::Added;
-        let serialized = serde_json::to_string(&added).unwrap();
-        assert_eq!(serialized, r#""added""#);
-
-        let modified = SyncOperation::Modified;
-        let serialized = serde_json::to_string(&modified).unwrap();
-        assert_eq!(serialized, r#""modified""#);
-
-        let deserialized: SyncOperation = serde_json::from_str(r#""conflict""#).unwrap();
-        assert_eq!(deserialized, SyncOperation::Conflict);
-    }
-
-    #[test]
-    fn test_conversation_summary_creation() {
-        let summary = ConversationSummary::new(
-            "session-123".to_string(),
-            "project/path".to_string(),
-            Some("2025-01-15T10:30:00Z".to_string()),
-            42,
-            SyncOperation::Added,
-        )
-        .unwrap();
-
-        assert_eq!(summary.session_id, "session-123");
-        assert_eq!(summary.project_path, "project/path");
-        assert_eq!(summary.timestamp, Some("2025-01-15T10:30:00Z".to_string()));
-        assert_eq!(summary.message_count, 42);
-        assert_eq!(summary.operation, SyncOperation::Added);
-    }
-
-    #[test]
-    fn test_conversation_summary_validation() {
-        // Empty session_id should fail
-        let result = ConversationSummary::new(
-            "".to_string(),
-            "project/path".to_string(),
-            None,
-            10,
-            SyncOperation::Added,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("session_id"));
-
-        // Empty project_path should fail
-        let result = ConversationSummary::new(
-            "session-123".to_string(),
-            "".to_string(),
-            None,
-            10,
-            SyncOperation::Added,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("project_path"));
-    }
-
-    #[test]
-    fn test_conversation_summary_serde() {
-        let summary = ConversationSummary::new(
-            "session-456".to_string(),
-            "test/path".to_string(),
-            None,
-            10,
-            SyncOperation::Modified,
-        )
-        .unwrap();
-
-        let json = serde_json::to_string(&summary).unwrap();
-        let deserialized: ConversationSummary = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(summary, deserialized);
-    }
-
-    #[test]
-    fn test_operation_record_creation() {
-        let conversations = vec![
-            ConversationSummary::new(
-                "session-1".to_string(),
-                "path/1".to_string(),
-                None,
-                5,
-                SyncOperation::Added,
-            )
-            .unwrap(),
-            ConversationSummary::new(
-                "session-2".to_string(),
-                "path/2".to_string(),
-                None,
-                10,
-                SyncOperation::Modified,
-            )
-            .unwrap(),
-        ];
-
-        let record = OperationRecord::new(
-            OperationType::Push,
-            Some("main".to_string()),
-            conversations.clone(),
-        );
-
-        assert_eq!(record.operation_type, OperationType::Push);
-        assert_eq!(record.branch, Some("main".to_string()));
-        assert_eq!(record.affected_conversations.len(), 2);
-        assert!(record.snapshot_path.is_none());
-    }
-
-    #[test]
-    fn test_operation_record_summary() {
-        let conversations = vec![ConversationSummary::new(
-            "session-1".to_string(),
-            "path/1".to_string(),
-            None,
-            5,
-            SyncOperation::Added,
-        )
-        .unwrap()];
-
-        let record = OperationRecord::new(
-            OperationType::Pull,
-            Some("feature-branch".to_string()),
-            conversations,
-        );
-
-        let summary = record.summary();
-        assert!(summary.contains("pull"));
-        assert!(summary.contains("feature-branch"));
-        assert!(summary.contains("1 conversations affected"));
-    }
-
-    #[test]
-    fn test_operation_record_stats() {
-        let conversations = vec![
-            ConversationSummary::new(
-                "s1".to_string(),
-                "p1".to_string(),
-                None,
-                5,
-                SyncOperation::Added,
-            )
-            .unwrap(),
-            ConversationSummary::new(
-                "s2".to_string(),
-                "p2".to_string(),
-                None,
-                10,
-                SyncOperation::Added,
-            )
-            .unwrap(),
-            ConversationSummary::new(
-                "s3".to_string(),
-                "p3".to_string(),
-                None,
-                15,
-                SyncOperation::Modified,
-            )
-            .unwrap(),
-            ConversationSummary::new(
-                "s4".to_string(),
-                "p4".to_string(),
-                None,
-                20,
-                SyncOperation::Conflict,
-            )
-            .unwrap(),
-        ];
-
-        let record = OperationRecord::new(OperationType::Push, None, conversations);
-        let stats = record.operation_stats();
-
-        assert_eq!(stats.get(&SyncOperation::Added), Some(&2));
-        assert_eq!(stats.get(&SyncOperation::Modified), Some(&1));
-        assert_eq!(stats.get(&SyncOperation::Conflict), Some(&1));
     }
 
     #[test]
@@ -852,60 +483,6 @@ mod tests {
     }
 
     #[test]
-    fn test_conversation_summary_with_all_fields() {
-        let summary = ConversationSummary::new(
-            "test-session".to_string(),
-            "test/project".to_string(),
-            Some("2025-01-15T12:00:00Z".to_string()),
-            100,
-            SyncOperation::Conflict,
-        )
-        .unwrap();
-
-        let json = serde_json::to_string(&summary).unwrap();
-        assert!(json.contains("test-session"));
-        assert!(json.contains("test/project"));
-        assert!(json.contains("2025-01-15T12:00:00Z"));
-        assert!(json.contains("100"));
-        assert!(json.contains("conflict"));
-    }
-
-    #[test]
-    fn test_operation_record_with_snapshot() {
-        let mut record =
-            OperationRecord::new(OperationType::Pull, Some("main".to_string()), vec![]);
-
-        record.snapshot_path = Some(PathBuf::from("/tmp/snapshot.tar.gz"));
-
-        let json = serde_json::to_string(&record).unwrap();
-        let deserialized: OperationRecord = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(
-            deserialized.snapshot_path,
-            Some(PathBuf::from("/tmp/snapshot.tar.gz"))
-        );
-    }
-
-    #[test]
-    fn test_max_history_size_constant() {
-        assert_eq!(MAX_HISTORY_SIZE, 5);
-    }
-
-    #[test]
-    fn test_operation_type_equality() {
-        assert_eq!(OperationType::Pull, OperationType::Pull);
-        assert_eq!(OperationType::Push, OperationType::Push);
-        assert_ne!(OperationType::Pull, OperationType::Push);
-    }
-
-    #[test]
-    fn test_sync_operation_equality() {
-        assert_eq!(SyncOperation::Added, SyncOperation::Added);
-        assert_eq!(SyncOperation::Modified, SyncOperation::Modified);
-        assert_ne!(SyncOperation::Added, SyncOperation::Conflict);
-    }
-
-    #[test]
     fn test_error_messages_include_file_paths() {
         let (_temp_dir, path) = setup_test_env();
 
@@ -1055,5 +632,10 @@ mod tests {
         let loaded = OperationHistory::from_path(Some(path)).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded.operations[0].operation_type, OperationType::Pull);
+    }
+
+    #[test]
+    fn test_max_history_size_constant() {
+        assert_eq!(MAX_HISTORY_SIZE, 5);
     }
 }

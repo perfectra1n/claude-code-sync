@@ -1,1140 +1,31 @@
-use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use uuid::Uuid;
-
-use crate::git::GitManager;
-use crate::history::{OperationHistory, OperationType};
-
-/// Represents a snapshot of conversation files at a point in time
-///
-/// Snapshots are created before each sync operation to enable undo functionality.
-/// They capture the complete state of all conversation files that might be affected.
-///
-/// ## Differential Snapshots
-///
-/// To save disk space, snapshots can be differential - only storing files that changed
-/// since the previous snapshot. This is controlled by the `base_snapshot_id` field:
-/// - `None`: Full snapshot containing all files
-/// - `Some(id)`: Differential snapshot containing only changes since base snapshot
-///
-/// When restoring a differential snapshot, we recursively load the chain of base
-/// snapshots to reconstruct the full state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Snapshot {
-    /// Unique identifier for this snapshot
-    pub snapshot_id: String,
-
-    /// When this snapshot was created
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-
-    /// Type of operation this snapshot was created for
-    pub operation_type: OperationType,
-
-    /// Git commit hash before the operation (for push operations)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub git_commit_hash: Option<String>,
-
-    /// Mapping of file paths (relative to Claude projects dir) to their content
-    ///
-    /// We store the raw bytes to preserve exact file state including encoding.
-    /// The HashMap key is a string path for JSON serialization compatibility.
-    ///
-    /// For differential snapshots, only contains files that changed/were added.
-    #[serde(with = "base64_map")]
-    pub files: HashMap<String, Vec<u8>>,
-
-    /// Git branch name at the time of snapshot
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-
-    /// Base snapshot ID for differential snapshots
-    ///
-    /// If present, this snapshot only contains changes relative to the base.
-    /// The full state can be reconstructed by loading the chain of snapshots.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_snapshot_id: Option<String>,
-
-    /// Files that were deleted since the base snapshot
-    ///
-    /// Only populated for differential snapshots. Lists file paths that existed
-    /// in the base snapshot but should be removed when restoring this snapshot.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deleted_files: Vec<String>,
-}
-
-/// Custom serialization for `HashMap<String, Vec<u8>>` using base64 encoding
-///
-/// This is necessary because JSON doesn't natively support binary data,
-/// so we encode file contents as base64 strings for storage.
-mod base64_map {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::HashMap;
-
-    pub fn serialize<S>(map: &HashMap<String, Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let base64_map: HashMap<String, String> = map
-            .iter()
-            .map(|(k, v)| (k.clone(), STANDARD.encode(v)))
-            .collect();
-        base64_map.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<String, Vec<u8>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let base64_map: HashMap<String, String> = HashMap::deserialize(deserializer)?;
-        base64_map
-            .into_iter()
-            .map(|(k, v)| {
-                STANDARD
-                    .decode(&v)
-                    .map(|bytes| (k, bytes))
-                    .map_err(serde::de::Error::custom)
-            })
-            .collect()
-    }
-}
-
-impl Snapshot {
-    /// Create a new snapshot from a set of file paths
-    ///
-    /// # Arguments
-    /// * `operation_type` - Type of operation this snapshot is for
-    /// * `file_paths` - Iterator of file paths to include in snapshot
-    /// * `git_manager` - Optional git manager to capture commit hash
-    ///
-    /// # Returns
-    /// A new Snapshot instance with all file contents captured
-    pub fn create<P, I>(
-        operation_type: OperationType,
-        file_paths: I,
-        git_manager: Option<&GitManager>,
-    ) -> Result<Self>
-    where
-        P: AsRef<Path>,
-        I: IntoIterator<Item = P>,
-    {
-        let snapshot_id = Uuid::new_v4().to_string();
-        let timestamp = chrono::Utc::now();
-        let mut files = HashMap::new();
-
-        // Capture current state of all specified files
-        for path in file_paths {
-            let path = path.as_ref();
-
-            // Use direct read instead of checking existence first to avoid TOCTOU
-            match fs::read(path) {
-                Ok(content) => {
-                    // Store with path as string for JSON compatibility
-                    files.insert(path.to_string_lossy().to_string(), content);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // File doesn't exist - this is expected in some cases (e.g., deleted files)
-                    // Just skip it without error
-                    continue;
-                }
-                Err(e) => {
-                    // Other errors should be reported
-                    return Err(e).with_context(|| {
-                        format!("Failed to read file for snapshot: {}", path.display())
-                    });
-                }
-            }
-        }
-
-        // Capture git commit hash if available (for push operations)
-        let (git_commit_hash, branch) = if let Some(git) = git_manager {
-            let hash = git.current_commit_hash()?;
-            let branch = git.current_branch().ok();
-            (Some(hash), branch)
-        } else {
-            (None, None)
-        };
-
-        Ok(Snapshot {
-            snapshot_id,
-            timestamp,
-            operation_type,
-            git_commit_hash,
-            files,
-            branch,
-            base_snapshot_id: None,
-            deleted_files: Vec::new(),
-        })
-    }
-
-    /// Create a differential snapshot that only stores changes since the last snapshot
-    ///
-    /// This significantly reduces disk usage by only storing files that have changed.
-    ///
-    /// # Arguments
-    /// * `operation_type` - Type of operation this snapshot is for
-    /// * `file_paths` - Iterator of file paths to include in snapshot
-    /// * `git_manager` - Optional git manager to capture commit hash
-    /// * `snapshots_dir` - Optional custom snapshots directory (for testing)
-    ///
-    /// # Returns
-    /// A new differential Snapshot, or a full snapshot if no base exists
-    pub fn create_differential_with_dir<P, I>(
-        operation_type: OperationType,
-        file_paths: I,
-        git_manager: Option<&GitManager>,
-        snapshots_dir: Option<&Path>,
-    ) -> Result<Self>
-    where
-        P: AsRef<Path>,
-        I: IntoIterator<Item = P>,
-    {
-        // Try to find the most recent snapshot of the same operation type
-        let base_snapshot = Self::find_latest_snapshot(operation_type, snapshots_dir)?;
-
-        let snapshot_id = Uuid::new_v4().to_string();
-        let timestamp = chrono::Utc::now();
-
-        // Collect current file paths and their content
-        let mut current_files: HashMap<String, Vec<u8>> = HashMap::new();
-        for path in file_paths {
-            let path = path.as_ref();
-            match fs::read(path) {
-                Ok(content) => {
-                    current_files.insert(path.to_string_lossy().to_string(), content);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    continue;
-                }
-                Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("Failed to read file for snapshot: {}", path.display())
-                    });
-                }
-            }
-        }
-
-        // If no base snapshot exists, create a full snapshot
-        let (files, base_snapshot_id, deleted_files) = if let Some(base) = base_snapshot {
-            let mut changed_files = HashMap::new();
-            let mut deleted = Vec::new();
-
-            // Find files that changed or are new
-            for (path, content) in &current_files {
-                if let Some(base_content) = base.files.get(path) {
-                    // File exists in base - only include if content changed
-                    if base_content != content {
-                        changed_files.insert(path.clone(), content.clone());
-                    }
-                } else {
-                    // New file - always include
-                    changed_files.insert(path.clone(), content.clone());
-                }
-            }
-
-            // Find files that were deleted
-            for path in base.files.keys() {
-                if !current_files.contains_key(path) {
-                    deleted.push(path.clone());
-                }
-            }
-
-            (changed_files, Some(base.snapshot_id), deleted)
-        } else {
-            // No base snapshot - include all files (full snapshot)
-            (current_files, None, Vec::new())
-        };
-
-        // Capture git commit hash if available
-        let (git_commit_hash, branch) = if let Some(git) = git_manager {
-            let hash = git.current_commit_hash()?;
-            let branch = git.current_branch().ok();
-            (Some(hash), branch)
-        } else {
-            (None, None)
-        };
-
-        Ok(Snapshot {
-            snapshot_id,
-            timestamp,
-            operation_type,
-            git_commit_hash,
-            files,
-            branch,
-            base_snapshot_id,
-            deleted_files,
-        })
-    }
-
-    /// Create a differential snapshot using the default snapshots directory
-    ///
-    /// This is a convenience wrapper around `create_differential_with_dir` that
-    /// uses the default snapshots directory.
-    ///
-    /// # Arguments
-    /// * `operation_type` - Type of operation this snapshot is for
-    /// * `file_paths` - Iterator of file paths to include in snapshot
-    /// * `git_manager` - Optional git manager to capture commit hash
-    ///
-    /// # Returns
-    /// A new differential Snapshot, or a full snapshot if no base exists
-    pub fn create_differential<P, I>(
-        operation_type: OperationType,
-        file_paths: I,
-        git_manager: Option<&GitManager>,
-    ) -> Result<Self>
-    where
-        P: AsRef<Path>,
-        I: IntoIterator<Item = P>,
-    {
-        Self::create_differential_with_dir(operation_type, file_paths, git_manager, None)
-    }
-
-    /// Find the most recent snapshot of a given operation type
-    ///
-    /// # Arguments
-    /// * `operation_type` - Type of operation to find snapshots for
-    /// * `custom_dir` - Optional custom snapshots directory (for testing)
-    ///
-    /// # Returns
-    /// The most recent snapshot, or None if no snapshots exist
-    fn find_latest_snapshot(operation_type: OperationType, custom_dir: Option<&Path>) -> Result<Option<Snapshot>> {
-        let snapshots_dir = if let Some(dir) = custom_dir {
-            dir.to_path_buf()
-        } else {
-            Self::snapshots_dir()?
-        };
-
-        if !snapshots_dir.exists() {
-            return Ok(None);
-        }
-
-        let mut snapshots: Vec<(PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
-
-        // Scan snapshots directory
-        for entry in fs::read_dir(&snapshots_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if !path.extension().map_or(false, |ext| ext == "json") {
-                continue;
-            }
-
-            // Quick parse to get timestamp and operation type without loading full snapshot
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content) {
-                    if snapshot.operation_type == operation_type {
-                        snapshots.push((path, snapshot.timestamp));
-                    }
-                }
-            }
-        }
-
-        // Sort by timestamp descending and get the most recent
-        snapshots.sort_by(|a, b| b.1.cmp(&a.1));
-
-        if let Some((path, _)) = snapshots.first() {
-            let snapshot = Self::load_from_disk(path)?;
-            Ok(Some(snapshot))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Save this snapshot to disk
-    ///
-    /// Snapshots are saved to `~/.claude-code-sync/snapshots/{snapshot_id}.json`
-    ///
-    /// # Arguments
-    /// * `custom_path` - Optional custom directory to save snapshot (for testing)
-    pub fn save_to_disk(&self, custom_path: Option<&Path>) -> Result<PathBuf> {
-        let snapshot_dir = if let Some(path) = custom_path {
-            path.to_path_buf()
-        } else {
-            Self::snapshots_dir()?
-        };
-
-        // Ensure snapshots directory exists
-        fs::create_dir_all(&snapshot_dir).with_context(|| {
-            format!(
-                "Failed to create snapshots directory: {}",
-                snapshot_dir.display()
-            )
-        })?;
-
-        let snapshot_path = snapshot_dir.join(format!("{}.json", self.snapshot_id));
-
-        let json =
-            serde_json::to_string_pretty(self).context("Failed to serialize snapshot to JSON")?;
-
-        fs::write(&snapshot_path, json).with_context(|| {
-            format!(
-                "Failed to write snapshot to disk: {}",
-                snapshot_path.display()
-            )
-        })?;
-
-        Ok(snapshot_path)
-    }
-
-    /// Load a snapshot from disk
-    ///
-    /// # Arguments
-    /// * `snapshot_path` - Path to the snapshot JSON file
-    ///
-    /// # Validation
-    /// This method validates:
-    /// - Maximum snapshot file size: 100 MB
-    /// - Maximum number of files in snapshot: 10,000
-    ///
-    /// # Errors
-    /// Returns error if validation limits are exceeded or file cannot be read
-    pub fn load_from_disk<P: AsRef<Path>>(snapshot_path: P) -> Result<Self> {
-        let snapshot_path = snapshot_path.as_ref();
-
-        // Validate file size before reading (100 MB limit)
-        const MAX_SNAPSHOT_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
-        let metadata = fs::metadata(snapshot_path).with_context(|| {
-            format!(
-                "Failed to read snapshot file metadata: {}",
-                snapshot_path.display()
-            )
-        })?;
-
-        if metadata.len() > MAX_SNAPSHOT_SIZE {
-            return Err(anyhow!(
-                "Snapshot file exceeds maximum size limit. \
-                File size: {} MB, Maximum: {} MB. \
-                The snapshot file at {} is too large to load safely.",
-                metadata.len() / (1024 * 1024),
-                MAX_SNAPSHOT_SIZE / (1024 * 1024),
-                snapshot_path.display()
-            ));
-        }
-
-        let content = fs::read_to_string(snapshot_path).with_context(|| {
-            format!("Failed to read snapshot file: {}", snapshot_path.display())
-        })?;
-
-        let snapshot: Snapshot = serde_json::from_str(&content).with_context(|| {
-            format!("Failed to parse snapshot JSON: {}", snapshot_path.display())
-        })?;
-
-        // Validate number of files (10,000 file limit)
-        const MAX_FILES: usize = 10_000;
-        if snapshot.files.len() > MAX_FILES {
-            return Err(anyhow!(
-                "Snapshot contains too many files. \
-                File count: {}, Maximum: {}. \
-                The snapshot at {} exceeds the safety limit.",
-                snapshot.files.len(),
-                MAX_FILES,
-                snapshot_path.display()
-            ));
-        }
-
-        Ok(snapshot)
-    }
-
-    /// Restore files from this snapshot
-    ///
-    /// This writes all files from the snapshot back to their original locations,
-    /// overwriting any current content.
-    ///
-    /// For differential snapshots, this recursively loads the base snapshot chain
-    /// and applies all changes in order to reconstruct the full state.
-    ///
-    /// # Security
-    /// This method validates all paths to prevent path traversal attacks.
-    /// By default, only paths within the home directory are allowed.
-    /// For testing, you can pass a custom allowed_base_dir.
-    ///
-    /// # Arguments
-    /// * `allowed_base_dir` - Optional base directory for path validation.
-    ///   If None, defaults to home directory for security.
-    /// * `snapshots_dir` - Optional snapshots directory (for testing with differential snapshots)
-    pub fn restore_with_base_and_snapshots(
-        &self,
-        allowed_base_dir: Option<&Path>,
-        snapshots_dir: Option<&Path>,
-    ) -> Result<()> {
-        // Determine the allowed base directory
-        let allowed_base = if let Some(base) = allowed_base_dir {
-            // For testing: use the provided base
-            base.canonicalize().with_context(|| {
-                format!("Failed to canonicalize base directory: {}", base.display())
-            })?
-        } else {
-            // For production: use home directory
-            let home_dir = dirs::home_dir().context("Failed to get home directory")?;
-            home_dir
-                .canonicalize()
-                .context("Failed to canonicalize home directory")?
-        };
-
-        // Build the complete file state by walking the snapshot chain
-        let all_files = self.reconstruct_full_state_with_dir(snapshots_dir)?;
-
-        // First, handle file deletions from the snapshot
-        for deleted_path in &self.deleted_files {
-            let path = PathBuf::from(deleted_path);
-
-            // Validate the path is within allowed directory
-            if let Ok(canonical) = path.canonicalize() {
-                if canonical.starts_with(&allowed_base) && path.exists() {
-                    fs::remove_file(&path).with_context(|| {
-                        format!("Failed to delete file: {}", path.display())
-                    })?;
-                }
-            }
-        }
-
-        // Then restore all files from the reconstructed state
-        for (path_str, content) in &all_files {
-            let path = PathBuf::from(path_str);
-
-            // Canonicalize the path to resolve any symlinks or .. components
-            // First ensure parent directory exists for canonicalization to work
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-            }
-
-            // Create the file if it doesn't exist for canonicalization
-            if !path.exists() {
-                fs::write(&path, b"").with_context(|| {
-                    format!("Failed to create temporary file: {}", path.display())
-                })?;
-            }
-
-            let canonical_path = path
-                .canonicalize()
-                .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
-
-            // Validate the canonical path is within the allowed base directory
-            if !canonical_path.starts_with(&allowed_base) {
-                return Err(anyhow!(
-                    "Security: Path traversal detected. Path {} is outside allowed directory {}",
-                    path.display(),
-                    allowed_base.display()
-                ));
-            }
-
-            // Now write the actual content
-            fs::write(&canonical_path, content)
-                .with_context(|| format!("Failed to restore file: {}", canonical_path.display()))?;
-        }
-
-        Ok(())
-    }
-
-    /// Restore files from this snapshot using default snapshots directory
-    ///
-    /// This is a wrapper around `restore_with_base_and_snapshots` for backwards compatibility.
-    pub fn restore_with_base(&self, allowed_base_dir: Option<&Path>) -> Result<()> {
-        self.restore_with_base_and_snapshots(allowed_base_dir, None)
-    }
-
-    /// Restore files from this snapshot
-    ///
-    /// This is a convenience wrapper that uses the home directory as the allowed base.
-    #[allow(dead_code)]
-    pub fn restore(&self) -> Result<()> {
-        self.restore_with_base(None)
-    }
-
-    /// Reconstruct the full file state by walking the snapshot chain
-    ///
-    /// For differential snapshots, this loads all base snapshots recursively
-    /// and merges them to produce the complete file state.
-    ///
-    /// # Arguments
-    /// * `snapshots_dir` - Optional custom snapshots directory (for testing)
-    ///
-    /// # Returns
-    /// A HashMap containing the full state of all files
-    fn reconstruct_full_state_with_dir(&self, snapshots_dir: Option<&Path>) -> Result<HashMap<String, Vec<u8>>> {
-        let mut state = HashMap::new();
-
-        // If this is a differential snapshot, load the base chain
-        if let Some(base_id) = &self.base_snapshot_id {
-            let snapshots_dir = if let Some(dir) = snapshots_dir {
-                dir.to_path_buf()
-            } else {
-                Self::snapshots_dir()?
-            };
-            let base_path = snapshots_dir.join(format!("{}.json", base_id));
-
-            if !base_path.exists() {
-                return Err(anyhow!(
-                    "Base snapshot not found: {}. \
-                    The snapshot chain is broken. Cannot restore differential snapshot.",
-                    base_id
-                ));
-            }
-
-            // Recursively load the base snapshot's state
-            let base_snapshot = Self::load_from_disk(&base_path)?;
-            state = base_snapshot.reconstruct_full_state_with_dir(Some(&snapshots_dir))?;
-        }
-
-        // Apply this snapshot's changes on top of the base state
-        for (path, content) in &self.files {
-            state.insert(path.clone(), content.clone());
-        }
-
-        // Remove deleted files
-        for deleted_path in &self.deleted_files {
-            state.remove(deleted_path);
-        }
-
-        Ok(state)
-    }
-
-    /// Reconstruct the full file state using the default snapshots directory
-    ///
-    /// This is a convenience wrapper around `reconstruct_full_state_with_dir`.
-    fn reconstruct_full_state(&self) -> Result<HashMap<String, Vec<u8>>> {
-        self.reconstruct_full_state_with_dir(None)
-    }
-
-    /// Get the default snapshots directory
-    fn snapshots_dir() -> Result<PathBuf> {
-        crate::config::ConfigManager::snapshots_dir()
-    }
-}
-
-/// Configuration for snapshot cleanup
-pub struct SnapshotCleanupConfig {
-    /// Keep at most this many snapshots per operation type (pull/push)
-    pub max_count_per_type: usize,
-    /// Keep snapshots newer than this many days
-    pub max_age_days: i64,
-}
-
-impl Default for SnapshotCleanupConfig {
-    fn default() -> Self {
-        Self {
-            max_count_per_type: 5,
-            max_age_days: 7,
-        }
-    }
-}
-
-/// Clean up old snapshots based on age and count limits
-///
-/// This removes snapshots that don't meet EITHER of the following criteria:
-/// - Within the last N snapshots of each operation type
-/// - Created within the last X days
-///
-/// # Arguments
-/// * `config` - Cleanup configuration (defaults: keep last 5 per type, last 7 days)
-/// * `dry_run` - If true, show what would be deleted without actually deleting
-/// * `snapshots_dir` - Optional custom snapshots directory (for testing)
-///
-/// # Returns
-/// Number of snapshots deleted
-pub fn cleanup_old_snapshots_with_dir(
-    config: Option<SnapshotCleanupConfig>,
-    dry_run: bool,
-    snapshots_dir: Option<&Path>,
-) -> Result<usize> {
-    let config = config.unwrap_or_default();
-    let snapshots_dir = if let Some(dir) = snapshots_dir {
-        dir.to_path_buf()
-    } else {
-        Snapshot::snapshots_dir()?
-    };
-
-    if !snapshots_dir.exists() {
-        return Ok(0);
-    }
-
-    // Collect all snapshots with metadata
-    let mut pull_snapshots: Vec<(PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
-    let mut push_snapshots: Vec<(PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
-
-    for entry in fs::read_dir(&snapshots_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if !path.extension().map_or(false, |ext| ext == "json") {
-            continue;
-        }
-
-        // Load snapshot metadata
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content) {
-                match snapshot.operation_type {
-                    OperationType::Pull => pull_snapshots.push((path, snapshot.timestamp)),
-                    OperationType::Push => push_snapshots.push((path, snapshot.timestamp)),
-                }
-            }
-        }
-    }
-
-    // Sort by timestamp descending (newest first)
-    pull_snapshots.sort_by(|a, b| b.1.cmp(&a.1));
-    push_snapshots.sort_by(|a, b| b.1.cmp(&a.1));
-
-    // Determine which snapshots to keep
-    let now = chrono::Utc::now();
-    let age_threshold = now - chrono::Duration::days(config.max_age_days);
-
-    let mut to_delete = Vec::new();
-
-    // Process pull snapshots
-    for (idx, (path, timestamp)) in pull_snapshots.iter().enumerate() {
-        let within_count_limit = idx < config.max_count_per_type;
-        let within_age_limit = *timestamp >= age_threshold;
-
-        // Delete if it doesn't meet EITHER criterion
-        if !within_count_limit && !within_age_limit {
-            to_delete.push(path.clone());
-        }
-    }
-
-    // Process push snapshots
-    for (idx, (path, timestamp)) in push_snapshots.iter().enumerate() {
-        let within_count_limit = idx < config.max_count_per_type;
-        let within_age_limit = *timestamp >= age_threshold;
-
-        if !within_count_limit && !within_age_limit {
-            to_delete.push(path.clone());
-        }
-    }
-
-    // Delete the snapshots (or just report in dry run mode)
-    let deleted_count = to_delete.len();
-
-    if dry_run {
-        println!("Would delete {} snapshots:", deleted_count);
-        for path in &to_delete {
-            println!("  - {}", path.display());
-        }
-    } else {
-        for path in &to_delete {
-            if let Err(e) = fs::remove_file(path) {
-                eprintln!("Warning: Failed to delete snapshot {}: {}", path.display(), e);
-            }
-        }
-    }
-
-    Ok(deleted_count)
-}
-
-/// Preview information for an undo operation
-#[derive(Debug)]
-pub struct UndoPreview {
-    /// Operation type being undone
-    pub operation_type: OperationType,
-    /// When the original operation occurred
-    pub operation_timestamp: chrono::DateTime<chrono::Utc>,
-    /// Branch name
-    pub branch: Option<String>,
-    /// List of files that will be affected
-    pub affected_files: Vec<String>,
-    /// Number of conversations affected
-    pub conversation_count: usize,
-    /// Git commit hash (for push operations)
-    pub commit_hash: Option<String>,
-    /// Snapshot creation timestamp
-    pub snapshot_timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-impl UndoPreview {
-    /// Display a formatted preview of the undo operation
-    pub fn display(&self) {
-        use colored::Colorize;
-
-        println!("\n{}", "=".repeat(80).yellow());
-        println!("{}", "Undo Preview".bold().yellow());
-        println!("{}", "=".repeat(80).yellow());
-
-        let op_type = match self.operation_type {
-            OperationType::Pull => "PULL".green(),
-            OperationType::Push => "PUSH".blue(),
-        };
-
-        println!("\n{} {}", "Operation:".bold(), op_type);
-        println!(
-            "{} {}",
-            "Performed:".bold(),
-            self.operation_timestamp
-                .format("%Y-%m-%d %H:%M:%S UTC")
-                .to_string()
-                .cyan()
-        );
-
-        if let Some(branch) = &self.branch {
-            println!("{} {}", "Branch:".bold(), branch.cyan());
-        }
-
-        if let Some(commit) = &self.commit_hash {
-            println!("{} {}", "Will reset to:".bold(), commit[..8].yellow());
-        }
-
-        println!(
-            "\n{} {}",
-            "Conversations affected:".bold(),
-            self.conversation_count.to_string().yellow()
-        );
-
-        if !self.affected_files.is_empty() {
-            println!("\n{}", "Files to be restored:".bold());
-            let display_count = self.affected_files.len().min(10);
-            for file in self.affected_files.iter().take(display_count) {
-                println!("  • {}", file.dimmed());
-            }
-            if self.affected_files.len() > display_count {
-                println!(
-                    "  ... and {} more files",
-                    (self.affected_files.len() - display_count)
-                        .to_string()
-                        .dimmed()
-                );
-            }
-        }
-
-        println!(
-            "\n{} {}",
-            "Snapshot taken:".bold(),
-            self.snapshot_timestamp
-                .format("%Y-%m-%d %H:%M:%S UTC")
-                .to_string()
-                .dimmed()
-        );
-
-        println!("{}", "=".repeat(80).yellow());
-    }
-}
-
-/// Preview the last pull operation without executing it
-///
-/// # Arguments
-/// * `history_path` - Optional custom path for operation history (for testing)
-///
-/// # Returns
-/// An `UndoPreview` with information about what would be undone
-pub fn preview_undo_pull(history_path: Option<PathBuf>) -> Result<UndoPreview> {
-    // Load operation history
-    let history = OperationHistory::from_path(history_path)?;
-
-    // Find the last pull operation
-    let last_pull = history
-        .get_last_operation_by_type(OperationType::Pull)
-        .ok_or_else(|| anyhow!("No pull operation found in history to undo"))?;
-
-    // Get the snapshot path
-    let snapshot_path = last_pull.snapshot_path.as_ref().ok_or_else(|| {
-        anyhow!(
-            "No snapshot found for last pull operation. \
-                Cannot undo without a snapshot."
-        )
-    })?;
-
-    // Verify snapshot exists
-    if !snapshot_path.exists() {
-        return Err(anyhow!(
-            "Snapshot file not found: {}. \
-            The snapshot may have been deleted.",
-            snapshot_path.display()
-        ));
-    }
-
-    // Load the snapshot
-    let snapshot = Snapshot::load_from_disk(snapshot_path)?;
-
-    // Get list of affected files
-    let affected_files: Vec<String> = snapshot.files.keys().cloned().collect();
-
-    Ok(UndoPreview {
-        operation_type: OperationType::Pull,
-        operation_timestamp: last_pull.timestamp,
-        branch: last_pull.branch.clone(),
-        affected_files,
-        conversation_count: last_pull.affected_conversations.len(),
-        commit_hash: None,
-        snapshot_timestamp: snapshot.timestamp,
-    })
-}
-
-/// Preview the last push operation without executing it
-///
-/// # Arguments
-/// * `history_path` - Optional custom path for operation history (for testing)
-///
-/// # Returns
-/// An `UndoPreview` with information about what would be undone
-pub fn preview_undo_push(history_path: Option<PathBuf>) -> Result<UndoPreview> {
-    // Load operation history
-    let history = OperationHistory::from_path(history_path)?;
-
-    // Find the last push operation
-    let last_push = history
-        .get_last_operation_by_type(OperationType::Push)
-        .ok_or_else(|| anyhow!("No push operation found in history to undo"))?;
-
-    // Get the snapshot path
-    let snapshot_path = last_push.snapshot_path.as_ref().ok_or_else(|| {
-        anyhow!(
-            "No snapshot found for last push operation. \
-                Cannot undo without a snapshot."
-        )
-    })?;
-
-    // Verify snapshot exists
-    if !snapshot_path.exists() {
-        return Err(anyhow!(
-            "Snapshot file not found: {}. \
-            The snapshot may have been deleted.",
-            snapshot_path.display()
-        ));
-    }
-
-    // Load the snapshot
-    let snapshot = Snapshot::load_from_disk(snapshot_path)?;
-
-    Ok(UndoPreview {
-        operation_type: OperationType::Push,
-        operation_timestamp: last_push.timestamp,
-        branch: snapshot.branch.clone(),
-        affected_files: Vec::new(), // Push doesn't restore files, just resets git
-        conversation_count: last_push.affected_conversations.len(),
-        commit_hash: snapshot.git_commit_hash.clone(),
-        snapshot_timestamp: snapshot.timestamp,
-    })
-}
-
-/// Undo the last pull operation
-///
-/// This function:
-/// 1. Loads the operation history
-/// 2. Finds the most recent pull operation
-/// 3. Loads the snapshot that was taken before that pull
-/// 4. Restores all files to their pre-pull state
-/// 5. Updates the operation history to mark the pull as undone
-///
-/// # Arguments
-/// * `history_path` - Optional custom path for operation history (for testing)
-/// * `allowed_base_dir` - Optional base directory for path validation (for testing)
-///
-/// # Returns
-/// A summary message describing what was undone
-pub fn undo_pull(history_path: Option<PathBuf>, allowed_base_dir: Option<&Path>) -> Result<String> {
-    // Load operation history
-    let history = OperationHistory::from_path(history_path.clone())?;
-
-    // Find the last pull operation
-    let last_pull = history
-        .get_last_operation_by_type(OperationType::Pull)
-        .ok_or_else(|| anyhow!("No pull operation found in history to undo"))?;
-
-    // Get the snapshot path
-    let snapshot_path = last_pull.snapshot_path.as_ref().ok_or_else(|| {
-        anyhow!(
-            "No snapshot found for last pull operation. \
-                Cannot undo without a snapshot."
-        )
-    })?;
-
-    // Verify snapshot exists
-    if !snapshot_path.exists() {
-        return Err(anyhow!(
-            "Snapshot file not found: {}. \
-            The snapshot may have been deleted.",
-            snapshot_path.display()
-        ));
-    }
-
-    // Load the snapshot
-    let snapshot = Snapshot::load_from_disk(snapshot_path)?;
-
-    // Verify this is indeed a pull snapshot
-    if snapshot.operation_type != OperationType::Pull {
-        return Err(anyhow!(
-            "Snapshot type mismatch: expected pull, found {}",
-            snapshot.operation_type.as_str()
-        ));
-    }
-
-    // Get the list of files that will be restored
-    let restored_files: Vec<String> = snapshot.files.keys().cloned().collect();
-    let file_count = restored_files.len();
-
-    // TRANSACTION-LIKE ORDERING: Update history FIRST, then restore files.
-    // This ensures that if file restoration fails, the history is still consistent
-    // and accurately reflects that we've attempted the undo. The snapshot file
-    // remains on disk until we successfully complete the restoration.
-
-    // Step 1: Remove the pull operation from history
-    let mut history = OperationHistory::from_path(history_path.clone())?;
-    history
-        .remove_last_operation_by_type(OperationType::Pull, history_path.clone())
-        .context("Failed to remove pull operation from history")?;
-
-    // Step 2: Restore the snapshot files
-    // If this fails, the history is already updated (which is safer than having
-    // an inconsistent history state)
-    snapshot
-        .restore_with_base(allowed_base_dir)
-        .context("Failed to restore snapshot")?;
-
-    // Step 3: Clean up the snapshot file (only after successful restoration)
-    if let Err(e) = fs::remove_file(snapshot_path) {
-        eprintln!(
-            "Warning: Failed to remove snapshot file {}: {}",
-            snapshot_path.display(),
-            e
-        );
-    }
-
-    Ok(format!(
-        "Successfully undone last pull operation.\n\
-        Restored {} files to their pre-pull state.\n\
-        Snapshot taken at: {}",
-        file_count,
-        snapshot.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
-    ))
-}
-
-/// Undo the last push operation
-///
-/// This function:
-/// 1. Loads the operation history
-/// 2. Finds the most recent push operation
-/// 3. Loads the snapshot to get the previous commit hash
-/// 4. Uses git2 to reset the repository to the previous commit
-/// 5. Updates the operation history to mark the push as undone
-/// 6. Warns the user if they need to force push to the remote
-///
-/// # Arguments
-/// * `repo_path` - Path to the git repository
-/// * `history_path` - Optional custom path for operation history (for testing)
-///
-/// # Returns
-/// A summary message describing what was undone and any required follow-up actions
-pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<String> {
-    // Load operation history
-    let history = OperationHistory::from_path(history_path.clone())?;
-
-    // Find the last push operation
-    let last_push = history
-        .get_last_operation_by_type(OperationType::Push)
-        .ok_or_else(|| anyhow!("No push operation found in history to undo"))?;
-
-    // Get the snapshot path
-    let snapshot_path = last_push.snapshot_path.as_ref().ok_or_else(|| {
-        anyhow!(
-            "No snapshot found for last push operation. \
-                Cannot undo without a snapshot."
-        )
-    })?;
-
-    // Verify snapshot exists
-    if !snapshot_path.exists() {
-        return Err(anyhow!(
-            "Snapshot file not found: {}. \
-            The snapshot may have been deleted.",
-            snapshot_path.display()
-        ));
-    }
-
-    // Load the snapshot
-    let snapshot = Snapshot::load_from_disk(snapshot_path)?;
-
-    // Verify this is indeed a push snapshot
-    if snapshot.operation_type != OperationType::Push {
-        return Err(anyhow!(
-            "Snapshot type mismatch: expected push, found {}",
-            snapshot.operation_type.as_str()
-        ));
-    }
-
-    // Get the commit hash to reset to
-    let target_commit = snapshot.git_commit_hash.as_ref().ok_or_else(|| {
-        anyhow!(
-            "No git commit hash found in snapshot. \
-            Cannot reset repository without a target commit."
-        )
-    })?;
-
-    // Open the git repository
-    let repo = git2::Repository::open(repo_path)
-        .with_context(|| format!("Failed to open git repository at {}", repo_path.display()))?;
-
-    // Find the target commit
-    let oid = git2::Oid::from_str(target_commit)
-        .with_context(|| format!("Invalid commit hash: {target_commit}"))?;
-
-    let target_commit_obj = repo
-        .find_commit(oid)
-        .with_context(|| format!("Failed to find commit: {target_commit}"))?;
-
-    // Check if we need to warn about remote (before reset)
-    let branch_name = snapshot.branch.as_deref().unwrap_or("unknown");
-    let needs_force_push = if let Ok(remote) = repo.find_remote("origin") {
-        remote.url().is_some()
-    } else {
-        false
-    };
-
-    // TRANSACTION-LIKE ORDERING: Update history FIRST, then perform git reset.
-    // This ensures that if the git reset fails, the history is still consistent.
-    // The snapshot file remains on disk until we successfully complete the reset.
-
-    // Step 1: Remove the push operation from history
-    let mut history = OperationHistory::from_path(history_path.clone())?;
-    history
-        .remove_last_operation_by_type(OperationType::Push, history_path.clone())
-        .context("Failed to remove push operation from history")?;
-
-    // Step 2: Perform the git reset
-    // If this fails, the history is already updated (which is safer than having
-    // an inconsistent history state)
-    repo.reset(target_commit_obj.as_object(), git2::ResetType::Soft, None)
-        .context("Failed to reset repository to previous commit")?;
-
-    // Step 3: Clean up the snapshot file (only after successful reset)
-    if let Err(e) = fs::remove_file(snapshot_path) {
-        eprintln!(
-            "Warning: Failed to remove snapshot file {}: {}",
-            snapshot_path.display(),
-            e
-        );
-    }
-
-    let mut summary = format!(
-        "Successfully undone last push operation.\n\
-        Reset repository to commit: {}\n\
-        Branch: {}\n\
-        Snapshot taken at: {}",
-        &target_commit[..8],
-        branch_name,
-        snapshot.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
-    );
-
-    if needs_force_push {
-        summary.push_str(&format!(
-            "\n\n\
-            WARNING: The remote repository was updated by the push.\n\
-            You will need to force push to update the remote:\n\
-            git push --force origin {branch_name}"
-        ));
-    }
-
-    Ok(summary)
-}
+//! Snapshot-based undo functionality for sync operations.
+//!
+//! Creates point-in-time snapshots of conversation files before sync operations.
+//! Snapshots enable undoing pull operations (by restoring files) and push operations
+//! (by resetting Git commits). Includes validation and security checks for safe restoration.
+
+mod snapshot;
+mod restore;
+mod preview;
+mod operations;
+mod cleanup;
+
+// Re-export public types and functions to maintain API compatibility
+pub use snapshot::Snapshot;
+pub use preview::{UndoPreview, preview_undo_pull, preview_undo_push};
+pub use operations::{undo_pull, undo_push};
+pub use cleanup::{SnapshotCleanupConfig, cleanup_old_snapshots, cleanup_old_snapshots_with_dir};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::{ConversationSummary, OperationRecord, SyncOperation};
+    use crate::history::{ConversationSummary, OperationRecord, OperationType, SyncOperation, OperationHistory};
+    use crate::git::GitManager;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use tempfile::{tempdir, TempDir};
+    use uuid::Uuid;
 
     /// Helper to create a test file with content
     fn create_test_file(dir: &Path, name: &str, content: &str) -> PathBuf {
@@ -1814,100 +705,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_snapshot_validation_file_size_limit() {
-        let temp_dir = tempdir().unwrap();
-        let snapshots_dir = temp_dir.path().join("snapshots");
-        fs::create_dir_all(&snapshots_dir).unwrap();
-
-        // Create a snapshot file that exceeds 100 MB
-        let snapshot_path = snapshots_dir.join("large_snapshot.json");
-
-        // Create a large JSON structure (just over 100 MB)
-        // We'll create a simple but large JSON manually
-        let large_content = format!(
-            r#"{{"snapshot_id":"test","timestamp":"2025-01-01T00:00:00Z","operation_type":"pull","files":{{"test":"{}"}}}}"#,
-            "A".repeat(101 * 1024 * 1024) // 101 MB of 'A' characters
-        );
-
-        fs::write(&snapshot_path, large_content).unwrap();
-
-        // Verify the file is over 100 MB
-        let metadata = fs::metadata(&snapshot_path).unwrap();
-        assert!(metadata.len() > 100 * 1024 * 1024);
-
-        // Try to load the snapshot - should fail
-        let result = Snapshot::load_from_disk(&snapshot_path);
-        assert!(result.is_err());
-        let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("exceeds maximum size limit"));
-        assert!(error_msg.contains("100 MB"));
-    }
-
-    #[test]
-    fn test_snapshot_validation_file_count_limit() {
-        let temp_dir = tempdir().unwrap();
-        let snapshots_dir = temp_dir.path().join("snapshots");
-
-        // Create a snapshot with more than 10,000 files
-        let mut files = HashMap::new();
-        for i in 0..10_001 {
-            files.insert(format!("file_{i}.txt"), vec![0u8; 10]);
-        }
-
-        let snapshot = Snapshot {
-            snapshot_id: Uuid::new_v4().to_string(),
-            timestamp: chrono::Utc::now(),
-            operation_type: OperationType::Pull,
-            git_commit_hash: None,
-            files,
-            branch: None,
-            base_snapshot_id: None,
-            deleted_files: Vec::new(),
-        };
-
-        // Save the snapshot
-        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
-
-        // Try to load it - should fail
-        let result = Snapshot::load_from_disk(&snapshot_path);
-        assert!(result.is_err());
-        let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("too many files"));
-        assert!(error_msg.contains("10001"));
-        assert!(error_msg.contains("10,000") || error_msg.contains("10000"));
-    }
-
-    #[test]
-    fn test_snapshot_validation_within_limits() {
-        let temp_dir = tempdir().unwrap();
-        let snapshots_dir = temp_dir.path().join("snapshots");
-
-        // Create a snapshot within limits
-        let mut files = HashMap::new();
-        for i in 0..100 {
-            files.insert(format!("file_{i}.txt"), b"small content".to_vec());
-        }
-
-        let snapshot = Snapshot {
-            snapshot_id: Uuid::new_v4().to_string(),
-            timestamp: chrono::Utc::now(),
-            operation_type: OperationType::Pull,
-            git_commit_hash: None,
-            files,
-            branch: None,
-            base_snapshot_id: None,
-            deleted_files: Vec::new(),
-        };
-
-        // Save the snapshot
-        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
-
-        // Load should succeed
-        let loaded = Snapshot::load_from_disk(&snapshot_path).unwrap();
-        assert_eq!(loaded.files.len(), 100);
-        assert_eq!(loaded.snapshot_id, snapshot.snapshot_id);
-    }
 
     #[test]
     fn test_undo_pull_transaction_safety() {
@@ -2367,11 +1164,11 @@ mod tests {
         let snapshots_dir = temp_dir.path().join("snapshots");
         fs::create_dir_all(&snapshots_dir).unwrap();
 
-        // Create 10 pull snapshots
+        // Create 10 pull snapshots with different timestamps
         for i in 0..10 {
             let snapshot = Snapshot {
                 snapshot_id: format!("snapshot_{}", i),
-                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i as i64),
                 operation_type: OperationType::Pull,
                 git_commit_hash: None,
                 files: HashMap::new(),
@@ -2385,7 +1182,7 @@ mod tests {
         // Cleanup keeping last 5
         let config = SnapshotCleanupConfig {
             max_count_per_type: 5,
-            max_age_days: 365, // Don't delete by age
+            max_age_days: 0, // Only count matters, not age
         };
 
         let deleted = cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
@@ -2402,11 +1199,15 @@ mod tests {
         let snapshots_dir = temp_dir.path().join("snapshots");
         fs::create_dir_all(&snapshots_dir).unwrap();
 
+        // Capture "now" once to ensure consistent timestamp calculations
+        let now = chrono::Utc::now();
+
         // Create snapshots with different ages
+        // Use larger day offsets well away from the boundary to avoid timing issues
         for i in 0..10 {
             let snapshot = Snapshot {
                 snapshot_id: format!("snapshot_{}", i),
-                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                timestamp: now - chrono::Duration::days((5 + i * 10) as i64),
                 operation_type: OperationType::Pull,
                 git_commit_hash: None,
                 files: HashMap::new(),
@@ -2417,20 +1218,22 @@ mod tests {
             snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
         }
 
-        // Cleanup keeping last 3 days
+        // Cleanup keeping last 50 days
         let config = SnapshotCleanupConfig {
-            max_count_per_type: 1, // Very low count, but age should save them
-            max_age_days: 3,
+            max_count_per_type: 0, // Count doesn't matter, only age
+            max_age_days: 50,
         };
 
         let deleted = cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
 
-        // Should keep snapshots from days 0, 1, 2, 3 (4 snapshots)
-        // Should delete snapshots from days 4, 5, 6, 7, 8, 9 (6 snapshots)
-        assert_eq!(deleted, 6, "Should delete 6 old snapshots");
+        // Snapshots are at days: 5, 15, 25, 35, 45, 55, 65, 75, 85, 95
+        // Age threshold is now - 50 days
+        // Keep: days 5, 15, 25, 35, 45 (5 snapshots) - all clearly within 50 days
+        // Delete: days 55, 65, 75, 85, 95 (5 snapshots) - all clearly older than 50 days
+        assert_eq!(deleted, 5, "Should delete 5 old snapshots");
 
         let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
-        assert_eq!(remaining, 4, "Should have 4 snapshots remaining");
+        assert_eq!(remaining, 5, "Should have 5 snapshots remaining");
     }
 
     #[test]
@@ -2439,11 +1242,11 @@ mod tests {
         let snapshots_dir = temp_dir.path().join("snapshots");
         fs::create_dir_all(&snapshots_dir).unwrap();
 
-        // Create 10 pull and 10 push snapshots
+        // Create 10 pull and 10 push snapshots with different timestamps
         for i in 0..10 {
             let pull_snapshot = Snapshot {
                 snapshot_id: format!("pull_{}", i),
-                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i as i64),
                 operation_type: OperationType::Pull,
                 git_commit_hash: None,
                 files: HashMap::new(),
@@ -2455,7 +1258,7 @@ mod tests {
 
             let push_snapshot = Snapshot {
                 snapshot_id: format!("push_{}", i),
-                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i as i64),
                 operation_type: OperationType::Push,
                 git_commit_hash: Some(format!("hash_{}", i)),
                 files: HashMap::new(),
@@ -2488,11 +1291,11 @@ mod tests {
         let snapshots_dir = temp_dir.path().join("snapshots");
         fs::create_dir_all(&snapshots_dir).unwrap();
 
-        // Create 10 snapshots
+        // Create 10 snapshots with different timestamps
         for i in 0..10 {
             let snapshot = Snapshot {
                 snapshot_id: format!("snapshot_{}", i),
-                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i as i64),
                 operation_type: OperationType::Pull,
                 git_commit_hash: None,
                 files: HashMap::new(),
@@ -2505,7 +1308,7 @@ mod tests {
 
         let config = SnapshotCleanupConfig {
             max_count_per_type: 3,
-            max_age_days: 365,
+            max_age_days: 0, // Only count matters for this test
         };
 
         // Dry run should report but not delete
@@ -2516,21 +1319,4 @@ mod tests {
         let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
         assert_eq!(remaining, 10, "All snapshots should still exist after dry run");
     }
-}
-
-/// Clean up old snapshots using the default snapshots directory
-///
-/// This is a convenience wrapper around `cleanup_old_snapshots_with_dir`.
-///
-/// # Arguments
-/// * `config` - Cleanup configuration (defaults: keep last 5 per type, last 7 days)
-/// * `dry_run` - If true, show what would be deleted without actually deleting
-///
-/// # Returns
-/// Number of snapshots deleted
-pub fn cleanup_old_snapshots(
-    config: Option<SnapshotCleanupConfig>,
-    dry_run: bool,
-) -> Result<usize> {
-    cleanup_old_snapshots_with_dir(config, dry_run, None)
 }

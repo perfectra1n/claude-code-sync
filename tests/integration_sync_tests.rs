@@ -91,7 +91,7 @@ fn discover_test_sessions(base_path: &Path) -> anyhow::Result<Vec<ConversationSe
         if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
             match ConversationSession::from_file(path) {
                 Ok(session) => sessions.push(session),
-                Err(e) => eprintln!("Warning: Failed to parse {}: {}", path.display(), e),
+                Err(e) => log::warn!("Failed to parse {}: {}", path.display(), e),
             }
         }
     }
