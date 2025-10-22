@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
-// Import the necessary modules from claude_sync
-use claude_sync::git::GitManager;
-use claude_sync::history::{ConversationSummary, OperationHistory, OperationType, SyncOperation};
-use claude_sync::parser::ConversationSession;
-use claude_sync::sync::SyncState;
-use claude_sync::undo::{undo_pull, undo_push, Snapshot};
+// Import the necessary modules from claude_code_sync
+use claude_code_sync::git::GitManager;
+use claude_code_sync::history::{ConversationSummary, OperationHistory, OperationType, SyncOperation};
+use claude_code_sync::parser::ConversationSession;
+use claude_code_sync::sync::SyncState;
+use claude_code_sync::undo::{undo_pull, undo_push, Snapshot};
 
 /// Path to test data directory
 // Use relative path from the workspace root
@@ -99,7 +99,7 @@ fn discover_test_sessions(base_path: &Path) -> anyhow::Result<Vec<ConversationSe
 
 /// Helper function to create filter config for testing
 fn create_test_filter_config(config_dir: &Path) -> anyhow::Result<()> {
-    use claude_sync::filter::FilterConfig;
+    use claude_code_sync::filter::FilterConfig;
 
     let filter = FilterConfig::default();
     let filter_path = config_dir.join("filter.json");
@@ -200,7 +200,7 @@ fn test_full_push_pull_cycle() {
         conversations.push(summary);
     }
 
-    let push_record = claude_sync::history::OperationRecord::new(
+    let push_record = claude_code_sync::history::OperationRecord::new(
         OperationType::Push,
         Some("main".to_string()),
         conversations,
@@ -329,7 +329,7 @@ fn test_undo_pull_restores_files() {
     )
     .unwrap();
 
-    let mut pull_record = claude_sync::history::OperationRecord::new(
+    let mut pull_record = claude_code_sync::history::OperationRecord::new(
         OperationType::Pull,
         Some("main".to_string()),
         vec![conv_summary],
@@ -420,7 +420,7 @@ fn test_undo_push_resets_git() {
     )
     .unwrap();
 
-    let mut push_record = claude_sync::history::OperationRecord::new(
+    let mut push_record = claude_code_sync::history::OperationRecord::new(
         OperationType::Push,
         Some("master".to_string()),
         vec![conv_summary],
@@ -454,7 +454,7 @@ fn test_undo_push_resets_git() {
 
 #[test]
 fn test_conflict_handling() {
-    use claude_sync::conflict::ConflictDetector;
+    use claude_code_sync::conflict::ConflictDetector;
 
     let machine1_dir = TempDir::new().unwrap();
     let machine2_dir = TempDir::new().unwrap();
@@ -556,7 +556,7 @@ fn test_operation_history_tracking() {
     )
     .unwrap();
 
-    let push_record = claude_sync::history::OperationRecord::new(
+    let push_record = claude_code_sync::history::OperationRecord::new(
         OperationType::Push,
         Some("main".to_string()),
         vec![push_conv.clone()],
@@ -575,7 +575,7 @@ fn test_operation_history_tracking() {
     )
     .unwrap();
 
-    let pull_record = claude_sync::history::OperationRecord::new(
+    let pull_record = claude_code_sync::history::OperationRecord::new(
         OperationType::Pull,
         Some("main".to_string()),
         vec![pull_conv],
@@ -596,7 +596,7 @@ fn test_operation_history_tracking() {
     )
     .unwrap();
 
-    let push_record2 = claude_sync::history::OperationRecord::new(
+    let push_record2 = claude_code_sync::history::OperationRecord::new(
         OperationType::Push,
         Some("main".to_string()),
         vec![push_conv2],
@@ -764,7 +764,7 @@ fn test_concurrent_push_pull_operations() {
         )
         .unwrap();
 
-        let record = claude_sync::history::OperationRecord::new(
+        let record = claude_code_sync::history::OperationRecord::new(
             op_type,
             Some("main".to_string()),
             vec![conv],

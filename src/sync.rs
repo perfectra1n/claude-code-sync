@@ -81,9 +81,9 @@ impl SyncState {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use claude_sync::sync::SyncState;
-    ///
+    /// ```
+    /// # use claude_code_sync::sync::SyncState;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// match SyncState::load() {
     ///     Ok(state) => {
     ///         println!("Sync repo: {}", state.sync_repo_path.display());
@@ -91,6 +91,8 @@ impl SyncState {
     ///     }
     ///     Err(e) => eprintln!("Failed to load sync state: {}", e),
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn load() -> Result<Self> {
         let state_path = Self::state_file_path()?;

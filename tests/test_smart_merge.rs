@@ -1,5 +1,5 @@
-use claude_sync::merge::merge_conversations;
-use claude_sync::parser::{ConversationEntry, ConversationSession};
+use claude_code_sync::merge::merge_conversations;
+use claude_code_sync::parser::{ConversationEntry, ConversationSession};
 use serde_json::json;
 
 /// Helper to create a test entry

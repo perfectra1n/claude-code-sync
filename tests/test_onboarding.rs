@@ -1,8 +1,8 @@
 use anyhow::Result;
-use claude_sync::config::ConfigManager;
-use claude_sync::filter::FilterConfig;
-use claude_sync::git::GitManager;
-use claude_sync::sync::SyncState;
+use claude_code_sync::config::ConfigManager;
+use claude_code_sync::filter::FilterConfig;
+use claude_code_sync::git::GitManager;
+use claude_code_sync::sync::SyncState;
 use tempfile::TempDir;
 
 /// Test helper to setup a temporary config directory for testing
@@ -130,7 +130,7 @@ fn test_init_from_onboarding() -> Result<()> {
     GitManager::init(&repo_path)?;
 
     // Test init_from_onboarding with a local repository
-    claude_sync::sync::init_from_onboarding(&repo_path, None, false)?;
+    claude_code_sync::sync::init_from_onboarding(&repo_path, None, false)?;
 
     // Verify state was saved
     let state = SyncState::load()?;
@@ -150,7 +150,7 @@ fn test_init_from_onboarding_with_remote() -> Result<()> {
     GitManager::init(&repo_path)?;
 
     // Test with remote URL
-    claude_sync::sync::init_from_onboarding(
+    claude_code_sync::sync::init_from_onboarding(
         &repo_path,
         Some("https://github.com/user/repo.git"),
         true,

@@ -3,8 +3,19 @@
 [![Unit Tests](https://github.com/perfectra1n/claude-code-sync/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/unit-tests.yml)
 [![Integration Tests](https://github.com/perfectra1n/claude-code-sync/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/integration-tests.yml)
 [![Build](https://github.com/perfectra1n/claude-code-sync/actions/workflows/build.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/build.yml)
+[![Documentation](https://github.com/perfectra1n/claude-code-sync/actions/workflows/docs.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/docs.yml)
 
 A Rust CLI tool for syncing Claude Code conversation history across machines using git repositories.
+
+## Documentation
+
+📚 **[View API Documentation](https://perfectra1n.github.io/claude-code-sync/)** - Complete API reference and code documentation
+
+To build and view documentation locally:
+```bash
+# Build and open documentation in your browser
+cargo doc --open --no-deps --all-features
+```
 
 ## Features
 

@@ -17,17 +17,15 @@ use crate::parser::ConversationSession;
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use claude_sync::conflict::Conflict;
-/// use claude_sync::parser::ConversationSession;
+/// ```ignore
+/// use claude_code_sync::conflict::Conflict;
+/// use claude_code_sync::parser::ConversationSession;
 ///
-/// # fn example(local: &ConversationSession, remote: &ConversationSession) {
 /// let conflict = Conflict::new(local, remote);
 ///
 /// if conflict.is_real_conflict() {
 ///     println!("{}", conflict.description());
 /// }
-/// # }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conflict {
@@ -194,17 +192,15 @@ impl Conflict {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use claude_sync::conflict::Conflict;
-    /// use claude_sync::parser::ConversationSession;
+    /// ```ignore
+    /// use claude_code_sync::conflict::Conflict;
+    /// use claude_code_sync::parser::ConversationSession;
     ///
-    /// # fn example(local_session: &ConversationSession, remote_session: &ConversationSession) {
     /// let conflict = Conflict::new(local_session, remote_session);
     ///
     /// println!("Conflict in session: {}", conflict.session_id);
     /// println!("Local messages: {}", conflict.local_message_count);
     /// println!("Remote messages: {}", conflict.remote_message_count);
-    /// # }
     /// ```
     pub fn new(local: &ConversationSession, remote: &ConversationSession) -> Self {
         Conflict {
@@ -321,10 +317,9 @@ impl ConflictDetector {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use claude_sync::conflict::ConflictDetector;
-    /// use claude_sync::parser::ConversationSession;
-    ///
+    /// ```
+    /// # use claude_code_sync::conflict::ConflictDetector;
+    /// # use claude_code_sync::parser::ConversationSession;
     /// # fn example(local_sessions: Vec<ConversationSession>, remote_sessions: Vec<ConversationSession>) {
     /// let mut detector = ConflictDetector::new();
     ///
