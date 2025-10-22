@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use log::{info, warn};
+use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -392,7 +392,7 @@ impl Snapshot {
             "full"
         };
 
-        info!(
+        log::info!(
             "Created {} snapshot: {} ({:.1} MB, {} files)",
             snapshot_type,
             self.snapshot_id,
@@ -401,7 +401,7 @@ impl Snapshot {
         );
 
         if size_mb > 100.0 {
-            warn!("Large snapshot size - consider cleaning up old conversation files");
+            log::warn!("Large snapshot size - consider cleaning up old conversation files");
         }
 
         Ok(snapshot_path)
@@ -434,15 +434,17 @@ impl Snapshot {
 
         // Log size information - always show this for visibility
         if size_mb > 100.0 {
-            warn!(
-                "Loading large snapshot: {} ({:.1} MB) - This may take a moment...",
-                snapshot_path.file_name().unwrap().to_string_lossy(),
+            println!(
+                "    {} Loading large snapshot: {} ({:.1} MB) - This may take a moment...",
+                "⚠".yellow(),
+                snapshot_path.file_name().unwrap().to_string_lossy().cyan(),
                 size_mb
             );
         } else {
-            info!(
-                "Loading snapshot: {} ({:.1} MB)",
-                snapshot_path.file_name().unwrap().to_string_lossy(),
+            println!(
+                "    {} snapshot: {} ({:.1} MB)",
+                "Loading".dimmed(),
+                snapshot_path.file_name().unwrap().to_string_lossy().cyan(),
                 size_mb
             );
         }
@@ -456,11 +458,14 @@ impl Snapshot {
         })?;
 
         // Log file count information
-        info!("Contains {} files", snapshot.files.len());
+        println!("    {} {} files", "Contains".dimmed(), snapshot.files.len());
 
         // Warn if unusually large number of files
         if snapshot.files.len() > 1000 {
-            warn!("Large number of files - this is a full (non-differential) snapshot");
+            println!(
+                "    {} Large number of files - this is a full (non-differential) snapshot",
+                "Note:".yellow()
+            );
         }
 
         Ok(snapshot)
@@ -476,7 +481,7 @@ impl Snapshot {
     ///
     /// # Returns
     /// A HashMap containing the full state of all files
-    pub(crate) fn reconstruct_full_state_with_dir(&self, snapshots_dir: Option<&Path>) -> Result<HashMap<String, Vec<u8>>> {
+    pub fn reconstruct_full_state_with_dir(&self, snapshots_dir: Option<&Path>) -> Result<HashMap<String, Vec<u8>>> {
         let mut state = HashMap::new();
 
         // If this is a differential snapshot, load the base chain
@@ -525,4 +530,5 @@ impl Snapshot {
     pub(crate) fn snapshots_dir() -> Result<PathBuf> {
         crate::config::ConfigManager::snapshots_dir()
     }
+
 }
