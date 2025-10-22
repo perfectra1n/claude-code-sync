@@ -3,6 +3,7 @@ use claude_code_sync::config::ConfigManager;
 use claude_code_sync::filter::FilterConfig;
 use claude_code_sync::git::GitManager;
 use claude_code_sync::sync::SyncState;
+use serial_test::serial;
 use tempfile::TempDir;
 
 /// Test helper to setup a temporary config directory for testing
@@ -84,9 +85,12 @@ fn test_sync_state_backwards_compatible() -> Result<()> {
 }
 
 #[test]
+#[serial]
 fn test_filter_config_save_and_load() -> Result<()> {
-    // Note: This test modifies the actual user config
-    // In a real-world scenario, you'd want to use a custom config path
+    let temp_dir = setup_test_config_env()?;
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     let config = FilterConfig {
         exclude_attachments: true,
@@ -99,6 +103,9 @@ fn test_filter_config_save_and_load() -> Result<()> {
     let loaded = FilterConfig::load()?;
     assert!(loaded.exclude_attachments);
     assert_eq!(loaded.exclude_older_than_days, Some(30));
+
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
 
     Ok(())
 }
@@ -124,9 +131,13 @@ fn test_git_manager_clone_validates_path() -> Result<()> {
 }
 
 #[test]
+#[serial]
 fn test_init_from_onboarding() -> Result<()> {
     let temp_dir = setup_test_config_env()?;
     let repo_path = temp_dir.path().join("onboarding-test-repo");
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Initialize a git repo first
     GitManager::init(&repo_path)?;
@@ -140,13 +151,20 @@ fn test_init_from_onboarding() -> Result<()> {
     assert!(!state.has_remote);
     assert!(!state.is_cloned_repo);
 
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
+
     Ok(())
 }
 
 #[test]
+#[serial]
 fn test_init_from_onboarding_with_remote() -> Result<()> {
     let temp_dir = setup_test_config_env()?;
     let repo_path = temp_dir.path().join("onboarding-remote-test");
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Initialize a git repo first
     GitManager::init(&repo_path)?;
@@ -163,6 +181,9 @@ fn test_init_from_onboarding_with_remote() -> Result<()> {
     assert_eq!(state.sync_repo_path, repo_path);
     assert!(state.has_remote);
     assert!(state.is_cloned_repo);
+
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
 
     Ok(())
 }
@@ -214,9 +235,13 @@ fn test_filter_config_with_attachments() -> Result<()> {
 }
 
 #[test]
+#[serial]
 fn test_multiple_config_operations() -> Result<()> {
-    // This test is sensitive to ordering with other tests that modify config
-    // We'll just verify the last saved state is loaded correctly
+    let temp_dir = setup_test_config_env()?;
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
     let _loaded = FilterConfig::load()?;
 
     // Save a new config with known values
@@ -231,6 +256,9 @@ fn test_multiple_config_operations() -> Result<()> {
     let loaded2 = FilterConfig::load()?;
     assert!(loaded2.exclude_attachments);
     assert_eq!(loaded2.exclude_older_than_days, Some(99));
+
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
 
     Ok(())
 }
