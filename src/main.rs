@@ -223,7 +223,7 @@ fn main() -> Result<()> {
     logger::rotate_log_if_needed().ok(); // Ignore errors during log rotation
     logger::init_logger().ok(); // Ignore errors during logger init
 
-    log::info!("claude-code-sync started");
+    log::debug!("claude-code-sync started");
 
     let cli = Cli::parse();
 

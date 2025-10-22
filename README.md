@@ -7,6 +7,8 @@
 
 A Rust CLI tool for syncing Claude Code conversation history across machines using git repositories.
 
+![Demo](demo1.svg)
+
 ## Documentation
 
 📚 **[View API Documentation](https://perfectra1n.github.io/claude-code-sync/)** - Complete API reference and code documentation
