@@ -120,9 +120,11 @@ pub fn rotate_log_if_needed() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs::File;
 
     #[test]
+    #[serial]
     fn test_init_logger_succeeds() {
         // Should not panic
         let result = init_logger();
@@ -130,7 +132,15 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_log_to_file() -> Result<()> {
+        // Set up isolated test environment
+        let temp_dir = tempfile::TempDir::new()?;
+        std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
+        // Ensure config directory exists
+        ConfigManager::ensure_config_dir()?;
+
         log_to_file("Test log message")?;
 
         let log_path = ConfigManager::log_file_path()?;
@@ -139,13 +149,22 @@ mod tests {
         let contents = std::fs::read_to_string(&log_path)?;
         assert!(contents.contains("Test log message"));
 
+        // Clean up env var
+        std::env::remove_var("XDG_CONFIG_HOME");
+
         Ok(())
     }
 
     #[test]
+    #[serial]
     fn test_rotate_log_creates_backup() -> Result<()> {
+        // Set up isolated test environment
+        let temp_dir = tempfile::TempDir::new()?;
+        std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
         // Create a large log file
         let log_path = ConfigManager::log_file_path()?;
+        ConfigManager::ensure_config_dir()?;
         let mut file = File::create(&log_path)?;
 
         // Write 11MB of data
@@ -166,10 +185,8 @@ mod tests {
             assert!(metadata.len() < 11 * 1024 * 1024);
         }
 
-        // Cleanup
-        if old_log_path.exists() {
-            std::fs::remove_file(&old_log_path)?;
-        }
+        // Clean up env var
+        std::env::remove_var("XDG_CONFIG_HOME");
 
         Ok(())
     }
