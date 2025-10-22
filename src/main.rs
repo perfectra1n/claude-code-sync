@@ -147,6 +147,21 @@ enum Commands {
         #[command(subcommand)]
         action: HistoryAction,
     },
+
+    /// Clean up old snapshot files
+    CleanupSnapshots {
+        /// Show what would be deleted without actually deleting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Maximum number of snapshots to keep per operation type
+        #[arg(long, default_value_t = 5)]
+        max_count: usize,
+
+        /// Maximum age of snapshots to keep (in days)
+        #[arg(long, default_value_t = 7)]
+        max_age_days: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -329,6 +344,13 @@ fn main() -> Result<()> {
                 handle_history_clear()?;
             }
         },
+        Commands::CleanupSnapshots {
+            dry_run,
+            max_count,
+            max_age_days,
+        } => {
+            handle_cleanup_snapshots(dry_run, max_count, max_age_days)?;
+        }
     }
 
     Ok(())
@@ -680,6 +702,57 @@ fn run_onboarding_flow() -> Result<()> {
 
     println!("{}", "✓ Ready to sync!".green().bold());
     println!();
+
+    Ok(())
+}
+
+// ============================================================================
+// Snapshot Cleanup Handler
+// ============================================================================
+
+/// Handle cleanup snapshots command
+fn handle_cleanup_snapshots(dry_run: bool, max_count: usize, max_age_days: i64) -> Result<()> {
+    use colored::Colorize;
+
+    if dry_run {
+        println!("{}", "Snapshot cleanup (dry run)".cyan().bold());
+        println!("  Would keep: last {} snapshots per type OR last {} days", max_count, max_age_days);
+        println!();
+    } else {
+        println!("{}", "Cleaning up old snapshots...".cyan().bold());
+        println!("  Keeping: last {} snapshots per type OR last {} days", max_count, max_age_days);
+        println!();
+    }
+
+    let config = undo::SnapshotCleanupConfig {
+        max_count_per_type: max_count,
+        max_age_days,
+    };
+
+    let deleted_count = undo::cleanup_old_snapshots(Some(config), dry_run)
+        .context("Failed to cleanup snapshots")?;
+
+    if dry_run {
+        if deleted_count > 0 {
+            println!(
+                "{} {} snapshots would be deleted",
+                "✓".green(),
+                deleted_count
+            );
+        } else {
+            println!("{}", "No snapshots to delete".dimmed());
+        }
+    } else {
+        if deleted_count > 0 {
+            println!(
+                "{} Deleted {} old snapshots",
+                "✓".green(),
+                deleted_count
+            );
+        } else {
+            println!("{}", "No old snapshots to delete".dimmed());
+        }
+    }
 
     Ok(())
 }

@@ -12,6 +12,16 @@ use crate::history::{OperationHistory, OperationType};
 ///
 /// Snapshots are created before each sync operation to enable undo functionality.
 /// They capture the complete state of all conversation files that might be affected.
+///
+/// ## Differential Snapshots
+///
+/// To save disk space, snapshots can be differential - only storing files that changed
+/// since the previous snapshot. This is controlled by the `base_snapshot_id` field:
+/// - `None`: Full snapshot containing all files
+/// - `Some(id)`: Differential snapshot containing only changes since base snapshot
+///
+/// When restoring a differential snapshot, we recursively load the chain of base
+/// snapshots to reconstruct the full state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Unique identifier for this snapshot
@@ -31,12 +41,28 @@ pub struct Snapshot {
     ///
     /// We store the raw bytes to preserve exact file state including encoding.
     /// The HashMap key is a string path for JSON serialization compatibility.
+    ///
+    /// For differential snapshots, only contains files that changed/were added.
     #[serde(with = "base64_map")]
     pub files: HashMap<String, Vec<u8>>,
 
     /// Git branch name at the time of snapshot
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+
+    /// Base snapshot ID for differential snapshots
+    ///
+    /// If present, this snapshot only contains changes relative to the base.
+    /// The full state can be reconstructed by loading the chain of snapshots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_snapshot_id: Option<String>,
+
+    /// Files that were deleted since the base snapshot
+    ///
+    /// Only populated for differential snapshots. Lists file paths that existed
+    /// in the base snapshot but should be removed when restoring this snapshot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_files: Vec<String>,
 }
 
 /// Custom serialization for `HashMap<String, Vec<u8>>` using base64 encoding
@@ -140,7 +166,183 @@ impl Snapshot {
             git_commit_hash,
             files,
             branch,
+            base_snapshot_id: None,
+            deleted_files: Vec::new(),
         })
+    }
+
+    /// Create a differential snapshot that only stores changes since the last snapshot
+    ///
+    /// This significantly reduces disk usage by only storing files that have changed.
+    ///
+    /// # Arguments
+    /// * `operation_type` - Type of operation this snapshot is for
+    /// * `file_paths` - Iterator of file paths to include in snapshot
+    /// * `git_manager` - Optional git manager to capture commit hash
+    /// * `snapshots_dir` - Optional custom snapshots directory (for testing)
+    ///
+    /// # Returns
+    /// A new differential Snapshot, or a full snapshot if no base exists
+    pub fn create_differential_with_dir<P, I>(
+        operation_type: OperationType,
+        file_paths: I,
+        git_manager: Option<&GitManager>,
+        snapshots_dir: Option<&Path>,
+    ) -> Result<Self>
+    where
+        P: AsRef<Path>,
+        I: IntoIterator<Item = P>,
+    {
+        // Try to find the most recent snapshot of the same operation type
+        let base_snapshot = Self::find_latest_snapshot(operation_type, snapshots_dir)?;
+
+        let snapshot_id = Uuid::new_v4().to_string();
+        let timestamp = chrono::Utc::now();
+
+        // Collect current file paths and their content
+        let mut current_files: HashMap<String, Vec<u8>> = HashMap::new();
+        for path in file_paths {
+            let path = path.as_ref();
+            match fs::read(path) {
+                Ok(content) => {
+                    current_files.insert(path.to_string_lossy().to_string(), content);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!("Failed to read file for snapshot: {}", path.display())
+                    });
+                }
+            }
+        }
+
+        // If no base snapshot exists, create a full snapshot
+        let (files, base_snapshot_id, deleted_files) = if let Some(base) = base_snapshot {
+            let mut changed_files = HashMap::new();
+            let mut deleted = Vec::new();
+
+            // Find files that changed or are new
+            for (path, content) in &current_files {
+                if let Some(base_content) = base.files.get(path) {
+                    // File exists in base - only include if content changed
+                    if base_content != content {
+                        changed_files.insert(path.clone(), content.clone());
+                    }
+                } else {
+                    // New file - always include
+                    changed_files.insert(path.clone(), content.clone());
+                }
+            }
+
+            // Find files that were deleted
+            for path in base.files.keys() {
+                if !current_files.contains_key(path) {
+                    deleted.push(path.clone());
+                }
+            }
+
+            (changed_files, Some(base.snapshot_id), deleted)
+        } else {
+            // No base snapshot - include all files (full snapshot)
+            (current_files, None, Vec::new())
+        };
+
+        // Capture git commit hash if available
+        let (git_commit_hash, branch) = if let Some(git) = git_manager {
+            let hash = git.current_commit_hash()?;
+            let branch = git.current_branch().ok();
+            (Some(hash), branch)
+        } else {
+            (None, None)
+        };
+
+        Ok(Snapshot {
+            snapshot_id,
+            timestamp,
+            operation_type,
+            git_commit_hash,
+            files,
+            branch,
+            base_snapshot_id,
+            deleted_files,
+        })
+    }
+
+    /// Create a differential snapshot using the default snapshots directory
+    ///
+    /// This is a convenience wrapper around `create_differential_with_dir` that
+    /// uses the default snapshots directory.
+    ///
+    /// # Arguments
+    /// * `operation_type` - Type of operation this snapshot is for
+    /// * `file_paths` - Iterator of file paths to include in snapshot
+    /// * `git_manager` - Optional git manager to capture commit hash
+    ///
+    /// # Returns
+    /// A new differential Snapshot, or a full snapshot if no base exists
+    pub fn create_differential<P, I>(
+        operation_type: OperationType,
+        file_paths: I,
+        git_manager: Option<&GitManager>,
+    ) -> Result<Self>
+    where
+        P: AsRef<Path>,
+        I: IntoIterator<Item = P>,
+    {
+        Self::create_differential_with_dir(operation_type, file_paths, git_manager, None)
+    }
+
+    /// Find the most recent snapshot of a given operation type
+    ///
+    /// # Arguments
+    /// * `operation_type` - Type of operation to find snapshots for
+    /// * `custom_dir` - Optional custom snapshots directory (for testing)
+    ///
+    /// # Returns
+    /// The most recent snapshot, or None if no snapshots exist
+    fn find_latest_snapshot(operation_type: OperationType, custom_dir: Option<&Path>) -> Result<Option<Snapshot>> {
+        let snapshots_dir = if let Some(dir) = custom_dir {
+            dir.to_path_buf()
+        } else {
+            Self::snapshots_dir()?
+        };
+
+        if !snapshots_dir.exists() {
+            return Ok(None);
+        }
+
+        let mut snapshots: Vec<(PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
+
+        // Scan snapshots directory
+        for entry in fs::read_dir(&snapshots_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.extension().map_or(false, |ext| ext == "json") {
+                continue;
+            }
+
+            // Quick parse to get timestamp and operation type without loading full snapshot
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content) {
+                    if snapshot.operation_type == operation_type {
+                        snapshots.push((path, snapshot.timestamp));
+                    }
+                }
+            }
+        }
+
+        // Sort by timestamp descending and get the most recent
+        snapshots.sort_by(|a, b| b.1.cmp(&a.1));
+
+        if let Some((path, _)) = snapshots.first() {
+            let snapshot = Self::load_from_disk(path)?;
+            Ok(Some(snapshot))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Save this snapshot to disk
@@ -243,6 +445,9 @@ impl Snapshot {
     /// This writes all files from the snapshot back to their original locations,
     /// overwriting any current content.
     ///
+    /// For differential snapshots, this recursively loads the base snapshot chain
+    /// and applies all changes in order to reconstruct the full state.
+    ///
     /// # Security
     /// This method validates all paths to prevent path traversal attacks.
     /// By default, only paths within the home directory are allowed.
@@ -251,7 +456,12 @@ impl Snapshot {
     /// # Arguments
     /// * `allowed_base_dir` - Optional base directory for path validation.
     ///   If None, defaults to home directory for security.
-    pub fn restore_with_base(&self, allowed_base_dir: Option<&Path>) -> Result<()> {
+    /// * `snapshots_dir` - Optional snapshots directory (for testing with differential snapshots)
+    pub fn restore_with_base_and_snapshots(
+        &self,
+        allowed_base_dir: Option<&Path>,
+        snapshots_dir: Option<&Path>,
+    ) -> Result<()> {
         // Determine the allowed base directory
         let allowed_base = if let Some(base) = allowed_base_dir {
             // For testing: use the provided base
@@ -266,7 +476,25 @@ impl Snapshot {
                 .context("Failed to canonicalize home directory")?
         };
 
-        for (path_str, content) in &self.files {
+        // Build the complete file state by walking the snapshot chain
+        let all_files = self.reconstruct_full_state_with_dir(snapshots_dir)?;
+
+        // First, handle file deletions from the snapshot
+        for deleted_path in &self.deleted_files {
+            let path = PathBuf::from(deleted_path);
+
+            // Validate the path is within allowed directory
+            if let Ok(canonical) = path.canonicalize() {
+                if canonical.starts_with(&allowed_base) && path.exists() {
+                    fs::remove_file(&path).with_context(|| {
+                        format!("Failed to delete file: {}", path.display())
+                    })?;
+                }
+            }
+        }
+
+        // Then restore all files from the reconstructed state
+        for (path_str, content) in &all_files {
             let path = PathBuf::from(path_str);
 
             // Canonicalize the path to resolve any symlinks or .. components
@@ -304,6 +532,13 @@ impl Snapshot {
         Ok(())
     }
 
+    /// Restore files from this snapshot using default snapshots directory
+    ///
+    /// This is a wrapper around `restore_with_base_and_snapshots` for backwards compatibility.
+    pub fn restore_with_base(&self, allowed_base_dir: Option<&Path>) -> Result<()> {
+        self.restore_with_base_and_snapshots(allowed_base_dir, None)
+    }
+
     /// Restore files from this snapshot
     ///
     /// This is a convenience wrapper that uses the home directory as the allowed base.
@@ -312,10 +547,184 @@ impl Snapshot {
         self.restore_with_base(None)
     }
 
+    /// Reconstruct the full file state by walking the snapshot chain
+    ///
+    /// For differential snapshots, this loads all base snapshots recursively
+    /// and merges them to produce the complete file state.
+    ///
+    /// # Arguments
+    /// * `snapshots_dir` - Optional custom snapshots directory (for testing)
+    ///
+    /// # Returns
+    /// A HashMap containing the full state of all files
+    fn reconstruct_full_state_with_dir(&self, snapshots_dir: Option<&Path>) -> Result<HashMap<String, Vec<u8>>> {
+        let mut state = HashMap::new();
+
+        // If this is a differential snapshot, load the base chain
+        if let Some(base_id) = &self.base_snapshot_id {
+            let snapshots_dir = if let Some(dir) = snapshots_dir {
+                dir.to_path_buf()
+            } else {
+                Self::snapshots_dir()?
+            };
+            let base_path = snapshots_dir.join(format!("{}.json", base_id));
+
+            if !base_path.exists() {
+                return Err(anyhow!(
+                    "Base snapshot not found: {}. \
+                    The snapshot chain is broken. Cannot restore differential snapshot.",
+                    base_id
+                ));
+            }
+
+            // Recursively load the base snapshot's state
+            let base_snapshot = Self::load_from_disk(&base_path)?;
+            state = base_snapshot.reconstruct_full_state_with_dir(Some(&snapshots_dir))?;
+        }
+
+        // Apply this snapshot's changes on top of the base state
+        for (path, content) in &self.files {
+            state.insert(path.clone(), content.clone());
+        }
+
+        // Remove deleted files
+        for deleted_path in &self.deleted_files {
+            state.remove(deleted_path);
+        }
+
+        Ok(state)
+    }
+
+    /// Reconstruct the full file state using the default snapshots directory
+    ///
+    /// This is a convenience wrapper around `reconstruct_full_state_with_dir`.
+    fn reconstruct_full_state(&self) -> Result<HashMap<String, Vec<u8>>> {
+        self.reconstruct_full_state_with_dir(None)
+    }
+
     /// Get the default snapshots directory
     fn snapshots_dir() -> Result<PathBuf> {
         crate::config::ConfigManager::snapshots_dir()
     }
+}
+
+/// Configuration for snapshot cleanup
+pub struct SnapshotCleanupConfig {
+    /// Keep at most this many snapshots per operation type (pull/push)
+    pub max_count_per_type: usize,
+    /// Keep snapshots newer than this many days
+    pub max_age_days: i64,
+}
+
+impl Default for SnapshotCleanupConfig {
+    fn default() -> Self {
+        Self {
+            max_count_per_type: 5,
+            max_age_days: 7,
+        }
+    }
+}
+
+/// Clean up old snapshots based on age and count limits
+///
+/// This removes snapshots that don't meet EITHER of the following criteria:
+/// - Within the last N snapshots of each operation type
+/// - Created within the last X days
+///
+/// # Arguments
+/// * `config` - Cleanup configuration (defaults: keep last 5 per type, last 7 days)
+/// * `dry_run` - If true, show what would be deleted without actually deleting
+/// * `snapshots_dir` - Optional custom snapshots directory (for testing)
+///
+/// # Returns
+/// Number of snapshots deleted
+pub fn cleanup_old_snapshots_with_dir(
+    config: Option<SnapshotCleanupConfig>,
+    dry_run: bool,
+    snapshots_dir: Option<&Path>,
+) -> Result<usize> {
+    let config = config.unwrap_or_default();
+    let snapshots_dir = if let Some(dir) = snapshots_dir {
+        dir.to_path_buf()
+    } else {
+        Snapshot::snapshots_dir()?
+    };
+
+    if !snapshots_dir.exists() {
+        return Ok(0);
+    }
+
+    // Collect all snapshots with metadata
+    let mut pull_snapshots: Vec<(PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    let mut push_snapshots: Vec<(PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
+
+    for entry in fs::read_dir(&snapshots_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.extension().map_or(false, |ext| ext == "json") {
+            continue;
+        }
+
+        // Load snapshot metadata
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content) {
+                match snapshot.operation_type {
+                    OperationType::Pull => pull_snapshots.push((path, snapshot.timestamp)),
+                    OperationType::Push => push_snapshots.push((path, snapshot.timestamp)),
+                }
+            }
+        }
+    }
+
+    // Sort by timestamp descending (newest first)
+    pull_snapshots.sort_by(|a, b| b.1.cmp(&a.1));
+    push_snapshots.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Determine which snapshots to keep
+    let now = chrono::Utc::now();
+    let age_threshold = now - chrono::Duration::days(config.max_age_days);
+
+    let mut to_delete = Vec::new();
+
+    // Process pull snapshots
+    for (idx, (path, timestamp)) in pull_snapshots.iter().enumerate() {
+        let within_count_limit = idx < config.max_count_per_type;
+        let within_age_limit = *timestamp >= age_threshold;
+
+        // Delete if it doesn't meet EITHER criterion
+        if !within_count_limit && !within_age_limit {
+            to_delete.push(path.clone());
+        }
+    }
+
+    // Process push snapshots
+    for (idx, (path, timestamp)) in push_snapshots.iter().enumerate() {
+        let within_count_limit = idx < config.max_count_per_type;
+        let within_age_limit = *timestamp >= age_threshold;
+
+        if !within_count_limit && !within_age_limit {
+            to_delete.push(path.clone());
+        }
+    }
+
+    // Delete the snapshots (or just report in dry run mode)
+    let deleted_count = to_delete.len();
+
+    if dry_run {
+        println!("Would delete {} snapshots:", deleted_count);
+        for path in &to_delete {
+            println!("  - {}", path.display());
+        }
+    } else {
+        for path in &to_delete {
+            if let Err(e) = fs::remove_file(path) {
+                eprintln!("Warning: Failed to delete snapshot {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    Ok(deleted_count)
 }
 
 /// Preview information for an undo operation
@@ -1041,6 +1450,8 @@ mod tests {
             git_commit_hash: None, // Missing commit hash
             files: HashMap::new(),
             branch: Some("main".to_string()),
+            base_snapshot_id: None,
+            deleted_files: Vec::new(),
         };
 
         let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
@@ -1191,6 +1602,8 @@ mod tests {
             git_commit_hash: None,
             files: HashMap::new(),
             branch: None,
+            base_snapshot_id: None,
+            deleted_files: Vec::new(),
         };
 
         // Try to add a path that escapes the home directory using ..
@@ -1449,6 +1862,8 @@ mod tests {
             git_commit_hash: None,
             files,
             branch: None,
+            base_snapshot_id: None,
+            deleted_files: Vec::new(),
         };
 
         // Save the snapshot
@@ -1481,6 +1896,8 @@ mod tests {
             git_commit_hash: None,
             files,
             branch: None,
+            base_snapshot_id: None,
+            deleted_files: Vec::new(),
         };
 
         // Save the snapshot
@@ -1656,4 +2073,464 @@ mod tests {
             );
         }
     }
+
+    // ============================================================================
+    // Differential Snapshot Tests
+    // ============================================================================
+
+    #[test]
+    fn test_differential_snapshot_first_snapshot_is_full() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let file1 = temp_dir.path().join("file1.txt");
+        let file2 = temp_dir.path().join("file2.txt");
+
+        fs::write(&file1, b"content1").unwrap();
+        fs::write(&file2, b"content2").unwrap();
+
+        // First differential snapshot should be a full snapshot (no base)
+        let snapshot = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1, &file2],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+
+        snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Verify it's a full snapshot
+        assert!(snapshot.base_snapshot_id.is_none(), "First snapshot should not have a base");
+        assert_eq!(snapshot.files.len(), 2, "First snapshot should contain all files");
+        assert!(snapshot.deleted_files.is_empty(), "First snapshot should have no deleted files");
+    }
+
+    #[test]
+    fn test_differential_snapshot_only_stores_changes() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let file1 = temp_dir.path().join("file1.txt");
+        let file2 = temp_dir.path().join("file2.txt");
+        let file3 = temp_dir.path().join("file3.txt");
+
+        // Create initial state
+        fs::write(&file1, b"content1").unwrap();
+        fs::write(&file2, b"content2").unwrap();
+
+        // First snapshot (full)
+        let snapshot1 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1, &file2],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot1.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Modify one file and add a new one
+        fs::write(&file1, b"modified_content1").unwrap();
+        fs::write(&file3, b"content3").unwrap();
+
+        // Second snapshot (differential)
+        let snapshot2 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1, &file2, &file3],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Verify it's a differential snapshot
+        assert!(snapshot2.base_snapshot_id.is_some(), "Second snapshot should have a base");
+        assert_eq!(
+            snapshot2.base_snapshot_id.as_ref().unwrap(),
+            &snapshot1.snapshot_id,
+            "Base should be the first snapshot"
+        );
+
+        // Should only contain changed file (file1) and new file (file3), not file2
+        assert_eq!(snapshot2.files.len(), 2, "Should only contain changed and new files");
+        assert!(snapshot2.files.contains_key(&file1.to_string_lossy().to_string()));
+        assert!(snapshot2.files.contains_key(&file3.to_string_lossy().to_string()));
+        assert!(!snapshot2.files.contains_key(&file2.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_differential_snapshot_tracks_deletions() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let file1 = temp_dir.path().join("file1.txt");
+        let file2 = temp_dir.path().join("file2.txt");
+
+        // Create initial state
+        fs::write(&file1, b"content1").unwrap();
+        fs::write(&file2, b"content2").unwrap();
+
+        // First snapshot
+        let snapshot1 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1, &file2],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot1.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Delete file2
+        fs::remove_file(&file2).unwrap();
+
+        // Second snapshot
+        let snapshot2 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Verify deletion tracking
+        assert_eq!(snapshot2.deleted_files.len(), 1, "Should track one deleted file");
+        assert!(
+            snapshot2.deleted_files.contains(&file2.to_string_lossy().to_string()),
+            "Should track file2 as deleted"
+        );
+    }
+
+    #[test]
+    fn test_differential_snapshot_reconstruction() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let file1 = temp_dir.path().join("file1.txt");
+        let file2 = temp_dir.path().join("file2.txt");
+        let file3 = temp_dir.path().join("file3.txt");
+
+        // Create chain of snapshots
+        fs::write(&file1, b"v1").unwrap();
+        fs::write(&file2, b"v1").unwrap();
+
+        let snapshot1 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1, &file2],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot1.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Modify file1, add file3
+        fs::write(&file1, b"v2").unwrap();
+        fs::write(&file3, b"v2").unwrap();
+
+        let snapshot2 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1, &file2, &file3],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Reconstruct full state from differential snapshot
+        let full_state = snapshot2.reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
+
+        // Should contain all three files with correct content
+        assert_eq!(full_state.len(), 3, "Should have 3 files after reconstruction");
+        assert_eq!(full_state.get(&file1.to_string_lossy().to_string()).unwrap(), b"v2");
+        assert_eq!(full_state.get(&file2.to_string_lossy().to_string()).unwrap(), b"v1"); // Unchanged from base
+        assert_eq!(full_state.get(&file3.to_string_lossy().to_string()).unwrap(), b"v2"); // New file
+    }
+
+    #[test]
+    fn test_differential_snapshot_restore_with_deletions() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let file1 = temp_dir.path().join("file1.txt");
+        let file2 = temp_dir.path().join("file2.txt");
+
+        // Create initial snapshot
+        fs::write(&file1, b"content1").unwrap();
+        fs::write(&file2, b"content2").unwrap();
+
+        let snapshot1 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1, &file2],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot1.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Delete file2
+        fs::remove_file(&file2).unwrap();
+
+        let snapshot2 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Restore files (create file2 again to test deletion)
+        fs::write(&file2, b"should_be_deleted").unwrap();
+
+        // Restore snapshot2 which should delete file2
+        snapshot2.restore_with_base_and_snapshots(Some(temp_dir.path()), Some(&snapshots_dir)).unwrap();
+
+        // Verify file1 exists and file2 was deleted
+        assert!(file1.exists(), "file1 should exist after restore");
+        assert!(!file2.exists(), "file2 should be deleted after restore");
+    }
+
+    #[test]
+    fn test_differential_snapshot_broken_chain() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let file1 = temp_dir.path().join("file1.txt");
+
+        fs::write(&file1, b"content1").unwrap();
+
+        // Create a differential snapshot with a fake base ID
+        let mut snapshot = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+
+        // Manually set a non-existent base
+        snapshot.base_snapshot_id = Some("non-existent-base-id".to_string());
+        snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Trying to reconstruct should fail gracefully
+        let result = snapshot.reconstruct_full_state();
+        assert!(result.is_err(), "Should fail when base snapshot is missing");
+        assert!(
+            result.unwrap_err().to_string().contains("Base snapshot not found"),
+            "Error should mention missing base snapshot"
+        );
+    }
+
+    #[test]
+    fn test_differential_snapshot_long_chain() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let file1 = temp_dir.path().join("file1.txt");
+
+        // Create a chain of 5 snapshots
+        let mut snapshots = Vec::new();
+
+        for i in 1..=5 {
+            fs::write(&file1, format!("version_{}", i).as_bytes()).unwrap();
+
+            let snapshot = Snapshot::create_differential_with_dir(
+                OperationType::Pull,
+                vec![&file1],
+                None,
+                Some(&snapshots_dir),
+            )
+            .unwrap();
+            snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+            snapshots.push(snapshot);
+        }
+
+        // Verify chain structure
+        assert!(snapshots[0].base_snapshot_id.is_none(), "First should have no base");
+        for i in 1..5 {
+            assert_eq!(
+                snapshots[i].base_snapshot_id.as_ref().unwrap(),
+                &snapshots[i - 1].snapshot_id,
+                "Snapshot {} should reference snapshot {}", i, i - 1
+            );
+        }
+
+        // Reconstruct from the last snapshot
+        let full_state = snapshots[4].reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
+        assert_eq!(
+            full_state.get(&file1.to_string_lossy().to_string()).unwrap(),
+            b"version_5",
+            "Should reconstruct to the latest version"
+        );
+    }
+
+    // ============================================================================
+    // Snapshot Cleanup Tests
+    // ============================================================================
+
+    #[test]
+    fn test_cleanup_snapshots_respects_count_limit() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        fs::create_dir_all(&snapshots_dir).unwrap();
+
+        // Create 10 pull snapshots
+        for i in 0..10 {
+            let snapshot = Snapshot {
+                snapshot_id: format!("snapshot_{}", i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                operation_type: OperationType::Pull,
+                git_commit_hash: None,
+                files: HashMap::new(),
+                branch: None,
+                base_snapshot_id: None,
+                deleted_files: Vec::new(),
+            };
+            snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+        }
+
+        // Cleanup keeping last 5
+        let config = SnapshotCleanupConfig {
+            max_count_per_type: 5,
+            max_age_days: 365, // Don't delete by age
+        };
+
+        let deleted = cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
+        assert_eq!(deleted, 5, "Should delete 5 old snapshots");
+
+        // Count remaining snapshots
+        let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
+        assert_eq!(remaining, 5, "Should have 5 snapshots remaining");
+    }
+
+    #[test]
+    fn test_cleanup_snapshots_respects_age_limit() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        fs::create_dir_all(&snapshots_dir).unwrap();
+
+        // Create snapshots with different ages
+        for i in 0..10 {
+            let snapshot = Snapshot {
+                snapshot_id: format!("snapshot_{}", i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                operation_type: OperationType::Pull,
+                git_commit_hash: None,
+                files: HashMap::new(),
+                branch: None,
+                base_snapshot_id: None,
+                deleted_files: Vec::new(),
+            };
+            snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+        }
+
+        // Cleanup keeping last 3 days
+        let config = SnapshotCleanupConfig {
+            max_count_per_type: 1, // Very low count, but age should save them
+            max_age_days: 3,
+        };
+
+        let deleted = cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
+
+        // Should keep snapshots from days 0, 1, 2, 3 (4 snapshots)
+        // Should delete snapshots from days 4, 5, 6, 7, 8, 9 (6 snapshots)
+        assert_eq!(deleted, 6, "Should delete 6 old snapshots");
+
+        let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
+        assert_eq!(remaining, 4, "Should have 4 snapshots remaining");
+    }
+
+    #[test]
+    fn test_cleanup_snapshots_separates_operation_types() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        fs::create_dir_all(&snapshots_dir).unwrap();
+
+        // Create 10 pull and 10 push snapshots
+        for i in 0..10 {
+            let pull_snapshot = Snapshot {
+                snapshot_id: format!("pull_{}", i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                operation_type: OperationType::Pull,
+                git_commit_hash: None,
+                files: HashMap::new(),
+                branch: None,
+                base_snapshot_id: None,
+                deleted_files: Vec::new(),
+            };
+            pull_snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+            let push_snapshot = Snapshot {
+                snapshot_id: format!("push_{}", i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                operation_type: OperationType::Push,
+                git_commit_hash: Some(format!("hash_{}", i)),
+                files: HashMap::new(),
+                branch: Some("main".to_string()),
+                base_snapshot_id: None,
+                deleted_files: Vec::new(),
+            };
+            push_snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+        }
+
+        // Cleanup keeping last 3 per type
+        let config = SnapshotCleanupConfig {
+            max_count_per_type: 3,
+            max_age_days: 0, // Don't keep by age
+        };
+
+        let deleted = cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
+
+        // Should delete 7 pull + 7 push = 14 total
+        assert_eq!(deleted, 14, "Should delete 14 old snapshots");
+
+        // Should keep 3 pull + 3 push = 6 total
+        let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
+        assert_eq!(remaining, 6, "Should have 6 snapshots remaining (3 per type)");
+    }
+
+    #[test]
+    fn test_cleanup_snapshots_dry_run() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        fs::create_dir_all(&snapshots_dir).unwrap();
+
+        // Create 10 snapshots
+        for i in 0..10 {
+            let snapshot = Snapshot {
+                snapshot_id: format!("snapshot_{}", i),
+                timestamp: chrono::Utc::now() - chrono::Duration::days(i),
+                operation_type: OperationType::Pull,
+                git_commit_hash: None,
+                files: HashMap::new(),
+                branch: None,
+                base_snapshot_id: None,
+                deleted_files: Vec::new(),
+            };
+            snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+        }
+
+        let config = SnapshotCleanupConfig {
+            max_count_per_type: 3,
+            max_age_days: 365,
+        };
+
+        // Dry run should report but not delete
+        let deleted = cleanup_old_snapshots_with_dir(Some(config), true, Some(&snapshots_dir)).unwrap();
+        assert_eq!(deleted, 7, "Should report 7 snapshots would be deleted");
+
+        // All snapshots should still exist
+        let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
+        assert_eq!(remaining, 10, "All snapshots should still exist after dry run");
+    }
+}
+
+/// Clean up old snapshots using the default snapshots directory
+///
+/// This is a convenience wrapper around `cleanup_old_snapshots_with_dir`.
+///
+/// # Arguments
+/// * `config` - Cleanup configuration (defaults: keep last 5 per type, last 7 days)
+/// * `dry_run` - If true, show what would be deleted without actually deleting
+///
+/// # Returns
+/// Number of snapshots deleted
+pub fn cleanup_old_snapshots(
+    config: Option<SnapshotCleanupConfig>,
+    dry_run: bool,
+) -> Result<usize> {
+    cleanup_old_snapshots_with_dir(config, dry_run, None)
 }

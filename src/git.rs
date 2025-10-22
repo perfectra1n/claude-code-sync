@@ -274,13 +274,49 @@ impl GitManager {
     }
 
     /// Check if repository has uncommitted changes
+    ///
+    /// This method checks for both staged and unstaged changes in tracked files,
+    /// similar to running `git status --porcelain`.
+    ///
+    /// ## Behavior
+    /// - Returns `true` if there are any staged or modified files
+    /// - Excludes untracked files (same as `git status -uno`)
+    /// - Excludes ignored files
+    ///
+    /// This matches the typical workflow expectation: we want to know if there
+    /// are changes to commit, not whether there are random untracked files.
     pub fn has_changes(&self) -> Result<bool> {
+        let mut opts = git2::StatusOptions::new();
+
+        // Exclude ignored files to match git status behavior
+        opts.include_ignored(false);
+
+        // Exclude untracked files - we only care about changes to tracked files
+        // This matches `git status -uno` behavior
+        opts.include_untracked(false);
+
+        // Exclude unmodified files for efficiency
+        opts.include_unmodified(false);
+
         let statuses = self
             .repo
-            .statuses(None)
+            .statuses(Some(&mut opts))
             .context("Failed to get repository status")?;
 
-        Ok(!statuses.is_empty())
+        // Check if there are any status entries
+        // With our options, any entry means there's a real change to tracked files
+        for entry in statuses.iter() {
+            let status = entry.status();
+
+            // If there's any status flag set, we have changes
+            // This includes: INDEX_NEW, INDEX_MODIFIED, INDEX_DELETED,
+            //                WT_MODIFIED, WT_DELETED, WT_TYPECHANGE, etc.
+            if !status.is_empty() && !status.contains(git2::Status::IGNORED) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     /// Get current branch name
@@ -723,7 +759,9 @@ mod tests {
         // Create untracked file
         fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
 
-        assert!(git_manager.has_changes().unwrap());
+        // Untracked files should NOT be counted as changes
+        // This matches `git status -uno` behavior
+        assert!(!git_manager.has_changes().unwrap());
     }
 
     #[test]
@@ -933,12 +971,12 @@ mod tests {
             .unwrap();
         assert!(git_manager.has_remote("origin"));
 
-        // Create files
+        // Create files (untracked initially)
         fs::write(temp_dir.path().join("file1.txt"), "content1").unwrap();
         fs::write(temp_dir.path().join("file2.txt"), "content2").unwrap();
 
-        // Stage and commit
-        assert!(git_manager.has_changes().unwrap());
+        // Untracked files don't count as changes, so stage them first
+        assert!(!git_manager.has_changes().unwrap());
         git_manager.stage_all().unwrap();
         git_manager.commit("Initial commit").unwrap();
         assert!(!git_manager.has_changes().unwrap());
@@ -1130,13 +1168,14 @@ mod tests {
         // Git doesn't track empty directories
         assert!(!git_manager.has_changes().unwrap());
 
-        // Add file to directory
+        // Add file to directory - but it's untracked, so has_changes() returns false
         fs::write(
             temp_dir.path().join("empty_dir").join("file.txt"),
             "content",
         )
         .unwrap();
-        assert!(git_manager.has_changes().unwrap());
+        // Untracked files don't count as changes (matches `git status -uno`)
+        assert!(!git_manager.has_changes().unwrap());
     }
 
     #[test]
@@ -1166,7 +1205,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let git_manager = GitManager::init(temp_dir.path()).unwrap();
 
-        // Create 100 files
+        // Create 100 files (all untracked initially)
         for i in 0..100 {
             fs::write(
                 temp_dir.path().join(format!("file_{i}.txt")),
@@ -1175,7 +1214,8 @@ mod tests {
             .unwrap();
         }
 
-        assert!(git_manager.has_changes().unwrap());
+        // Untracked files don't count as changes
+        assert!(!git_manager.has_changes().unwrap());
         git_manager.stage_all().unwrap();
         git_manager.commit("Add 100 files").unwrap();
 

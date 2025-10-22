@@ -718,15 +718,3 @@ Contributions are welcome! Please:
 2. Create a feature branch
 3. Add tests for new functionality
 4. Submit a pull request
-
-## Roadmap
-
-Future enhancements:
-- [ ] Export conversations to readable formats (Markdown, HTML)
-- [ ] Compression for large history files
-- [ ] Encryption support
-- [x] **Smart merge (combine non-conflicting conversation branches)** ✅ **COMPLETED!**
-- [ ] Web UI for browsing history
-- [ ] Integration with Claude Code as a plugin
-- [ ] Interactive TUI for configuration management
-- [ ] Snapshot cleanup command for managing disk space

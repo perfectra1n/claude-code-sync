@@ -18,6 +18,9 @@ use crate::undo::Snapshot;
 /// Maximum number of conversations to display per project in pull summary
 const MAX_CONVERSATIONS_TO_DISPLAY: usize = 10;
 
+/// Threshold for warning about large conversation files (10 MB)
+const LARGE_FILE_WARNING_THRESHOLD: u64 = 10 * 1024 * 1024;
+
 /// Sync state and configuration
 ///
 /// This struct stores the persistent state of the Claude Code sync system.
@@ -384,11 +387,16 @@ pub fn push_history(
             })
             .collect();
 
-        // Create snapshot of sync repository state before push
+        // Check for large conversation files and warn users
+        warn_large_files(&sync_repo_files);
+
+        // Create differential snapshot of sync repository state before push
         // Note: Snapshot creation failure is fatal because we need to ensure users can
         // safely undo this push operation if issues occur. Without a snapshot,
         // there would be no way to restore the previous repository state.
-        let snapshot = Snapshot::create(
+        //
+        // Using differential snapshots saves disk space by only storing changed files.
+        let snapshot = Snapshot::create_differential(
             OperationType::Push,
             sync_repo_files.iter(),
             Some(&git_manager), // Pass git manager to capture commit hash
@@ -549,6 +557,12 @@ pub fn push_history(
     }
 
     println!("\n{}", "Push complete!".green().bold());
+
+    // Clean up old snapshots automatically
+    if let Err(e) = crate::undo::cleanup_old_snapshots(None, false) {
+        eprintln!("Warning: Failed to cleanup old snapshots: {}", e);
+    }
+
     Ok(())
 }
 
@@ -610,11 +624,16 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
         .map(|s| claude_dir.join(&s.file_path))
         .collect();
 
-    // Create snapshot of current state (before any changes)
+    // Check for large conversation files and warn users
+    warn_large_files(&local_file_paths);
+
+    // Create differential snapshot of current state (before any changes)
     // Note: Snapshot creation failure is fatal because we need to ensure users can
     // safely undo this pull operation if conflicts or issues occur. Without a snapshot,
     // there would be no way to restore the previous state.
-    let snapshot = Snapshot::create(
+    //
+    // Using differential snapshots saves disk space by only storing changed files.
+    let snapshot = Snapshot::create_differential(
         OperationType::Pull,
         local_file_paths.iter(),
         None, // No git manager needed for pull snapshots
@@ -1054,6 +1073,11 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
 
     println!("\n{}", "Pull complete!".green().bold());
 
+    // Clean up old snapshots automatically
+    if let Err(e) = crate::undo::cleanup_old_snapshots(None, false) {
+        eprintln!("Warning: Failed to cleanup old snapshots: {}", e);
+    }
+
     Ok(())
 }
 
@@ -1196,6 +1220,45 @@ pub fn show_remote() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check for large conversation files and emit warnings
+///
+/// This helps users identify conversations that may be bloated with excessive
+/// file history, token usage, or other data. Large conversations can slow down
+/// sync operations and consume significant disk space.
+///
+/// # Arguments
+/// * `file_paths` - Iterator of file paths to check
+fn warn_large_files<P, I>(file_paths: I)
+where
+    P: AsRef<Path>,
+    I: IntoIterator<Item = P>,
+{
+    for path in file_paths {
+        let path = path.as_ref();
+
+        if let Ok(metadata) = fs::metadata(path) {
+            let size = metadata.len();
+
+            if size >= LARGE_FILE_WARNING_THRESHOLD {
+                let size_mb = size as f64 / (1024.0 * 1024.0);
+                println!(
+                    "  {} Large conversation file detected: {} ({:.1} MB)",
+                    "⚠️ ".yellow().bold(),
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown"),
+                    size_mb
+                );
+                println!(
+                    "     {}",
+                    "Consider archiving or cleaning up this conversation to improve sync performance"
+                        .dimmed()
+                );
+            }
+        }
+    }
 }
 
 /// Set or update remote URL
