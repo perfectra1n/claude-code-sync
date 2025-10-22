@@ -59,7 +59,7 @@ Claude Code stores conversation history locally in `~/.claude/projects/` as JSON
 ### From Source
 
 ```bash
-git clone [<repository-url>](https://github.com/perfectra1n/claude-code-sync)
+git clone https://github.com/perfectra1n/claude-code-sync
 cd claude-code-sync
 cargo build --release
 cargo install --path .
