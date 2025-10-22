@@ -7,25 +7,25 @@ description = "Sync Claude Code conversation history with git repositories"
 license = "MIT"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-git2 = "0.19"
-toml = "0.8"
-anyhow = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5.50", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+git2 = "0.20.2"
+toml = "0.9.8"
+anyhow = "1.0.100"
+chrono = { version = "0.4.42", features = ["serde"] }
 walkdir = "2.5"
-colored = "2.1"
-dirs = "5.0"
-uuid = { version = "1.10", features = ["v4", "serde"] }
-base64 = "0.22"
-inquire = "0.7"
-log = "0.4"
-env_logger = "0.11"
-atty = "0.2"
+colored = "2.2.0"
+dirs = "5.0.1"
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+base64 = "0.22.1"
+inquire = "0.9.1"
+log = "0.4.28"
+env_logger = "0.11.8"
+atty = "0.2.14"
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile = "3.23.0"
 walkdir = "2.5"
-serde_json = "1.0"
-serial_test = "3.0"
+serde_json = "1.0.145"
+serial_test = "3.2.0"
