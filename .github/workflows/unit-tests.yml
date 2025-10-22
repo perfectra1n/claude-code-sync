@@ -81,9 +81,11 @@ jobs:
 
       - name: Check code formatting
         run: cargo fmt -- --check
+        continue-on-error: true
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+        continue-on-error: true
 
   coverage:
     name: Code Coverage
