@@ -384,7 +384,7 @@ impl Snapshot {
             )
         })?;
 
-        // Log snapshot size information
+        // Log snapshot size information (to file only, UI output is handled by caller)
         let size_mb = json.len() as f64 / (1024.0 * 1024.0);
         let snapshot_type = if self.base_snapshot_id.is_some() {
             "differential"
@@ -392,7 +392,7 @@ impl Snapshot {
             "full"
         };
 
-        log::info!(
+        log::debug!(
             "Created {} snapshot: {} ({:.1} MB, {} files)",
             snapshot_type,
             self.snapshot_id,
@@ -401,7 +401,7 @@ impl Snapshot {
         );
 
         if size_mb > 100.0 {
-            log::warn!("Large snapshot size - consider cleaning up old conversation files");
+            log::debug!("Large snapshot size - consider cleaning up old conversation files");
         }
 
         Ok(snapshot_path)
