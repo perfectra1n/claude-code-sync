@@ -58,10 +58,13 @@ pub fn init_logger() -> Result<()> {
         .filter_level(default_level)
         .target(env_logger::Target::Stdout)
         .try_init()
-        .ok();  // Ignore error if logger is already initialized
+        .ok(); // Ignore error if logger is already initialized
 
     // Also log initialization to file
-    log_to_file(&format!("Logger initialized with level: {:?}", default_level))?;
+    log_to_file(&format!(
+        "Logger initialized with level: {:?}",
+        default_level
+    ))?;
 
     Ok(())
 }

@@ -117,13 +117,11 @@ impl<'a> SmartMerger<'a> {
         let resolved_edits = self.detect_and_resolve_edits(&local_map, &remote_map)?;
 
         // Separate entries into UUID-tracked and non-UUID entries
-        let (local_uuid_entries, local_non_uuid): (Vec<_>, Vec<_>) = self.local.entries
-            .iter()
-            .partition(|e| e.uuid.is_some());
+        let (local_uuid_entries, local_non_uuid): (Vec<_>, Vec<_>) =
+            self.local.entries.iter().partition(|e| e.uuid.is_some());
 
-        let (remote_uuid_entries, remote_non_uuid): (Vec<_>, Vec<_>) = self.remote.entries
-            .iter()
-            .partition(|e| e.uuid.is_some());
+        let (remote_uuid_entries, remote_non_uuid): (Vec<_>, Vec<_>) =
+            self.remote.entries.iter().partition(|e| e.uuid.is_some());
 
         // Combine all UUID entries from both sides
         let mut all_uuid_entries: Vec<&ConversationEntry> = Vec::new();
@@ -167,9 +165,7 @@ impl<'a> SmartMerger<'a> {
     fn build_uuid_map(&self, entries: &[ConversationEntry]) -> HashMap<String, ConversationEntry> {
         entries
             .iter()
-            .filter_map(|e| {
-                e.uuid.as_ref().map(|uuid| (uuid.clone(), e.clone()))
-            })
+            .filter_map(|e| e.uuid.as_ref().map(|uuid| (uuid.clone(), e.clone())))
             .collect()
     }
 
@@ -244,9 +240,7 @@ impl<'a> SmartMerger<'a> {
                 // Only insert if not already present (avoids duplicates)
                 if !uuid_to_entry.contains_key(uuid) {
                     // Use resolved edit if available, otherwise use original entry
-                    let entry_to_use = resolved_edits
-                        .get(uuid)
-                        .unwrap_or(*entry);
+                    let entry_to_use = resolved_edits.get(uuid).unwrap_or(*entry);
                     uuid_to_entry.insert(uuid.clone(), entry_to_use.clone());
                 }
             }
@@ -323,9 +317,7 @@ impl<'a> SmartMerger<'a> {
         for entry in entries {
             if let Some(uuid) = &entry.uuid {
                 // Use resolved edit if available, otherwise use original entry
-                let entry_to_use = resolved_edits
-                    .get(uuid)
-                    .unwrap_or(*entry);
+                let entry_to_use = resolved_edits.get(uuid).unwrap_or(*entry);
                 uuid_to_entry.insert(uuid.clone(), entry_to_use.clone());
             }
         }
@@ -455,7 +447,10 @@ impl<'a> SmartMerger<'a> {
                 for child in &node.children {
                     // Check if this child already exists
                     let child_exists = if let Some(child_uuid) = &child.entry.uuid {
-                        existing.children.iter().any(|c| c.entry.uuid.as_ref() == Some(child_uuid))
+                        existing
+                            .children
+                            .iter()
+                            .any(|c| c.entry.uuid.as_ref() == Some(child_uuid))
                     } else {
                         false
                     };
@@ -570,7 +565,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn create_test_entry(uuid: &str, parent_uuid: Option<&str>, timestamp: &str) -> ConversationEntry {
+    fn create_test_entry(
+        uuid: &str,
+        parent_uuid: Option<&str>,
+        timestamp: &str,
+    ) -> ConversationEntry {
         ConversationEntry {
             entry_type: "user".to_string(),
             uuid: Some(uuid.to_string()),
@@ -617,7 +616,11 @@ mod tests {
         let result = merge_conversations(&local, &remote).unwrap();
 
         // Should have all 4 messages (local 1,2 are duplicates of remote 1,2)
-        assert_eq!(result.merged_entries.len(), 4, "Should merge to 4 total messages");
+        assert_eq!(
+            result.merged_entries.len(),
+            4,
+            "Should merge to 4 total messages"
+        );
         assert_eq!(result.stats.merged_messages, 4);
         assert_eq!(result.stats.local_messages, 2);
         assert_eq!(result.stats.remote_messages, 4);
@@ -655,13 +658,22 @@ mod tests {
         let result = merge_conversations(&local, &remote).unwrap();
 
         // Should detect branch (message 2 has two children: 3 and 4)
-        assert!(result.stats.branches_detected > 0, "Should detect at least one branch");
+        assert!(
+            result.stats.branches_detected > 0,
+            "Should detect at least one branch"
+        );
 
         // Should have 1, 2, 3, and 4 (all unique messages)
-        assert_eq!(result.merged_entries.len(), 4, "Should have all 4 unique messages");
+        assert_eq!(
+            result.merged_entries.len(),
+            4,
+            "Should have all 4 unique messages"
+        );
 
         // Verify we have the right messages by UUID
-        let uuids: Vec<String> = result.merged_entries.iter()
+        let uuids: Vec<String> = result
+            .merged_entries
+            .iter()
             .filter_map(|e| e.uuid.clone())
             .collect();
         assert!(uuids.contains(&"1".to_string()));

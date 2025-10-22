@@ -203,8 +203,8 @@ enum HistoryAction {
 
 fn main() -> Result<()> {
     // Initialize logging (rotate log if needed, then set up logger)
-    logger::rotate_log_if_needed().ok();  // Ignore errors during log rotation
-    logger::init_logger().ok();  // Ignore errors during logger init
+    logger::rotate_log_if_needed().ok(); // Ignore errors during log rotation
+    logger::init_logger().ok(); // Ignore errors during logger init
 
     log::info!("claude-code-sync started");
 
@@ -347,8 +347,7 @@ fn handle_undo_pull() -> Result<()> {
 
     if is_interactive {
         // Show preview
-        let preview = undo::preview_undo_pull(None)
-            .context("Failed to preview undo operation")?;
+        let preview = undo::preview_undo_pull(None).context("Failed to preview undo operation")?;
 
         preview.display();
 
@@ -369,8 +368,7 @@ fn handle_undo_pull() -> Result<()> {
 
     // Call undo_pull with None for both history_path and allowed_base_dir
     // This uses the default locations for production use
-    let summary = undo::undo_pull(None, None)
-        .context("Failed to undo pull operation")?;
+    let summary = undo::undo_pull(None, None).context("Failed to undo pull operation")?;
 
     println!("\n{}", "SUCCESS".green().bold());
     println!("{}", summary);
@@ -391,8 +389,7 @@ fn handle_undo_push() -> Result<()> {
 
     if is_interactive {
         // Show preview
-        let preview = undo::preview_undo_push(None)
-            .context("Failed to preview undo operation")?;
+        let preview = undo::preview_undo_push(None).context("Failed to preview undo operation")?;
 
         preview.display();
 
@@ -412,8 +409,8 @@ fn handle_undo_push() -> Result<()> {
     println!("\n{}", "Undoing last push operation...".cyan());
 
     // Call undo_push with repository path and default history path
-    let summary = undo::undo_push(&state.sync_repo_path, None)
-        .context("Failed to undo push operation")?;
+    let summary =
+        undo::undo_push(&state.sync_repo_path, None).context("Failed to undo push operation")?;
 
     println!("\n{}", "SUCCESS".green().bold());
     println!("{}", summary);
@@ -427,8 +424,7 @@ fn handle_undo_push() -> Result<()> {
 
 /// Handle history list command
 fn handle_history_list(limit: usize) -> Result<()> {
-    let history = history::OperationHistory::load()
-        .context("Failed to load operation history")?;
+    let history = history::OperationHistory::load().context("Failed to load operation history")?;
 
     if history.is_empty() {
         println!("{}", "No operations in history.".yellow());
@@ -495,8 +491,7 @@ fn handle_history_list(limit: usize) -> Result<()> {
 
 /// Handle history last command
 fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
-    let history = history::OperationHistory::load()
-        .context("Failed to load operation history")?;
+    let history = history::OperationHistory::load().context("Failed to load operation history")?;
 
     let operation = if let Some(op_type) = operation_type {
         // Filter by operation type
@@ -514,10 +509,7 @@ fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
         history
             .get_last_operation_by_type(filter_type)
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No {} operation found in history.",
-                    filter_type.as_str()
-                )
+                anyhow::anyhow!("No {} operation found in history.", filter_type.as_str())
             })?
     } else {
         // Get the last operation of any type
@@ -616,8 +608,8 @@ fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
 /// Handle history clear command
 fn handle_history_clear() -> Result<()> {
     // Load the history
-    let mut history = history::OperationHistory::load()
-        .context("Failed to load operation history")?;
+    let mut history =
+        history::OperationHistory::load().context("Failed to load operation history")?;
 
     if history.is_empty() {
         println!("{}", "No history to clear.".yellow());
@@ -653,8 +645,8 @@ fn run_onboarding_flow() -> Result<()> {
     use colored::Colorize;
 
     // Run the interactive onboarding
-    let onboarding_config = onboarding::run_onboarding()
-        .context("Onboarding cancelled or failed")?;
+    let onboarding_config =
+        onboarding::run_onboarding().context("Onboarding cancelled or failed")?;
 
     // Handle cloning if needed
     if onboarding_config.is_cloned {
@@ -681,7 +673,9 @@ fn run_onboarding_flow() -> Result<()> {
     let mut filter_config = filter::FilterConfig::default();
     filter_config.exclude_attachments = onboarding_config.exclude_attachments;
     filter_config.exclude_older_than_days = onboarding_config.exclude_older_than_days;
-    filter_config.save().context("Failed to save filter configuration")?;
+    filter_config
+        .save()
+        .context("Failed to save filter configuration")?;
 
     println!("{}", "✓ Ready to sync!".green().bold());
     println!();

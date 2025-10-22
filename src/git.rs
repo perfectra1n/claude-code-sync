@@ -38,8 +38,9 @@ impl GitManager {
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create parent directory: {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create parent directory: {}", parent.display())
+            })?;
         }
 
         // Set up fetch options with credential helper
@@ -455,9 +456,15 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let git_manager = GitManager::init(temp_dir.path()).unwrap();
 
-        git_manager.add_remote("origin", "https://github.com/test/repo.git").unwrap();
-        git_manager.add_remote("upstream", "https://github.com/test/upstream.git").unwrap();
-        git_manager.add_remote("backup", "https://gitlab.com/test/repo.git").unwrap();
+        git_manager
+            .add_remote("origin", "https://github.com/test/repo.git")
+            .unwrap();
+        git_manager
+            .add_remote("upstream", "https://github.com/test/upstream.git")
+            .unwrap();
+        git_manager
+            .add_remote("backup", "https://gitlab.com/test/repo.git")
+            .unwrap();
 
         assert!(git_manager.has_remote("origin"));
         assert!(git_manager.has_remote("upstream"));
@@ -469,7 +476,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let git_manager = GitManager::init(temp_dir.path()).unwrap();
 
-        git_manager.add_remote("origin", "https://github.com/test/repo.git").unwrap();
+        git_manager
+            .add_remote("origin", "https://github.com/test/repo.git")
+            .unwrap();
 
         // Adding same remote name should fail
         let result = git_manager.add_remote("origin", "https://github.com/test/other.git");
@@ -504,7 +513,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let git_manager = GitManager::init(temp_dir.path()).unwrap();
 
-        git_manager.add_remote("origin", "https://github.com/test/repo.git").unwrap();
+        git_manager
+            .add_remote("origin", "https://github.com/test/repo.git")
+            .unwrap();
 
         assert!(git_manager.has_remote("origin"));
         assert!(!git_manager.has_remote("upstream"));
@@ -817,8 +828,14 @@ mod tests {
         // Create and checkout new branch using git2
         let head = git_manager.repo.head().unwrap();
         let commit = head.peel_to_commit().unwrap();
-        git_manager.repo.branch("feature-branch", &commit, false).unwrap();
-        git_manager.repo.set_head("refs/heads/feature-branch").unwrap();
+        git_manager
+            .repo
+            .branch("feature-branch", &commit, false)
+            .unwrap();
+        git_manager
+            .repo
+            .set_head("refs/heads/feature-branch")
+            .unwrap();
 
         let branch = git_manager.current_branch().unwrap();
         assert_eq!(branch, "feature-branch");
@@ -913,7 +930,9 @@ mod tests {
         assert!(git_manager.path().exists());
 
         // Add remote
-        git_manager.add_remote("origin", "https://github.com/test/repo.git").unwrap();
+        git_manager
+            .add_remote("origin", "https://github.com/test/repo.git")
+            .unwrap();
         assert!(git_manager.has_remote("origin"));
 
         // Create files
@@ -1020,7 +1039,11 @@ mod tests {
         assert!(!git_manager.has_changes().unwrap());
 
         // Modify files in different directories
-        fs::write(src_dir.join("main.rs"), "fn main() { println!(\"hello\"); }").unwrap();
+        fs::write(
+            src_dir.join("main.rs"),
+            "fn main() { println!(\"hello\"); }",
+        )
+        .unwrap();
         fs::write(docs_dir.join("changelog.md"), "# Changelog").unwrap();
 
         // Should detect changes
@@ -1038,9 +1061,15 @@ mod tests {
         let git_manager = GitManager::init(temp_dir.path()).unwrap();
 
         // Add multiple remotes
-        git_manager.add_remote("origin", "https://github.com/user/repo.git").unwrap();
-        git_manager.add_remote("upstream", "https://github.com/org/repo.git").unwrap();
-        git_manager.add_remote("backup", "git@gitlab.com:user/repo.git").unwrap();
+        git_manager
+            .add_remote("origin", "https://github.com/user/repo.git")
+            .unwrap();
+        git_manager
+            .add_remote("upstream", "https://github.com/org/repo.git")
+            .unwrap();
+        git_manager
+            .add_remote("backup", "git@gitlab.com:user/repo.git")
+            .unwrap();
 
         // Verify all remotes exist
         assert!(git_manager.has_remote("origin"));
@@ -1104,7 +1133,11 @@ mod tests {
         assert!(!git_manager.has_changes().unwrap());
 
         // Add file to directory
-        fs::write(temp_dir.path().join("empty_dir").join("file.txt"), "content").unwrap();
+        fs::write(
+            temp_dir.path().join("empty_dir").join("file.txt"),
+            "content",
+        )
+        .unwrap();
         assert!(git_manager.has_changes().unwrap());
     }
 
@@ -1137,7 +1170,11 @@ mod tests {
 
         // Create 100 files
         for i in 0..100 {
-            fs::write(temp_dir.path().join(format!("file_{}.txt", i)), format!("content {}", i)).unwrap();
+            fs::write(
+                temp_dir.path().join(format!("file_{}.txt", i)),
+                format!("content {}", i),
+            )
+            .unwrap();
         }
 
         assert!(git_manager.has_changes().unwrap());
@@ -1202,7 +1239,11 @@ mod tests {
 
         // Create 10 commits rapidly
         for i in 0..10 {
-            fs::write(temp_dir.path().join(format!("file{}.txt", i)), format!("content{}", i)).unwrap();
+            fs::write(
+                temp_dir.path().join(format!("file{}.txt", i)),
+                format!("content{}", i),
+            )
+            .unwrap();
             git_manager.stage_all().unwrap();
             git_manager.commit(&format!("Commit {}", i)).unwrap();
             hashes.push(git_manager.current_commit_hash().unwrap());

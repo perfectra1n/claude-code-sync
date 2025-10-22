@@ -25,7 +25,10 @@ impl ConfigManager {
         {
             // Follow macOS conventions
             let home = dirs::home_dir().context("Failed to get home directory")?;
-            Ok(home.join("Library").join("Application Support").join("claude-code-sync"))
+            Ok(home
+                .join("Library")
+                .join("Application Support")
+                .join("claude-code-sync"))
         }
 
         #[cfg(target_os = "windows")]
@@ -83,16 +86,24 @@ impl ConfigManager {
     /// Ensure the configuration directory exists
     pub fn ensure_config_dir() -> Result<PathBuf> {
         let config_dir = Self::config_dir()?;
-        std::fs::create_dir_all(&config_dir)
-            .with_context(|| format!("Failed to create config directory: {}", config_dir.display()))?;
+        std::fs::create_dir_all(&config_dir).with_context(|| {
+            format!(
+                "Failed to create config directory: {}",
+                config_dir.display()
+            )
+        })?;
         Ok(config_dir)
     }
 
     /// Ensure the snapshots directory exists
     pub fn ensure_snapshots_dir() -> Result<PathBuf> {
         let snapshots_dir = Self::snapshots_dir()?;
-        std::fs::create_dir_all(&snapshots_dir)
-            .with_context(|| format!("Failed to create snapshots directory: {}", snapshots_dir.display()))?;
+        std::fs::create_dir_all(&snapshots_dir).with_context(|| {
+            format!(
+                "Failed to create snapshots directory: {}",
+                snapshots_dir.display()
+            )
+        })?;
         Ok(snapshots_dir)
     }
 }
@@ -114,7 +125,9 @@ mod tests {
         assert!(filter_path.to_string_lossy().contains("config.toml"));
 
         let history_path = ConfigManager::operation_history_path().unwrap();
-        assert!(history_path.to_string_lossy().contains("operation-history.json"));
+        assert!(history_path
+            .to_string_lossy()
+            .contains("operation-history.json"));
 
         let snapshots = ConfigManager::snapshots_dir().unwrap();
         assert!(snapshots.to_string_lossy().contains("snapshots"));
@@ -123,7 +136,9 @@ mod tests {
         assert!(repo.to_string_lossy().contains("repo"));
 
         let conflict = ConfigManager::conflict_report_path().unwrap();
-        assert!(conflict.to_string_lossy().contains("latest-conflict-report.json"));
+        assert!(conflict
+            .to_string_lossy()
+            .contains("latest-conflict-report.json"));
 
         let log = ConfigManager::log_file_path().unwrap();
         assert!(log.to_string_lossy().contains("claude-code-sync.log"));
@@ -135,7 +150,9 @@ mod tests {
         // Set XDG_CONFIG_HOME and verify it's used
         std::env::set_var("XDG_CONFIG_HOME", "/tmp/test-xdg-config");
         let config_dir = ConfigManager::config_dir().unwrap();
-        assert!(config_dir.to_string_lossy().contains("/tmp/test-xdg-config/claude-code-sync"));
+        assert!(config_dir
+            .to_string_lossy()
+            .contains("/tmp/test-xdg-config/claude-code-sync"));
         std::env::remove_var("XDG_CONFIG_HOME");
     }
 
@@ -143,6 +160,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn test_macos_library_path() {
         let config_dir = ConfigManager::config_dir().unwrap();
-        assert!(config_dir.to_string_lossy().contains("Library/Application Support/claude-code-sync"));
+        assert!(config_dir
+            .to_string_lossy()
+            .contains("Library/Application Support/claude-code-sync"));
     }
 }

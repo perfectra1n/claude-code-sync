@@ -147,7 +147,7 @@ pub enum ConflictResolution {
     /// the remote version might be saved as `conversation-conflict-20250122-143000.jsonl`.
     KeepBoth {
         /// The destination path for the renamed remote file, including the conflict suffix.
-        renamed_remote_file: PathBuf
+        renamed_remote_file: PathBuf,
     },
 
     /// Keep only the local version and discard the remote version.

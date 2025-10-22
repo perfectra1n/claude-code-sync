@@ -3,7 +3,12 @@ use claude_code_sync::parser::{ConversationEntry, ConversationSession};
 use serde_json::json;
 
 /// Helper to create a test entry
-fn create_entry(uuid: &str, parent: Option<&str>, timestamp: &str, content: &str) -> ConversationEntry {
+fn create_entry(
+    uuid: &str,
+    parent: Option<&str>,
+    timestamp: &str,
+    content: &str,
+) -> ConversationEntry {
     ConversationEntry {
         entry_type: "user".to_string(),
         uuid: Some(uuid.to_string()),
@@ -48,12 +53,18 @@ fn test_simple_extension() {
     println!("Stats: {:?}", result.stats);
 
     for (i, entry) in result.merged_entries.iter().enumerate() {
-        println!("Entry {}: UUID={:?}, Parent={:?}",
-            i, entry.uuid, entry.parent_uuid);
+        println!(
+            "Entry {}: UUID={:?}, Parent={:?}",
+            i, entry.uuid, entry.parent_uuid
+        );
     }
 
     // Should have A, B, C, D = 4 messages
-    assert_eq!(result.merged_entries.len(), 4, "Should have 4 messages after merge");
+    assert_eq!(
+        result.merged_entries.len(),
+        4,
+        "Should have 4 messages after merge"
+    );
 }
 
 #[test]
@@ -65,7 +76,12 @@ fn test_conversation_branch() {
         entries: vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Message A"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Message B"),
-            create_entry("C", Some("B"), "2025-01-01T00:02:00Z", "Message C - local branch"),
+            create_entry(
+                "C",
+                Some("B"),
+                "2025-01-01T00:02:00Z",
+                "Message C - local branch",
+            ),
         ],
     };
 
@@ -76,7 +92,12 @@ fn test_conversation_branch() {
         entries: vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Message A"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Message B"),
-            create_entry("D", Some("B"), "2025-01-01T00:02:30Z", "Message D - remote branch"),
+            create_entry(
+                "D",
+                Some("B"),
+                "2025-01-01T00:02:30Z",
+                "Message D - remote branch",
+            ),
         ],
     };
 
@@ -87,10 +108,17 @@ fn test_conversation_branch() {
     println!("Branches detected: {}", result.stats.branches_detected);
 
     // Should have A, B, C, D = 4 messages
-    assert_eq!(result.merged_entries.len(), 4, "Should have 4 messages with both branches");
+    assert_eq!(
+        result.merged_entries.len(),
+        4,
+        "Should have 4 messages with both branches"
+    );
 
     // Should detect that B has two children
-    assert!(result.stats.branches_detected > 0, "Should detect conversation branch");
+    assert!(
+        result.stats.branches_detected > 0,
+        "Should detect conversation branch"
+    );
 }
 
 #[test]
@@ -99,18 +127,24 @@ fn test_edited_message_resolution() {
     let local = ConversationSession {
         session_id: "test".to_string(),
         file_path: "local.jsonl".to_string(),
-        entries: vec![
-            create_entry("A", None, "2025-01-01T00:00:00Z", "Original message"),
-        ],
+        entries: vec![create_entry(
+            "A",
+            None,
+            "2025-01-01T00:00:00Z",
+            "Original message",
+        )],
     };
 
     // Remote: A with newer timestamp (edited)
     let remote = ConversationSession {
         session_id: "test".to_string(),
         file_path: "remote.jsonl".to_string(),
-        entries: vec![
-            create_entry("A", None, "2025-01-01T00:05:00Z", "Edited message"),
-        ],
+        entries: vec![create_entry(
+            "A",
+            None,
+            "2025-01-01T00:05:00Z",
+            "Edited message",
+        )],
     };
 
     let result = merge_conversations(&local, &remote).unwrap();
@@ -122,7 +156,9 @@ fn test_edited_message_resolution() {
     assert_eq!(result.stats.edits_resolved, 1, "Should detect one edit");
 
     // Should keep the newer version
-    let content = result.merged_entries[0].message.as_ref().unwrap()["text"].as_str().unwrap();
+    let content = result.merged_entries[0].message.as_ref().unwrap()["text"]
+        .as_str()
+        .unwrap();
     assert_eq!(content, "Edited message", "Should keep newer version");
 }
 
@@ -171,7 +207,10 @@ fn test_real_conversation_data() {
 
     let session = ConversationSession::from_file(test_file).unwrap();
 
-    println!("Loaded real conversation with {} messages", session.message_count());
+    println!(
+        "Loaded real conversation with {} messages",
+        session.message_count()
+    );
 
     // Simulate a scenario where one machine has the first half of messages
     // and another has extended it
@@ -219,7 +258,12 @@ fn test_complex_branching_scenario() {
         entries: vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Root"),
             create_entry("B1", Some("A"), "2025-01-01T00:01:00Z", "Branch 1 from A"),
-            create_entry("C1", Some("B1"), "2025-01-01T00:02:00Z", "Continuation of B1"),
+            create_entry(
+                "C1",
+                Some("B1"),
+                "2025-01-01T00:02:00Z",
+                "Continuation of B1",
+            ),
         ],
     };
 
@@ -229,24 +273,46 @@ fn test_complex_branching_scenario() {
         entries: vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Root"),
             create_entry("B2", Some("A"), "2025-01-01T00:01:30Z", "Branch 2 from A"),
-            create_entry("C2", Some("B2"), "2025-01-01T00:02:30Z", "Continuation of B2"),
-            create_entry("D2", Some("C2"), "2025-01-01T00:03:00Z", "Further continuation"),
+            create_entry(
+                "C2",
+                Some("B2"),
+                "2025-01-01T00:02:30Z",
+                "Continuation of B2",
+            ),
+            create_entry(
+                "D2",
+                Some("C2"),
+                "2025-01-01T00:03:00Z",
+                "Further continuation",
+            ),
         ],
     };
 
     let result = merge_conversations(&local, &remote).unwrap();
 
-    println!("Complex branching result: {} messages", result.merged_entries.len());
+    println!(
+        "Complex branching result: {} messages",
+        result.merged_entries.len()
+    );
     println!("Branches detected: {}", result.stats.branches_detected);
 
     // Should have all 6 unique messages
-    assert_eq!(result.merged_entries.len(), 6, "Should have all unique messages");
+    assert_eq!(
+        result.merged_entries.len(),
+        6,
+        "Should have all unique messages"
+    );
 
     // Should detect branch at A (has B1 and B2 as children)
-    assert!(result.stats.branches_detected > 0, "Should detect branching at A");
+    assert!(
+        result.stats.branches_detected > 0,
+        "Should detect branching at A"
+    );
 
     // Verify all messages are present
-    let uuids: Vec<String> = result.merged_entries.iter()
+    let uuids: Vec<String> = result
+        .merged_entries
+        .iter()
         .filter_map(|e| e.uuid.clone())
         .collect();
 
@@ -283,9 +349,19 @@ fn test_no_conflicts_when_identical() {
     let result = merge_conversations(&local, &remote).unwrap();
 
     // Should have exact same messages (no duplicates)
-    assert_eq!(result.merged_entries.len(), 3, "Should deduplicate identical messages");
-    assert_eq!(result.stats.duplicates_removed, 0, "No duplicates to remove (deduplicated during merge)");
-    assert_eq!(result.stats.branches_detected, 0, "No branches in linear conversation");
+    assert_eq!(
+        result.merged_entries.len(),
+        3,
+        "Should deduplicate identical messages"
+    );
+    assert_eq!(
+        result.stats.duplicates_removed, 0,
+        "No duplicates to remove (deduplicated during merge)"
+    );
+    assert_eq!(
+        result.stats.branches_detected, 0,
+        "No branches in linear conversation"
+    );
 }
 
 #[test]
@@ -324,10 +400,20 @@ fn test_mixed_uuid_and_non_uuid_entries() {
 
     let result = merge_conversations(&local, &remote).unwrap();
 
-    println!("Mixed entries result: {} messages", result.merged_entries.len());
+    println!(
+        "Mixed entries result: {} messages",
+        result.merged_entries.len()
+    );
     println!("Timestamp-merged: {}", result.stats.timestamp_merged);
 
     // Should have A, snapshot, B, C = 4 entries
-    assert_eq!(result.merged_entries.len(), 4, "Should merge UUID and non-UUID entries");
-    assert!(result.stats.timestamp_merged > 0, "Should use timestamp merging for non-UUID entries");
+    assert_eq!(
+        result.merged_entries.len(),
+        4,
+        "Should merge UUID and non-UUID entries"
+    );
+    assert!(
+        result.stats.timestamp_merged > 0,
+        "Should use timestamp merging for non-UUID entries"
+    );
 }

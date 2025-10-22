@@ -754,8 +754,9 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
                     "→".cyan()
                 );
 
-                let resolution_result =
-                    crate::interactive_conflict::resolve_conflicts_interactive(&mut smart_merge_failed_conflicts)?;
+                let resolution_result = crate::interactive_conflict::resolve_conflicts_interactive(
+                    &mut smart_merge_failed_conflicts,
+                )?;
 
                 // Apply the resolutions
                 let renames = crate::interactive_conflict::apply_resolutions(
@@ -784,10 +785,10 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
                     let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
                     let conflict_suffix = format!("conflict-{}", timestamp);
 
-                    if let Ok(renamed_path) =
-                        conflict.clone().resolve_keep_both(&conflict_suffix)
-                    {
-                        let relative_renamed = renamed_path.strip_prefix(&claude_dir).unwrap_or(&renamed_path);
+                    if let Ok(renamed_path) = conflict.clone().resolve_keep_both(&conflict_suffix) {
+                        let relative_renamed = renamed_path
+                            .strip_prefix(&claude_dir)
+                            .unwrap_or(&renamed_path);
                         println!(
                             "  {} remote version saved as: {}",
                             "→".yellow(),
@@ -795,7 +796,10 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
                         );
 
                         // Find and write the remote session
-                        if let Some(session) = remote_sessions.iter().find(|s| s.session_id == conflict.session_id) {
+                        if let Some(session) = remote_sessions
+                            .iter()
+                            .find(|s| s.session_id == conflict.session_id)
+                        {
                             session.write_to_file(&renamed_path)?;
                         }
 
@@ -852,7 +856,10 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
             }
         }
 
-        println!("\n{} View details with: claude-code-sync report", "Hint:".cyan());
+        println!(
+            "\n{} View details with: claude-code-sync report",
+            "Hint:".cyan()
+        );
     } else {
         println!("  {} No conflicts detected", "✓".green());
     }
@@ -1163,7 +1170,10 @@ pub fn show_remote() -> Result<()> {
 
     if remotes.is_empty() {
         println!("{}", "No remotes configured".yellow());
-        println!("\n{} claude-code-sync remote set origin <url>", "Hint:".cyan());
+        println!(
+            "\n{} claude-code-sync remote set origin <url>",
+            "Hint:".cyan()
+        );
         return Ok(());
     }
 

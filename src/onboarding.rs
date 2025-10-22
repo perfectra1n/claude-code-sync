@@ -96,16 +96,18 @@ pub struct OnboardingConfig {
 
 /// Run the interactive onboarding flow
 pub fn run_onboarding() -> Result<OnboardingConfig> {
-    println!("\n{}", "⚙️  First time setup detected. Let's configure claude-code-sync!".cyan().bold());
+    println!(
+        "\n{}",
+        "⚙️  First time setup detected. Let's configure claude-code-sync!"
+            .cyan()
+            .bold()
+    );
     println!();
 
     // Step 1: Ask for repository type
-    let repo_type = Select::new(
-        "Repository type:",
-        vec![RepoType::Remote, RepoType::Local],
-    )
-    .prompt()
-    .context("Failed to get repository type")?;
+    let repo_type = Select::new("Repository type:", vec![RepoType::Remote, RepoType::Local])
+        .prompt()
+        .context("Failed to get repository type")?;
 
     let (repo_path, remote_url, is_cloned) = match repo_type {
         RepoType::Remote => {
@@ -149,17 +151,20 @@ pub fn run_onboarding() -> Result<OnboardingConfig> {
         RepoType::Local => {
             let path_str = Text::new("Enter local repository path:")
                 .with_placeholder("~/claude-code-sync-repo")
-                .with_help_message("Path to a new or existing git repository on your local filesystem")
+                .with_help_message(
+                    "Path to a new or existing git repository on your local filesystem",
+                )
                 .prompt()
                 .context("Failed to get local path")?;
 
             let path = expand_tilde(&path_str)?;
 
             // Ask if they want to add a remote later
-            let add_remote = Confirm::new("Do you want to add a remote repository for backup/sync?")
-                .with_default(false)
-                .prompt()
-                .context("Failed to get remote preference")?;
+            let add_remote =
+                Confirm::new("Do you want to add a remote repository for backup/sync?")
+                    .with_default(false)
+                    .prompt()
+                    .context("Failed to get remote preference")?;
 
             let remote = if add_remote {
                 let url = Text::new("Enter remote repository URL:")
@@ -204,11 +209,7 @@ pub fn run_onboarding() -> Result<OnboardingConfig> {
             .prompt()
             .context("Failed to get days threshold")?;
 
-        Some(
-            days_str
-                .parse::<u32>()
-                .context("Invalid number of days")?,
-        )
+        Some(days_str.parse::<u32>().context("Invalid number of days")?)
     } else {
         None
     };

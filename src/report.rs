@@ -112,8 +112,7 @@ impl ConflictReport {
                     ConflictResolution::SmartMerge { stats, .. } => {
                         format!(
                             "Smart merged ({} messages, {} branches)",
-                            stats.merged_messages,
-                            stats.branches_detected
+                            stats.merged_messages, stats.branches_detected
                         )
                     }
                     ConflictResolution::KeepBoth {

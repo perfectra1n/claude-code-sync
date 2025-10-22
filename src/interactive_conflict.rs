@@ -24,7 +24,9 @@ pub enum ResolutionAction {
 impl std::fmt::Display for ResolutionAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResolutionAction::SmartMerge => write!(f, "Smart Merge (combine both versions - recommended)"),
+            ResolutionAction::SmartMerge => {
+                write!(f, "Smart Merge (combine both versions - recommended)")
+            }
             ResolutionAction::KeepLocal => write!(f, "Keep Local Version (discard remote)"),
             ResolutionAction::KeepRemote => write!(f, "Keep Remote Version (overwrite local)"),
             ResolutionAction::KeepBoth => {
@@ -61,7 +63,10 @@ impl ResolutionResult {
 
     /// Total number of conflicts resolved
     pub fn total(&self) -> usize {
-        self.smart_merge.len() + self.keep_local.len() + self.keep_remote.len() + self.keep_both.len()
+        self.smart_merge.len()
+            + self.keep_local.len()
+            + self.keep_remote.len()
+            + self.keep_both.len()
     }
 }
 
@@ -251,7 +256,10 @@ pub fn resolve_conflicts_interactive_with_sessions(
                 result.keep_local.push(conflict.clone());
             }
             ResolutionAction::KeepRemote => {
-                println!("  {} Keeping remote version (will overwrite local)", "✓".yellow());
+                println!(
+                    "  {} Keeping remote version (will overwrite local)",
+                    "✓".yellow()
+                );
                 conflict.resolution = ConflictResolution::KeepRemote;
                 result.keep_remote.push(conflict.clone());
             }
@@ -272,13 +280,22 @@ pub fn resolve_conflicts_interactive_with_sessions(
     println!("\n{}", "=".repeat(80).green());
     println!("{}", "Resolution Summary".bold().green());
     println!("{}", "=".repeat(80).green());
-    println!("  Smart Merge: {}", result.smart_merge.len().to_string().cyan());
-    println!("  Keep Local:  {}", result.keep_local.len().to_string().green());
+    println!(
+        "  Smart Merge: {}",
+        result.smart_merge.len().to_string().cyan()
+    );
+    println!(
+        "  Keep Local:  {}",
+        result.keep_local.len().to_string().green()
+    );
     println!(
         "  Keep Remote: {}",
         result.keep_remote.len().to_string().yellow()
     );
-    println!("  Keep Both:   {}", result.keep_both.len().to_string().cyan());
+    println!(
+        "  Keep Both:   {}",
+        result.keep_both.len().to_string().cyan()
+    );
     println!("{}", "=".repeat(80).green());
 
     // Final confirmation
@@ -324,7 +341,10 @@ pub fn apply_resolutions(
 
     // Handle "smart merge" - write merged entries to local file
     for conflict in &result.smart_merge {
-        if let ConflictResolution::SmartMerge { ref merged_entries, .. } = conflict.resolution {
+        if let ConflictResolution::SmartMerge {
+            ref merged_entries, ..
+        } = conflict.resolution
+        {
             // Create a session with merged entries
             let merged_session = ConversationSession {
                 session_id: conflict.session_id.clone(),
@@ -383,24 +403,21 @@ pub fn apply_resolutions(
         let renamed_path = conflict
             .clone()
             .resolve_keep_both(&conflict_suffix)
-            .with_context(|| {
-                format!(
-                    "Failed to resolve keep_both for {}",
-                    conflict.session_id
-                )
-            })?;
+            .with_context(|| format!("Failed to resolve keep_both for {}", conflict.session_id))?;
 
         // Find and write the remote session to the renamed path
         if let Some(remote_session) = remote_sessions
             .iter()
             .find(|s| s.session_id == conflict.session_id)
         {
-            remote_session.write_to_file(&renamed_path).with_context(|| {
-                format!(
-                    "Failed to write remote conflict version: {}",
-                    renamed_path.display()
-                )
-            })?;
+            remote_session
+                .write_to_file(&renamed_path)
+                .with_context(|| {
+                    format!(
+                        "Failed to write remote conflict version: {}",
+                        renamed_path.display()
+                    )
+                })?;
 
             let relative_renamed = renamed_path
                 .strip_prefix(claude_dir)
@@ -436,16 +453,10 @@ mod tests {
     #[test]
     fn test_display_resolution_action() {
         let action = ResolutionAction::KeepLocal;
-        assert_eq!(
-            action.to_string(),
-            "Keep Local Version (discard remote)"
-        );
+        assert_eq!(action.to_string(), "Keep Local Version (discard remote)");
 
         let action = ResolutionAction::KeepRemote;
-        assert_eq!(
-            action.to_string(),
-            "Keep Remote Version (overwrite local)"
-        );
+        assert_eq!(action.to_string(), "Keep Remote Version (overwrite local)");
 
         let action = ResolutionAction::KeepBoth;
         assert_eq!(

@@ -5,7 +5,9 @@ use walkdir::WalkDir;
 
 // Import the necessary modules from claude_code_sync
 use claude_code_sync::git::GitManager;
-use claude_code_sync::history::{ConversationSummary, OperationHistory, OperationType, SyncOperation};
+use claude_code_sync::history::{
+    ConversationSummary, OperationHistory, OperationType, SyncOperation,
+};
 use claude_code_sync::parser::ConversationSession;
 use claude_code_sync::sync::SyncState;
 use claude_code_sync::undo::{undo_pull, undo_push, Snapshot};
@@ -35,7 +37,9 @@ fn copy_test_data(dest_projects_dir: &Path) -> anyhow::Result<()> {
                 let file_entry = file_entry?;
                 let file_path = file_entry.path();
 
-                if file_path.is_file() && file_path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                if file_path.is_file()
+                    && file_path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                {
                     let file_name = file_path.file_name().unwrap();
                     let dest_file = dest_dir.join(file_name);
                     fs::copy(file_path, dest_file)?;
@@ -69,9 +73,7 @@ fn count_jsonl_files(dir: &Path) -> usize {
     WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path().extension().and_then(|s| s.to_str()) == Some("jsonl")
-        })
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("jsonl"))
         .count()
 }
 
@@ -127,7 +129,11 @@ fn test_full_push_pull_cycle() {
 
     // Verify test data was copied
     let file_count = count_jsonl_files(&claude_projects_dir);
-    assert!(file_count >= 5, "Expected at least 5 test files, found {}", file_count);
+    assert!(
+        file_count >= 5,
+        "Expected at least 5 test files, found {}",
+        file_count
+    );
 
     // Initialize sync repository (git init)
     let git_manager = GitManager::init(sync_repo_path).unwrap();
@@ -147,7 +153,10 @@ fn test_full_push_pull_cycle() {
 
     // Discover sessions from test data
     let original_sessions = discover_test_sessions(&claude_projects_dir).unwrap();
-    assert!(original_sessions.len() >= 5, "Should have at least 5 test sessions");
+    assert!(
+        original_sessions.len() >= 5,
+        "Should have at least 5 test sessions"
+    );
 
     // Push conversations (simulated - we'll do this manually since we can't call the actual function)
     // Instead, we'll manually copy files and create history
@@ -177,7 +186,10 @@ fn test_full_push_pull_cycle() {
     git_manager.commit("Test push").unwrap();
 
     // Create operation history for the push
-    let history_path = config_dir.path().join(".claude-code-sync").join("operation-history.json");
+    let history_path = config_dir
+        .path()
+        .join(".claude-code-sync")
+        .join("operation-history.json");
     let history = OperationHistory::from_path(Some(history_path.clone())).unwrap();
 
     let mut conversations = Vec::new();
@@ -278,7 +290,10 @@ fn test_full_push_pull_cycle() {
 
     // Verify the modification was pulled
     if let Some(first_modified) = machine2_sessions.iter().find(|s| {
-        sync_sessions_after_modify.first().map(|orig| &orig.session_id) == Some(&s.session_id)
+        sync_sessions_after_modify
+            .first()
+            .map(|orig| &orig.session_id)
+            == Some(&s.session_id)
     }) {
         assert!(
             first_modified.message_count() > original_sessions.first().unwrap().message_count(),
@@ -308,12 +323,7 @@ fn test_undo_pull_restores_files() {
     fs::write(&conv_file, original_content).unwrap();
 
     // Create a snapshot before "pull"
-    let snapshot = Snapshot::create(
-        OperationType::Pull,
-        vec![&conv_file],
-        None,
-    )
-    .unwrap();
+    let snapshot = Snapshot::create(OperationType::Pull, vec![&conv_file], None).unwrap();
 
     let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
 
@@ -360,10 +370,17 @@ fn test_undo_pull_restores_files() {
 
     // Verify operation history was updated
     let history_after_undo = OperationHistory::from_path(Some(history_path)).unwrap();
-    assert_eq!(history_after_undo.len(), 0, "Pull operation should be removed from history");
+    assert_eq!(
+        history_after_undo.len(),
+        0,
+        "Pull operation should be removed from history"
+    );
 
     // Verify snapshot was cleaned up
-    assert!(!snapshot_path.exists(), "Snapshot should be deleted after successful undo");
+    assert!(
+        !snapshot_path.exists(),
+        "Snapshot should be deleted after successful undo"
+    );
 }
 
 #[test]
@@ -395,12 +412,8 @@ fn test_undo_push_resets_git() {
     assert_ne!(initial_commit_hash, second_commit_hash);
 
     // Create a snapshot with the initial commit hash
-    let mut snapshot = Snapshot::create(
-        OperationType::Push,
-        vec![&file2],
-        Some(&git_manager),
-    )
-    .unwrap();
+    let mut snapshot =
+        Snapshot::create(OperationType::Push, vec![&file2], Some(&git_manager)).unwrap();
 
     // Override the git commit hash to point to initial commit
     snapshot.git_commit_hash = Some(initial_commit_hash.clone());
@@ -446,10 +459,17 @@ fn test_undo_push_resets_git() {
 
     // Verify operation history was updated
     let history_after_undo = OperationHistory::from_path(Some(history_path)).unwrap();
-    assert_eq!(history_after_undo.len(), 0, "Push operation should be removed from history");
+    assert_eq!(
+        history_after_undo.len(),
+        0,
+        "Push operation should be removed from history"
+    );
 
     // Verify snapshot was cleaned up
-    assert!(!snapshot_path.exists(), "Snapshot should be deleted after successful undo");
+    assert!(
+        !snapshot_path.exists(),
+        "Snapshot should be deleted after successful undo"
+    );
 }
 
 #[test]
@@ -484,8 +504,11 @@ fn test_conflict_handling() {
     fs::write(&m2_file, base_content).unwrap();
 
     // Machine 1: Modify and "push"
-    let m1_modified = format!("{}{}\n", base_content,
-        r#"{"type":"user","uuid":"3","sessionId":"shared-session-123","timestamp":"2025-01-01T00:02:00Z"}"#);
+    let m1_modified = format!(
+        "{}{}\n",
+        base_content,
+        r#"{"type":"user","uuid":"3","sessionId":"shared-session-123","timestamp":"2025-01-01T00:02:00Z"}"#
+    );
     fs::write(&m1_file, &m1_modified).unwrap();
 
     let m1_session = ConversationSession::from_file(&m1_file).unwrap();
@@ -494,8 +517,11 @@ fn test_conflict_handling() {
     m1_session.write_to_file(&sync_file).unwrap();
 
     // Machine 2: Modify differently (creating conflict)
-    let m2_modified = format!("{}{}\n", base_content,
-        r#"{"type":"user","uuid":"4","sessionId":"shared-session-123","timestamp":"2025-01-01T00:03:00Z"}"#);
+    let m2_modified = format!(
+        "{}{}\n",
+        base_content,
+        r#"{"type":"user","uuid":"4","sessionId":"shared-session-123","timestamp":"2025-01-01T00:03:00Z"}"#
+    );
     fs::write(&m2_file, &m2_modified).unwrap();
 
     // Detect conflict when machine 2 tries to pull
@@ -622,7 +648,9 @@ fn test_operation_history_tracking() {
     assert_eq!(last_op.affected_conversations[0].session_id, "session-3");
 
     // Test get last operation by type
-    let last_pull = history.get_last_operation_by_type(OperationType::Pull).unwrap();
+    let last_pull = history
+        .get_last_operation_by_type(OperationType::Pull)
+        .unwrap();
     assert_eq!(last_pull.affected_conversations[0].session_id, "session-2");
 
     // Test operation summaries
@@ -638,7 +666,10 @@ fn test_operation_history_tracking() {
     // Reload history from disk and verify persistence
     let reloaded = OperationHistory::from_path(Some(history_path)).unwrap();
     assert_eq!(reloaded.len(), 3);
-    assert_eq!(reloaded.list_operations()[0].operation_type, OperationType::Push);
+    assert_eq!(
+        reloaded.list_operations()[0].operation_type,
+        OperationType::Push
+    );
 }
 
 #[test]
@@ -655,13 +686,23 @@ fn test_with_real_test_data() {
     let sessions = discover_test_sessions(test_data).unwrap();
 
     // Verify we found the expected number of files
-    assert!(sessions.len() >= 5, "Expected at least 5 test sessions, found {}", sessions.len());
+    assert!(
+        sessions.len() >= 5,
+        "Expected at least 5 test sessions, found {}",
+        sessions.len()
+    );
 
     // Verify each session has valid data
     for session in &sessions {
-        assert!(!session.session_id.is_empty(), "Session ID should not be empty");
+        assert!(
+            !session.session_id.is_empty(),
+            "Session ID should not be empty"
+        );
         assert!(!session.entries.is_empty(), "Session should have entries");
-        assert!(!session.file_path.is_empty(), "File path should not be empty");
+        assert!(
+            !session.file_path.is_empty(),
+            "File path should not be empty"
+        );
 
         // Note: Some sessions might be summary entries with 0 messages, which is valid
         // Just verify we can compute message count without panicking
@@ -676,7 +717,9 @@ fn test_with_real_test_data() {
     let temp_dir = TempDir::new().unwrap();
 
     for session in &sessions {
-        let dest_path = temp_dir.path().join(format!("{}.jsonl", session.session_id));
+        let dest_path = temp_dir
+            .path()
+            .join(format!("{}.jsonl", session.session_id));
         session.write_to_file(&dest_path).unwrap();
 
         // Re-read and verify
@@ -694,9 +737,18 @@ fn test_snapshot_with_multiple_files() {
 
     // Create multiple conversation files
     let files = vec![
-        ("conv1.jsonl", r#"{"type":"user","uuid":"1","sessionId":"s1","timestamp":"2025-01-01T00:00:00Z"}"#),
-        ("conv2.jsonl", r#"{"type":"user","uuid":"2","sessionId":"s2","timestamp":"2025-01-01T00:00:00Z"}"#),
-        ("conv3.jsonl", r#"{"type":"user","uuid":"3","sessionId":"s3","timestamp":"2025-01-01T00:00:00Z"}"#),
+        (
+            "conv1.jsonl",
+            r#"{"type":"user","uuid":"1","sessionId":"s1","timestamp":"2025-01-01T00:00:00Z"}"#,
+        ),
+        (
+            "conv2.jsonl",
+            r#"{"type":"user","uuid":"2","sessionId":"s2","timestamp":"2025-01-01T00:00:00Z"}"#,
+        ),
+        (
+            "conv3.jsonl",
+            r#"{"type":"user","uuid":"3","sessionId":"s3","timestamp":"2025-01-01T00:00:00Z"}"#,
+        ),
     ];
 
     let mut file_paths = Vec::new();
@@ -707,12 +759,7 @@ fn test_snapshot_with_multiple_files() {
     }
 
     // Create snapshot
-    let snapshot = Snapshot::create(
-        OperationType::Pull,
-        &file_paths,
-        None,
-    )
-    .unwrap();
+    let snapshot = Snapshot::create(OperationType::Pull, &file_paths, None).unwrap();
 
     assert_eq!(snapshot.files.len(), 3);
 
