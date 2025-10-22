@@ -79,6 +79,14 @@ pub mod history;
 /// log rotation when files exceed size limits.
 pub mod logger;
 
+/// Smart merge functionality for combining divergent conversation branches.
+///
+/// Provides intelligent merging of conversation sessions by analyzing message UUIDs,
+/// parent relationships, and timestamps. Can handle non-overlapping messages, edited
+/// messages (resolved by timestamp), conversation branches (all branches preserved),
+/// and entries without UUIDs (merged by timestamp).
+pub mod merge;
+
 /// Interactive onboarding flow for first-time setup.
 ///
 /// Guides users through initial configuration including repository setup (clone vs local),

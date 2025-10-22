@@ -109,6 +109,13 @@ impl ConflictReport {
                     .clone()
                     .unwrap_or_else(|| "unknown".to_string()),
                 resolution: match &c.resolution {
+                    ConflictResolution::SmartMerge { stats, .. } => {
+                        format!(
+                            "Smart merged ({} messages, {} branches)",
+                            stats.merged_messages,
+                            stats.branches_detected
+                        )
+                    }
                     ConflictResolution::KeepBoth {
                         renamed_remote_file,
                     } => {

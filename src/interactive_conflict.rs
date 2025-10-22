@@ -9,6 +9,8 @@ use crate::parser::ConversationSession;
 /// Resolution action chosen by the user
 #[derive(Debug, Clone)]
 pub enum ResolutionAction {
+    /// Intelligently merge both versions (default/recommended)
+    SmartMerge,
     /// Keep the local version and discard the remote changes
     KeepLocal,
     /// Keep the remote version and overwrite the local file
@@ -22,6 +24,7 @@ pub enum ResolutionAction {
 impl std::fmt::Display for ResolutionAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ResolutionAction::SmartMerge => write!(f, "Smart Merge (combine both versions - recommended)"),
             ResolutionAction::KeepLocal => write!(f, "Keep Local Version (discard remote)"),
             ResolutionAction::KeepRemote => write!(f, "Keep Remote Version (overwrite local)"),
             ResolutionAction::KeepBoth => {
@@ -35,6 +38,8 @@ impl std::fmt::Display for ResolutionAction {
 /// Result of interactive conflict resolution
 #[derive(Debug)]
 pub struct ResolutionResult {
+    /// Conflicts resolved via smart merge
+    pub smart_merge: Vec<Conflict>,
     /// Conflicts that should keep local version (discard remote)
     pub keep_local: Vec<Conflict>,
     /// Conflicts that should keep remote version (overwrite local)
@@ -47,6 +52,7 @@ impl ResolutionResult {
     /// Creates a new empty ResolutionResult with all conflict vectors initialized
     pub fn new() -> Self {
         ResolutionResult {
+            smart_merge: Vec::new(),
             keep_local: Vec::new(),
             keep_remote: Vec::new(),
             keep_both: Vec::new(),
@@ -55,7 +61,7 @@ impl ResolutionResult {
 
     /// Total number of conflicts resolved
     pub fn total(&self) -> usize {
-        self.keep_local.len() + self.keep_remote.len() + self.keep_both.len()
+        self.smart_merge.len() + self.keep_local.len() + self.keep_remote.len() + self.keep_both.len()
     }
 }
 
@@ -131,6 +137,7 @@ fn resolve_conflict_interactive(conflict: &Conflict) -> Result<ResolutionAction>
         println!("  {}", conflict.description().dimmed());
 
         let options = vec![
+            ResolutionAction::SmartMerge,
             ResolutionAction::KeepLocal,
             ResolutionAction::KeepRemote,
             ResolutionAction::KeepBoth,
@@ -160,10 +167,16 @@ fn resolve_conflict_interactive(conflict: &Conflict) -> Result<ResolutionAction>
 ///
 /// # Arguments
 /// * `conflicts` - Mutable slice of conflicts to resolve
+/// * `local_sessions` - Optional map of local sessions (for smart merge)
+/// * `remote_sessions` - Optional map of remote sessions (for smart merge)
 ///
 /// # Returns
 /// A `ResolutionResult` containing the categorized conflicts
-pub fn resolve_conflicts_interactive(conflicts: &mut [Conflict]) -> Result<ResolutionResult> {
+pub fn resolve_conflicts_interactive_with_sessions(
+    conflicts: &mut [Conflict],
+    local_sessions: Option<&std::collections::HashMap<String, &ConversationSession>>,
+    remote_sessions: Option<&std::collections::HashMap<String, &ConversationSession>>,
+) -> Result<ResolutionResult> {
     if conflicts.is_empty() {
         return Ok(ResolutionResult::new());
     }
@@ -191,6 +204,47 @@ pub fn resolve_conflicts_interactive(conflicts: &mut [Conflict]) -> Result<Resol
         let action = resolve_conflict_interactive(conflict)?;
 
         match action {
+            ResolutionAction::SmartMerge => {
+                // Attempt smart merge
+                if let (Some(local_map), Some(remote_map)) = (local_sessions, remote_sessions) {
+                    if let (Some(&local_session), Some(&remote_session)) = (
+                        local_map.get(&conflict.session_id),
+                        remote_map.get(&conflict.session_id),
+                    ) {
+                        match conflict.try_smart_merge(local_session, remote_session) {
+                            Ok(()) => {
+                                if let ConflictResolution::SmartMerge { ref stats, .. } =
+                                    conflict.resolution
+                                {
+                                    println!(
+                                        "  {} Smart merged ({} local + {} remote = {} total, {} branches)",
+                                        "✓".green(),
+                                        stats.local_messages,
+                                        stats.remote_messages,
+                                        stats.merged_messages,
+                                        stats.branches_detected
+                                    );
+                                }
+                                result.smart_merge.push(conflict.clone());
+                            }
+                            Err(e) => {
+                                eprintln!("  {} Smart merge failed: {}", "✗".red(), e);
+                                eprintln!("  Please choose another resolution method...");
+                                // Don't add to result, user will be prompted again
+                                continue;
+                            }
+                        }
+                    } else {
+                        eprintln!("  {} Cannot find local or remote session", "✗".red());
+                        eprintln!("  Please choose another resolution method...");
+                        continue;
+                    }
+                } else {
+                    eprintln!("  {} Session maps not provided", "✗".red());
+                    eprintln!("  Please choose another resolution method...");
+                    continue;
+                }
+            }
             ResolutionAction::KeepLocal => {
                 println!("  {} Keeping local version", "✓".green());
                 conflict.resolution = ConflictResolution::KeepLocal;
@@ -218,6 +272,7 @@ pub fn resolve_conflicts_interactive(conflicts: &mut [Conflict]) -> Result<Resol
     println!("\n{}", "=".repeat(80).green());
     println!("{}", "Resolution Summary".bold().green());
     println!("{}", "=".repeat(80).green());
+    println!("  Smart Merge: {}", result.smart_merge.len().to_string().cyan());
     println!("  Keep Local:  {}", result.keep_local.len().to_string().green());
     println!(
         "  Keep Remote: {}",
@@ -241,6 +296,14 @@ pub fn resolve_conflicts_interactive(conflicts: &mut [Conflict]) -> Result<Resol
     Ok(result)
 }
 
+/// Backward-compatible version of resolve_conflicts_interactive without session maps
+///
+/// This version doesn't support SmartMerge since it requires session data.
+/// Use `resolve_conflicts_interactive_with_sessions` for full functionality.
+pub fn resolve_conflicts_interactive(conflicts: &mut [Conflict]) -> Result<ResolutionResult> {
+    resolve_conflicts_interactive_with_sessions(conflicts, None, None)
+}
+
 /// Apply the resolution results by copying/writing files
 ///
 /// # Arguments
@@ -258,6 +321,34 @@ pub fn apply_resolutions(
     _remote_projects_dir: &Path,
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut renames = Vec::new();
+
+    // Handle "smart merge" - write merged entries to local file
+    for conflict in &result.smart_merge {
+        if let ConflictResolution::SmartMerge { ref merged_entries, .. } = conflict.resolution {
+            // Create a session with merged entries
+            let merged_session = ConversationSession {
+                session_id: conflict.session_id.clone(),
+                entries: merged_entries.clone(),
+                file_path: conflict.local_file.to_string_lossy().to_string(),
+            };
+
+            // Write to local file
+            merged_session
+                .write_to_file(&conflict.local_file)
+                .with_context(|| {
+                    format!(
+                        "Failed to write smart merged file: {}",
+                        conflict.local_file.display()
+                    )
+                })?;
+
+            println!(
+                "  {} Wrote smart merged conversation: {}",
+                "✓".cyan(),
+                conflict.local_file.display()
+            );
+        }
+    }
 
     // Handle "keep remote" - overwrite local with remote
     for conflict in &result.keep_remote {

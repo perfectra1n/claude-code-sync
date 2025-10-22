@@ -5,6 +5,7 @@ mod git;
 mod history;
 mod interactive_conflict;
 mod logger;
+mod merge;
 mod onboarding;
 mod parser;
 mod report;

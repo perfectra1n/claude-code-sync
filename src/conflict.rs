@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::merge;
 use crate::parser::ConversationSession;
 
 /// Represents a conflict between local and remote versions of the same conversation session.
@@ -100,12 +101,36 @@ pub struct Conflict {
 ///
 /// # Resolution Strategies
 ///
+/// - **SmartMerge**: Intelligently combines both versions by merging non-conflicting changes
 /// - **KeepBoth**: Preserves both versions by renaming the remote file to avoid overwriting
 /// - **KeepLocal**: Discards the remote version and keeps only the local version
 /// - **KeepRemote**: Discards the local version and keeps only the remote version
 /// - **Pending**: No resolution has been chosen yet (default state for new conflicts)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ConflictResolution {
+    /// Intelligently merge both versions into a single conversation.
+    ///
+    /// This strategy attempts to combine messages from both local and remote versions
+    /// by analyzing message UUIDs, parent relationships, and timestamps. It can handle:
+    /// - Non-overlapping messages (simple merge)
+    /// - Edited messages (resolved by timestamp)
+    /// - Conversation branches (all branches preserved)
+    /// - Entries without UUIDs (merged by timestamp)
+    ///
+    /// If smart merge fails (e.g., due to corrupted data or circular references),
+    /// the system will fall back to another resolution strategy.
+    ///
+    /// # Fields
+    ///
+    /// * `merged_entries` - The result of merging both conversations
+    /// * `stats` - Statistics about the merge operation
+    SmartMerge {
+        /// The merged conversation entries
+        merged_entries: Vec<crate::parser::ConversationEntry>,
+        /// Statistics about the merge operation
+        stats: merge::MergeStats,
+    },
+
     /// Keep both versions by renaming the remote file with a conflict suffix.
     ///
     /// This strategy preserves both the local and remote versions of the conversation.
@@ -194,6 +219,35 @@ impl Conflict {
             remote_hash: remote.content_hash(),
             resolution: ConflictResolution::Pending,
         }
+    }
+
+    /// Attempts to resolve the conflict using smart merge
+    ///
+    /// This method tries to intelligently combine local and remote versions
+    /// by analyzing message UUIDs, timestamps, and parent relationships.
+    ///
+    /// # Arguments
+    ///
+    /// * `local_session` - The local conversation session
+    /// * `remote_session` - The remote conversation session
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the smart merge succeeds, or an error if it fails.
+    /// On success, the conflict resolution is set to `SmartMerge` with the merged entries.
+    pub fn try_smart_merge(
+        &mut self,
+        local_session: &ConversationSession,
+        remote_session: &ConversationSession,
+    ) -> Result<()> {
+        let merge_result = merge::merge_conversations(local_session, remote_session)?;
+
+        self.resolution = ConflictResolution::SmartMerge {
+            merged_entries: merge_result.merged_entries,
+            stats: merge_result.stats,
+        };
+
+        Ok(())
     }
 
     /// Resolve the conflict by keeping both versions

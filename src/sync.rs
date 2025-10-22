@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::conflict::ConflictDetector;
+use crate::conflict::{ConflictDetector, ConflictResolution};
 use crate::filter::FilterConfig;
 use crate::git::GitManager;
 use crate::history::{
@@ -650,69 +650,166 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
             detector.conflict_count()
         );
 
-        // Check if we can run interactively
-        let use_interactive = crate::interactive_conflict::is_interactive();
+        // ============================================================================
+        // ATTEMPT SMART MERGE FIRST
+        // ============================================================================
+        println!("  {} smart merge...", "Attempting".cyan());
 
-        let renames = if use_interactive {
-            // Interactive conflict resolution
-            println!(
-                "\n{} Running in interactive mode",
-                "→".cyan()
-            );
+        let local_map: HashMap<_, _> = local_sessions
+            .iter()
+            .map(|s| (s.session_id.clone(), s))
+            .collect();
 
-            let conflicts = detector.conflicts_mut();
-            let resolution_result = crate::interactive_conflict::resolve_conflicts_interactive(conflicts)?;
+        let remote_map: HashMap<_, _> = remote_sessions
+            .iter()
+            .map(|s| (s.session_id.clone(), s))
+            .collect();
 
-            // Apply the resolutions
-            let renames = crate::interactive_conflict::apply_resolutions(
-                &resolution_result,
-                &remote_sessions,
-                &claude_dir,
-                &remote_projects_dir,
-            )?;
+        let mut smart_merge_success_count = 0;
+        let mut smart_merge_failed_conflicts = Vec::new();
 
-            // Save conflict report
-            let report = ConflictReport::from_conflicts(detector.conflicts());
-            save_conflict_report(&report)?;
+        for conflict in detector.conflicts_mut() {
+            // Find local and remote sessions
+            if let (Some(local_session), Some(remote_session)) = (
+                local_map.get(&conflict.session_id),
+                remote_map.get(&conflict.session_id),
+            ) {
+                // Try smart merge
+                match conflict.try_smart_merge(local_session, remote_session) {
+                    Ok(()) => {
+                        smart_merge_success_count += 1;
+                        // Write merged result to local file
+                        if let crate::conflict::ConflictResolution::SmartMerge {
+                            ref merged_entries,
+                            ref stats,
+                        } = conflict.resolution
+                        {
+                            // Create a new session with merged entries
+                            let merged_session = ConversationSession {
+                                session_id: conflict.session_id.clone(),
+                                entries: merged_entries.clone(),
+                                file_path: conflict.local_file.to_string_lossy().to_string(),
+                            };
 
-            renames
-        } else {
-            // Non-interactive mode: use default "keep both" strategy
-            println!(
-                "\n{} Using automatic conflict resolution (keep both versions)",
-                "→".cyan()
-            );
-
-            // Resolve conflicts using "keep both" strategy
-            let renames = detector.resolve_all_keep_both()?;
-
-            // Save conflict report
-            let report = ConflictReport::from_conflicts(detector.conflicts());
-            save_conflict_report(&report)?;
-
-            println!("\n{}", "Conflict Resolution:".yellow().bold());
-            for (_original, renamed) in &renames {
-                let relative_renamed = renamed.strip_prefix(&claude_dir).unwrap_or(renamed);
-                println!(
-                    "  {} remote version saved as: {}",
-                    "→".yellow(),
-                    relative_renamed.display().to_string().cyan()
-                );
-            }
-
-            // Apply renames and copy files
-            for (original_path, renamed_path) in &renames {
-                // Find the remote session that corresponds to this original path
-                if let Some(session) = remote_sessions.iter().find(|s| {
-                    let remote_path = remote_projects_dir.join(&s.file_path);
-                    &remote_path == original_path
-                }) {
-                    // Write the session to the renamed destination path
-                    session.write_to_file(renamed_path)?;
+                            // Write merged session to local path
+                            if let Err(e) = merged_session.write_to_file(&conflict.local_file) {
+                                eprintln!(
+                                    "{} Failed to write merged session {}: {}",
+                                    "Warning:".yellow(),
+                                    conflict.session_id,
+                                    e
+                                );
+                                smart_merge_failed_conflicts.push(conflict.clone());
+                            } else {
+                                println!(
+                                    "  {} Smart merged {} ({} local + {} remote = {} total, {} branches)",
+                                    "✓".green(),
+                                    conflict.session_id,
+                                    stats.local_messages,
+                                    stats.remote_messages,
+                                    stats.merged_messages,
+                                    stats.branches_detected
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "{} Smart merge failed for {}: {}",
+                            "Warning:".yellow(),
+                            conflict.session_id,
+                            e
+                        );
+                        eprintln!("  Falling back to manual resolution...");
+                        smart_merge_failed_conflicts.push(conflict.clone());
+                    }
                 }
             }
+        }
 
-            renames
+        println!(
+            "  {} Successfully smart merged {}/{} conflicts",
+            "✓".green(),
+            smart_merge_success_count,
+            detector.conflict_count()
+        );
+
+        // If some smart merges failed, handle them with interactive/keep-both resolution
+        let renames = if !smart_merge_failed_conflicts.is_empty() {
+            println!(
+                "  {} {} conflicts require manual resolution",
+                "!".yellow(),
+                smart_merge_failed_conflicts.len()
+            );
+
+            // Check if we can run interactively
+            let use_interactive = crate::interactive_conflict::is_interactive();
+
+            if use_interactive {
+                // Interactive conflict resolution for failed merges
+                println!(
+                    "\n{} Running in interactive mode for remaining conflicts",
+                    "→".cyan()
+                );
+
+                let resolution_result =
+                    crate::interactive_conflict::resolve_conflicts_interactive(&mut smart_merge_failed_conflicts)?;
+
+                // Apply the resolutions
+                let renames = crate::interactive_conflict::apply_resolutions(
+                    &resolution_result,
+                    &remote_sessions,
+                    &claude_dir,
+                    &remote_projects_dir,
+                )?;
+
+                // Save conflict report
+                let report = ConflictReport::from_conflicts(detector.conflicts());
+                save_conflict_report(&report)?;
+
+                renames
+            } else {
+                // Non-interactive mode: use "keep both" strategy for failed merges
+                println!(
+                    "\n{} Using automatic conflict resolution (keep both versions)",
+                    "→".cyan()
+                );
+
+                let mut renames = Vec::new();
+
+                println!("\n{}", "Conflict Resolution:".yellow().bold());
+                for conflict in &smart_merge_failed_conflicts {
+                    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                    let conflict_suffix = format!("conflict-{}", timestamp);
+
+                    if let Ok(renamed_path) =
+                        conflict.clone().resolve_keep_both(&conflict_suffix)
+                    {
+                        let relative_renamed = renamed_path.strip_prefix(&claude_dir).unwrap_or(&renamed_path);
+                        println!(
+                            "  {} remote version saved as: {}",
+                            "→".yellow(),
+                            relative_renamed.display().to_string().cyan()
+                        );
+
+                        // Find and write the remote session
+                        if let Some(session) = remote_sessions.iter().find(|s| s.session_id == conflict.session_id) {
+                            session.write_to_file(&renamed_path)?;
+                        }
+
+                        renames.push((conflict.remote_file.clone(), renamed_path));
+                    }
+                }
+
+                // Save conflict report
+                let report = ConflictReport::from_conflicts(detector.conflicts());
+                save_conflict_report(&report)?;
+
+                renames
+            }
+        } else {
+            // All conflicts resolved via smart merge
+            Vec::new()
         };
 
         // Track all conflicts in affected conversations
