@@ -125,12 +125,13 @@ impl<'a> SmartMerger<'a> {
             .iter()
             .partition(|e| e.uuid.is_some());
 
-        // Build message trees for UUID-tracked entries
-        let local_roots = self.build_tree(&local_uuid_entries, &resolved_edits)?;
-        let remote_roots = self.build_tree(&remote_uuid_entries, &resolved_edits)?;
+        // Combine all UUID entries from both sides
+        let mut all_uuid_entries: Vec<&ConversationEntry> = Vec::new();
+        all_uuid_entries.extend(local_uuid_entries);
+        all_uuid_entries.extend(remote_uuid_entries);
 
-        // Merge the trees
-        let merged_roots = self.merge_trees(local_roots, remote_roots)?;
+        // Build a single unified tree from all entries
+        let merged_roots = self.build_unified_tree(&all_uuid_entries, &resolved_edits)?;
 
         // Flatten tree back to entries
         let mut merged_entries = Vec::new();
@@ -229,6 +230,87 @@ impl<'a> SmartMerger<'a> {
         }
     }
 
+    /// Builds a unified tree from all entries (both local and remote)
+    fn build_unified_tree(
+        &mut self,
+        all_entries: &[&ConversationEntry],
+        resolved_edits: &HashMap<String, ConversationEntry>,
+    ) -> Result<Vec<MessageNode>> {
+        // Build UUID map, preferring resolved edits and deduplicating
+        let mut uuid_to_entry: HashMap<String, ConversationEntry> = HashMap::new();
+
+        for entry in all_entries {
+            if let Some(uuid) = &entry.uuid {
+                // Only insert if not already present (avoids duplicates)
+                if !uuid_to_entry.contains_key(uuid) {
+                    // Use resolved edit if available, otherwise use original entry
+                    let entry_to_use = resolved_edits
+                        .get(uuid)
+                        .unwrap_or(*entry);
+                    uuid_to_entry.insert(uuid.clone(), entry_to_use.clone());
+                }
+            }
+        }
+
+        // Map parent UUID -> list of child UUIDs
+        let mut parent_to_children: HashMap<Option<String>, Vec<String>> = HashMap::new();
+
+        for (uuid, entry) in &uuid_to_entry {
+            parent_to_children
+                .entry(entry.parent_uuid.clone())
+                .or_default()
+                .push(uuid.clone());
+        }
+
+        // Build tree recursively
+        fn build_subtree(
+            uuid: &str,
+            uuid_to_entry: &HashMap<String, ConversationEntry>,
+            parent_to_children: &HashMap<Option<String>, Vec<String>>,
+        ) -> MessageNode {
+            let entry = uuid_to_entry.get(uuid).unwrap().clone();
+            let mut node = MessageNode::new(entry);
+
+            // Get children for this UUID
+            if let Some(child_uuids) = parent_to_children.get(&Some(uuid.to_string())) {
+                for child_uuid in child_uuids {
+                    let child_node = build_subtree(child_uuid, uuid_to_entry, parent_to_children);
+                    node.add_child(child_node);
+                }
+            }
+
+            node
+        }
+
+        // Find root UUIDs (entries with no parent)
+        let root_uuids = parent_to_children.get(&None).cloned().unwrap_or_default();
+
+        // Build trees from each root
+        let mut roots = Vec::new();
+        for root_uuid in root_uuids {
+            let root_node = build_subtree(&root_uuid, &uuid_to_entry, &parent_to_children);
+            roots.push(root_node);
+        }
+
+        // Count branches
+        for entry in uuid_to_entry.values() {
+            if let Some(children) = parent_to_children.get(&Some(entry.uuid.clone().unwrap())) {
+                if children.len() > 1 {
+                    self.stats.branches_detected += 1;
+                }
+            }
+        }
+
+        // Sort roots by timestamp
+        roots.sort_by(|a, b| {
+            let a_ts = a.entry.timestamp.as_ref();
+            let b_ts = b.entry.timestamp.as_ref();
+            a_ts.cmp(&b_ts)
+        });
+
+        Ok(roots)
+    }
+
     /// Builds a message tree from entries
     fn build_tree(
         &mut self,
@@ -317,8 +399,8 @@ impl<'a> SmartMerger<'a> {
         // Create a map of UUID -> MessageNode for efficient lookup
         let mut merged_nodes: HashMap<String, MessageNode> = HashMap::new();
 
-        // Process all nodes from both trees
-        fn collect_nodes(
+        // Process all nodes from both trees (recursively collect all nodes, not just roots)
+        fn collect_nodes_recursive(
             nodes: &[MessageNode],
             collected: &mut HashMap<String, MessageNode>,
         ) {
@@ -326,10 +408,12 @@ impl<'a> SmartMerger<'a> {
                 if let Some(uuid) = &node.entry.uuid {
                     collected.insert(uuid.clone(), node.clone());
                 }
+                // Recursively collect children
+                collect_nodes_recursive(&node.children, collected);
             }
         }
 
-        collect_nodes(&local_roots, &mut merged_nodes);
+        collect_nodes_recursive(&local_roots, &mut merged_nodes);
 
         // Merge remote nodes, combining children where nodes have same UUID
         for remote_root in remote_roots {
@@ -503,12 +587,17 @@ mod tests {
 
     #[test]
     fn test_merge_non_overlapping_messages() {
+        // Local has messages 1 -> 2
         let local_entries = vec![
             create_test_entry("1", None, "2025-01-01T00:00:00Z"),
             create_test_entry("2", Some("1"), "2025-01-01T00:01:00Z"),
         ];
 
+        // Remote has the same messages 1 -> 2, plus extensions 3 -> 4
+        // This simulates one machine extending the conversation
         let remote_entries = vec![
+            create_test_entry("1", None, "2025-01-01T00:00:00Z"),
+            create_test_entry("2", Some("1"), "2025-01-01T00:01:00Z"),
             create_test_entry("3", Some("2"), "2025-01-01T00:02:00Z"),
             create_test_entry("4", Some("3"), "2025-01-01T00:03:00Z"),
         ];
@@ -527,14 +616,16 @@ mod tests {
 
         let result = merge_conversations(&local, &remote).unwrap();
 
-        // Should have all 4 messages
-        assert_eq!(result.merged_entries.len(), 4);
+        // Should have all 4 messages (local 1,2 are duplicates of remote 1,2)
+        assert_eq!(result.merged_entries.len(), 4, "Should merge to 4 total messages");
         assert_eq!(result.stats.merged_messages, 4);
+        assert_eq!(result.stats.local_messages, 2);
+        assert_eq!(result.stats.remote_messages, 4);
     }
 
     #[test]
     fn test_merge_with_branches() {
-        // Local: 1 -> 2 -> 3
+        // Local: 1 -> 2 -> 3 (one continuation from message 2)
         let local_entries = vec![
             create_test_entry("1", None, "2025-01-01T00:00:00Z"),
             create_test_entry("2", Some("1"), "2025-01-01T00:01:00Z"),
@@ -542,6 +633,7 @@ mod tests {
         ];
 
         // Remote: 1 -> 2 -> 4 (different continuation from message 2)
+        // Simulates conversation branching - same parent, different children
         let remote_entries = vec![
             create_test_entry("1", None, "2025-01-01T00:00:00Z"),
             create_test_entry("2", Some("1"), "2025-01-01T00:01:00Z"),
@@ -562,11 +654,20 @@ mod tests {
 
         let result = merge_conversations(&local, &remote).unwrap();
 
-        // Should detect branch
-        assert!(result.stats.branches_detected > 0);
+        // Should detect branch (message 2 has two children: 3 and 4)
+        assert!(result.stats.branches_detected > 0, "Should detect at least one branch");
 
-        // Should have 1, 2, 3, and 4
-        assert_eq!(result.merged_entries.len(), 4);
+        // Should have 1, 2, 3, and 4 (all unique messages)
+        assert_eq!(result.merged_entries.len(), 4, "Should have all 4 unique messages");
+
+        // Verify we have the right messages by UUID
+        let uuids: Vec<String> = result.merged_entries.iter()
+            .filter_map(|e| e.uuid.clone())
+            .collect();
+        assert!(uuids.contains(&"1".to_string()));
+        assert!(uuids.contains(&"2".to_string()));
+        assert!(uuids.contains(&"3".to_string()));
+        assert!(uuids.contains(&"4".to_string()));
     }
 
     #[test]
