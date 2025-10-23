@@ -12,7 +12,7 @@ mod cleanup;
 
 // Re-export public types and functions to maintain API compatibility
 pub use snapshot::Snapshot;
-pub use preview::{VerbosityLevel, preview_undo_pull, preview_undo_push};
+pub use preview::{UndoPreview, VerbosityLevel, preview_undo_pull, preview_undo_push};
 pub use operations::{undo_pull, undo_push};
 pub use cleanup::{SnapshotCleanupConfig, cleanup_old_snapshots, cleanup_old_snapshots_with_dir};
 

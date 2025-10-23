@@ -75,7 +75,12 @@ impl UndoPreview {
                 }
 
                 if let Some(commit) = &self.commit_hash {
-                    println!("{} {}", "Will reset to:".bold(), commit[..8].yellow());
+                    let short_hash = if commit.len() >= 8 {
+                        &commit[..8]
+                    } else {
+                        commit.as_str()
+                    };
+                    println!("{} {}", "Will reset to:".bold(), short_hash.yellow());
                 }
 
                 println!(
@@ -138,7 +143,12 @@ impl UndoPreview {
                 }
 
                 if let Some(commit) = &self.commit_hash {
-                    println!("{} {} (full: {})", "Will reset to:".bold(), commit[..8].yellow(), commit.dimmed());
+                    let short_hash = if commit.len() >= 8 {
+                        &commit[..8]
+                    } else {
+                        commit.as_str()
+                    };
+                    println!("{} {} (full: {})", "Will reset to:".bold(), short_hash.yellow(), commit.dimmed());
                 }
 
                 println!(
