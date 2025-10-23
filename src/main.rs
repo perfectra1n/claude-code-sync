@@ -20,6 +20,9 @@ use std::path::PathBuf;
 // Import all handler functions
 use handlers::*;
 
+// Import VerbosityLevel from lib
+use claude_code_sync::VerbosityLevel;
+
 #[derive(Parser)]
 #[command(name = "claude-code-sync")]
 #[command(about = "Sync Claude Code conversation history with git repositories", long_about = None)]
@@ -59,6 +62,18 @@ enum Commands {
         /// Exclude file attachments (images, etc.) from sync
         #[arg(long)]
         exclude_attachments: bool,
+
+        /// Interactive mode - preview changes and confirm before pushing
+        #[arg(short, long)]
+        interactive: bool,
+
+        /// Show detailed verbose output
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Show minimal quiet output
+        #[arg(short, long, conflicts_with = "verbose")]
+        quiet: bool,
     },
 
     /// Pull and merge history from the sync repository
@@ -70,6 +85,18 @@ enum Commands {
         /// Branch to pull from (default: current branch)
         #[arg(short, long)]
         branch: Option<String>,
+
+        /// Interactive mode - preview changes and confirm before pulling
+        #[arg(short, long)]
+        interactive: bool,
+
+        /// Show detailed verbose output
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Show minimal quiet output
+        #[arg(short, long, conflicts_with = "verbose")]
+        quiet: bool,
     },
 
     /// Sync bidirectionally (pull then push)
@@ -85,6 +112,18 @@ enum Commands {
         /// Exclude file attachments (images, etc.) from sync
         #[arg(long)]
         exclude_attachments: bool,
+
+        /// Interactive mode - preview changes and confirm before syncing
+        #[arg(short, long)]
+        interactive: bool,
+
+        /// Show detailed verbose output
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Show minimal quiet output
+        #[arg(short, long, conflicts_with = "verbose")]
+        quiet: bool,
     },
 
     /// Show sync status and conflicts
@@ -119,6 +158,14 @@ enum Commands {
         /// Show current configuration
         #[arg(long)]
         show: bool,
+
+        /// Interactive configuration menu (select settings to modify)
+        #[arg(short, long)]
+        interactive: bool,
+
+        /// Step-by-step configuration wizard
+        #[arg(short, long)]
+        wizard: bool,
     },
 
     /// View conflict reports
@@ -142,6 +189,14 @@ enum Commands {
     Undo {
         #[command(subcommand)]
         operation: UndoOperation,
+
+        /// Show detailed verbose output
+        #[arg(short, long, global = true)]
+        verbose: bool,
+
+        /// Show minimal quiet output
+        #[arg(short, long, global = true, conflicts_with = "verbose")]
+        quiet: bool,
     },
 
     /// View and manage operation history
@@ -163,6 +218,18 @@ enum Commands {
         /// Maximum age of snapshots to keep (in days)
         #[arg(long, default_value_t = 7)]
         max_age_days: i64,
+
+        /// Interactive mode with detailed confirmation
+        #[arg(short, long)]
+        interactive: bool,
+
+        /// Show detailed verbose output
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Show minimal quiet output
+        #[arg(short, long, conflicts_with = "verbose")]
+        quiet: bool,
     },
 }
 
@@ -192,10 +259,18 @@ enum RemoteAction {
 #[derive(Subcommand)]
 enum UndoOperation {
     /// Undo the last pull operation
-    Pull,
+    Pull {
+        /// Preview the undo without executing it
+        #[arg(long)]
+        preview: bool,
+    },
 
     /// Undo the last push operation
-    Push,
+    Push {
+        /// Preview the undo without executing it
+        #[arg(long)]
+        preview: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -212,6 +287,13 @@ enum HistoryAction {
         /// Filter by operation type (pull or push)
         #[arg(short = 't', long)]
         operation_type: Option<String>,
+    },
+
+    /// Interactively review and select operations to view details
+    Review {
+        /// Number of operations to show for selection (default: 10)
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
     },
 
     /// Clear all operation history
@@ -241,6 +323,9 @@ fn main() -> Result<()> {
                 message: None,
                 branch: None,
                 exclude_attachments: false,
+                interactive: false,
+                verbose: false,
+                quiet: false,
             }
         } else {
             // Already initialized, default to sync
@@ -248,6 +333,9 @@ fn main() -> Result<()> {
                 message: None,
                 branch: None,
                 exclude_attachments: false,
+                interactive: false,
+                verbose: false,
+                quiet: false,
             }
         }
     };
@@ -268,26 +356,70 @@ fn main() -> Result<()> {
             push_remote,
             branch,
             exclude_attachments,
+            interactive,
+            verbose,
+            quiet,
         } => {
+            // Determine verbosity level
+            let verbosity = if verbose {
+                VerbosityLevel::Verbose
+            } else if quiet {
+                VerbosityLevel::Quiet
+            } else {
+                VerbosityLevel::Normal
+            };
+
             sync::push_history(
                 message.as_deref(),
                 push_remote,
                 branch.as_deref(),
                 exclude_attachments,
+                interactive,
+                verbosity,
             )?;
         }
         Commands::Pull {
             fetch_remote,
             branch,
+            interactive,
+            verbose,
+            quiet,
         } => {
-            sync::pull_history(fetch_remote, branch.as_deref())?;
+            // Determine verbosity level
+            let verbosity = if verbose {
+                VerbosityLevel::Verbose
+            } else if quiet {
+                VerbosityLevel::Quiet
+            } else {
+                VerbosityLevel::Normal
+            };
+
+            sync::pull_history(fetch_remote, branch.as_deref(), interactive, verbosity)?;
         }
         Commands::Sync {
             message,
             branch,
             exclude_attachments,
+            interactive,
+            verbose,
+            quiet,
         } => {
-            sync::sync_bidirectional(message.as_deref(), branch.as_deref(), exclude_attachments)?;
+            // Determine verbosity level
+            let verbosity = if verbose {
+                VerbosityLevel::Verbose
+            } else if quiet {
+                VerbosityLevel::Quiet
+            } else {
+                VerbosityLevel::Normal
+            };
+
+            sync::sync_bidirectional(
+                message.as_deref(),
+                branch.as_deref(),
+                exclude_attachments,
+                interactive,
+                verbosity,
+            )?;
         }
         Commands::Status {
             show_conflicts,
@@ -301,8 +433,15 @@ fn main() -> Result<()> {
             exclude_projects,
             exclude_attachments,
             show,
+            interactive,
+            wizard,
         } => {
-            if show {
+            // Priority: interactive > wizard > show > individual settings
+            if interactive {
+                handle_config_interactive()?;
+            } else if wizard {
+                handle_config_wizard()?;
+            } else if show {
                 filter::show_config()?;
             } else {
                 filter::update_config(
@@ -327,12 +466,23 @@ fn main() -> Result<()> {
                 sync::remove_remote(&name)?;
             }
         },
-        Commands::Undo { operation } => match operation {
-            UndoOperation::Pull => {
-                handle_undo_pull()?;
-            }
-            UndoOperation::Push => {
-                handle_undo_push()?;
+        Commands::Undo { operation, verbose, quiet } => {
+            // Determine verbosity level
+            let verbosity = if verbose {
+                VerbosityLevel::Verbose
+            } else if quiet {
+                VerbosityLevel::Quiet
+            } else {
+                VerbosityLevel::Normal
+            };
+
+            match operation {
+                UndoOperation::Pull { preview } => {
+                    handle_undo_pull(preview, verbosity)?;
+                }
+                UndoOperation::Push { preview } => {
+                    handle_undo_push(preview, verbosity)?;
+                }
             }
         },
         Commands::History { action } => match action {
@@ -342,6 +492,9 @@ fn main() -> Result<()> {
             HistoryAction::Last { operation_type } => {
                 handle_history_last(operation_type.as_deref())?;
             }
+            HistoryAction::Review { limit } => {
+                handle_history_review(limit)?;
+            }
             HistoryAction::Clear => {
                 handle_history_clear()?;
             }
@@ -350,8 +503,20 @@ fn main() -> Result<()> {
             dry_run,
             max_count,
             max_age_days,
+            interactive,
+            verbose,
+            quiet,
         } => {
-            handle_cleanup_snapshots(dry_run, max_count, max_age_days)?;
+            // Determine verbosity level
+            let verbosity = if verbose {
+                VerbosityLevel::Verbose
+            } else if quiet {
+                VerbosityLevel::Quiet
+            } else {
+                VerbosityLevel::Normal
+            };
+
+            handle_cleanup_snapshots(dry_run, max_count, max_age_days, interactive, verbosity)?;
         }
     }
 

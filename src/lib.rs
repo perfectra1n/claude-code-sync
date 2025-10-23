@@ -30,6 +30,14 @@
 //! - User interface and reporting ([`onboarding`], [`report`], [`logger`])
 //! - Core synchronization logic ([`sync`])
 
+/// Verbosity level for command output
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerbosityLevel {
+    Quiet,   // Minimal output
+    Normal,  // Standard output
+    Verbose, // Detailed output
+}
+
 /// Platform-agnostic configuration directory management for claude-code-sync.
 ///
 /// Provides utilities for locating and managing configuration files and directories

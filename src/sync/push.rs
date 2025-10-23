@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use inquire::Confirm;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,7 @@ use crate::git::GitManager;
 use crate::history::{
     ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
 };
+use crate::interactive_conflict;
 use crate::undo::Snapshot;
 
 use super::discovery::{claude_projects_dir, discover_sessions, warn_large_files};
@@ -21,8 +23,14 @@ pub fn push_history(
     push_remote: bool,
     branch: Option<&str>,
     exclude_attachments: bool,
+    interactive: bool,
+    verbosity: crate::VerbosityLevel,
 ) -> Result<()> {
-    println!("{}", "Pushing Claude Code history...".cyan().bold());
+    use crate::VerbosityLevel;
+
+    if verbosity != VerbosityLevel::Quiet {
+        println!("{}", "Pushing Claude Code history...".cyan().bold());
+    }
 
     let state = SyncState::load()?;
     let git_manager = GitManager::open(&state.sync_repo_path)?;
@@ -108,6 +116,59 @@ pub fn push_history(
     }
 
     // ============================================================================
+    // SHOW SUMMARY AND INTERACTIVE CONFIRMATION
+    // ============================================================================
+    if verbosity != VerbosityLevel::Quiet {
+        println!();
+        println!("{}", "Push Summary:".bold().cyan());
+        println!("  {} Added: {}", "•".green(), added_count);
+        println!("  {} Modified: {}", "•".yellow(), modified_count);
+        println!("  {} Unchanged: {}", "•".dimmed(), unchanged_count);
+        println!("  {} Total: {}", "•".cyan(), sessions.len());
+        println!();
+    }
+
+    // Show detailed file list in verbose mode
+    if verbosity == VerbosityLevel::Verbose {
+        println!("{}", "Files to be pushed:".bold());
+        for (idx, session) in sessions.iter().enumerate().take(20) {
+            let relative_path = Path::new(&session.file_path)
+                .strip_prefix(&claude_dir)
+                .unwrap_or(Path::new(&session.file_path));
+
+            let status = if let Some(existing) = existing_map.get(&session.session_id) {
+                if existing.content_hash() == session.content_hash() {
+                    "unchanged".dimmed()
+                } else {
+                    "modified".yellow()
+                }
+            } else {
+                "new".green()
+            };
+
+            println!("  {}. {} [{}]", idx + 1, relative_path.display(), status);
+        }
+        if sessions.len() > 20 {
+            println!("  ... and {} more", sessions.len() - 20);
+        }
+        println!();
+    }
+
+    // Interactive confirmation
+    if interactive && interactive_conflict::is_interactive() {
+        let confirm = Confirm::new("Do you want to proceed with pushing these changes?")
+            .with_default(true)
+            .with_help_message("This will commit and push to the sync repository")
+            .prompt()
+            .context("Failed to get confirmation")?;
+
+        if !confirm {
+            println!("\n{}", "Push cancelled.".yellow());
+            return Ok(());
+        }
+    }
+
+    // ============================================================================
     // COMMIT AND PUSH CHANGES
     // ============================================================================
     git_manager.stage_all()?;
@@ -117,7 +178,9 @@ pub fn push_history(
         // ============================================================================
         // SNAPSHOT CREATION: Create a snapshot before committing changes
         // ============================================================================
-        println!("  {} snapshot before push...", "Creating".cyan());
+        if verbosity != VerbosityLevel::Quiet {
+            println!("  {} snapshot before push...", "Creating".cyan());
+        }
 
         // Get the current commit hash before making any changes
         // This allows us to undo the push later by resetting to this commit
@@ -298,7 +361,11 @@ pub fn push_history(
         }
     }
 
-    println!("\n{}", "Push complete!".green().bold());
+    if verbosity == VerbosityLevel::Quiet {
+        println!("Push complete");
+    } else {
+        println!("\n{}", "Push complete!".green().bold());
+    }
 
     // Clean up old snapshots automatically
     if let Err(e) = crate::undo::cleanup_old_snapshots(None, false) {

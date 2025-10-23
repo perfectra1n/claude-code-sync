@@ -12,18 +12,38 @@ use crate::sync;
 use crate::undo;
 
 /// Handle undo pull command
-pub fn handle_undo_pull() -> Result<()> {
-    println!("{}", "Preparing to undo last pull operation...".cyan());
+///
+/// # Arguments
+/// * `preview_only` - If true, only show preview without executing
+/// * `verbosity` - Output verbosity level
+pub fn handle_undo_pull(preview_only: bool, verbosity: crate::VerbosityLevel) -> Result<()> {
+    // Convert main VerbosityLevel to undo VerbosityLevel
+    let undo_verbosity = match verbosity {
+        crate::VerbosityLevel::Quiet => undo::VerbosityLevel::Quiet,
+        crate::VerbosityLevel::Normal => undo::VerbosityLevel::Normal,
+        crate::VerbosityLevel::Verbose => undo::VerbosityLevel::Verbose,
+    };
+
+    if verbosity != crate::VerbosityLevel::Quiet {
+        println!("{}", "Preparing to undo last pull operation...".cyan());
+    }
+
+    // Always show preview
+    let preview = undo::preview_undo_pull(None).context("Failed to preview undo operation")?;
+    preview.display(undo_verbosity);
+
+    // If preview-only mode, exit now
+    if preview_only {
+        if verbosity != crate::VerbosityLevel::Quiet {
+            println!("\n{}", "Preview only - no changes made.".yellow());
+        }
+        return Ok(());
+    }
 
     // Check if we're in an interactive terminal
     let is_interactive = interactive_conflict::is_interactive();
 
     if is_interactive {
-        // Show preview
-        let preview = undo::preview_undo_pull(None).context("Failed to preview undo operation")?;
-
-        preview.display();
-
         // Ask for confirmation
         let confirm = Confirm::new("Do you want to proceed with this undo operation?")
             .with_default(false)
@@ -37,35 +57,61 @@ pub fn handle_undo_pull() -> Result<()> {
         }
     }
 
-    println!("\n{}", "Undoing last pull operation...".cyan());
+    if verbosity != crate::VerbosityLevel::Quiet {
+        println!("\n{}", "Undoing last pull operation...".cyan());
+    }
 
     // Call undo_pull with None for both history_path and allowed_base_dir
     // This uses the default locations for production use
     let summary = undo::undo_pull(None, None).context("Failed to undo pull operation")?;
 
-    println!("\n{}", "SUCCESS".green().bold());
-    println!("{summary}");
+    if verbosity == crate::VerbosityLevel::Quiet {
+        println!("Pull undone successfully");
+    } else {
+        println!("\n{}", "SUCCESS".green().bold());
+        println!("{summary}");
+    }
 
     Ok(())
 }
 
 /// Handle undo push command
-pub fn handle_undo_push() -> Result<()> {
-    println!("{}", "Preparing to undo last push operation...".cyan());
+///
+/// # Arguments
+/// * `preview_only` - If true, only show preview without executing
+/// * `verbosity` - Output verbosity level
+pub fn handle_undo_push(preview_only: bool, verbosity: crate::VerbosityLevel) -> Result<()> {
+    // Convert main VerbosityLevel to undo VerbosityLevel
+    let undo_verbosity = match verbosity {
+        crate::VerbosityLevel::Quiet => undo::VerbosityLevel::Quiet,
+        crate::VerbosityLevel::Normal => undo::VerbosityLevel::Normal,
+        crate::VerbosityLevel::Verbose => undo::VerbosityLevel::Verbose,
+    };
+
+    if verbosity != crate::VerbosityLevel::Quiet {
+        println!("{}", "Preparing to undo last push operation...".cyan());
+    }
 
     // Load sync state to get repository path
     let state = sync::SyncState::load()
         .context("Sync not initialized. Run 'claude-code-sync init' first.")?;
 
+    // Always show preview
+    let preview = undo::preview_undo_push(None).context("Failed to preview undo operation")?;
+    preview.display(undo_verbosity);
+
+    // If preview-only mode, exit now
+    if preview_only {
+        if verbosity != crate::VerbosityLevel::Quiet {
+            println!("\n{}", "Preview only - no changes made.".yellow());
+        }
+        return Ok(());
+    }
+
     // Check if we're in an interactive terminal
     let is_interactive = interactive_conflict::is_interactive();
 
     if is_interactive {
-        // Show preview
-        let preview = undo::preview_undo_push(None).context("Failed to preview undo operation")?;
-
-        preview.display();
-
         // Ask for confirmation
         let confirm = Confirm::new("Do you want to proceed with this undo operation?")
             .with_default(false)
@@ -79,14 +125,20 @@ pub fn handle_undo_push() -> Result<()> {
         }
     }
 
-    println!("\n{}", "Undoing last push operation...".cyan());
+    if verbosity != crate::VerbosityLevel::Quiet {
+        println!("\n{}", "Undoing last push operation...".cyan());
+    }
 
     // Call undo_push with repository path and default history path
     let summary =
         undo::undo_push(&state.sync_repo_path, None).context("Failed to undo push operation")?;
 
-    println!("\n{}", "SUCCESS".green().bold());
-    println!("{summary}");
+    if verbosity == crate::VerbosityLevel::Quiet {
+        println!("Push undone successfully");
+    } else {
+        println!("\n{}", "SUCCESS".green().bold());
+        println!("{summary}");
+    }
 
     Ok(())
 }

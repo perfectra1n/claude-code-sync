@@ -26,26 +26,38 @@ pub fn sync_bidirectional(
     commit_message: Option<&str>,
     branch: Option<&str>,
     exclude_attachments: bool,
+    interactive: bool,
+    verbosity: crate::VerbosityLevel,
 ) -> Result<()> {
-    println!("{}", "=== Bidirectional Sync ===".bold().cyan());
-    println!();
+    use crate::VerbosityLevel;
+
+    if verbosity != VerbosityLevel::Quiet {
+        println!("{}", "=== Bidirectional Sync ===".bold().cyan());
+        println!();
+        println!("{}", "Step 1: Pulling remote changes...".bold());
+    }
 
     // First, pull remote changes
-    println!("{}", "Step 1: Pulling remote changes...".bold());
-    pull_history(true, branch)?;
+    pull_history(true, branch, interactive, verbosity)?;
 
-    println!();
+    if verbosity != VerbosityLevel::Quiet {
+        println!();
+        println!("{}", "Step 2: Pushing local changes...".bold());
+    }
 
     // Then, push local changes
-    println!("{}", "Step 2: Pushing local changes...".bold());
-    push_history(commit_message, true, branch, exclude_attachments)?;
+    push_history(commit_message, true, branch, exclude_attachments, interactive, verbosity)?;
 
-    println!();
-    println!("{}", "=== Sync Complete ===".green().bold());
-    println!(
-        "  {} Your local and remote histories are now in sync",
-        "✓".green()
-    );
+    if verbosity == VerbosityLevel::Quiet {
+        println!("Sync complete");
+    } else {
+        println!();
+        println!("{}", "=== Sync Complete ===".green().bold());
+        println!(
+            "  {} Your local and remote histories are now in sync",
+            "✓".green()
+        );
+    }
 
     Ok(())
 }

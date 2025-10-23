@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use inquire::Confirm;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,7 @@ use crate::git::GitManager;
 use crate::history::{
     ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
 };
+use crate::interactive_conflict;
 use crate::parser::ConversationSession;
 use crate::report::{save_conflict_report, ConflictReport};
 use crate::undo::Snapshot;
@@ -18,8 +20,17 @@ use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
 /// Pull and merge history from sync repository
-pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
-    println!("{}", "Pulling Claude Code history...".cyan().bold());
+pub fn pull_history(
+    fetch_remote: bool,
+    branch: Option<&str>,
+    interactive: bool,
+    verbosity: crate::VerbosityLevel,
+) -> Result<()> {
+    use crate::VerbosityLevel;
+
+    if verbosity != VerbosityLevel::Quiet {
+        println!("{}", "Pulling Claude Code history...".cyan().bold());
+    }
 
     let state = SyncState::load()?;
     let git_manager = GitManager::open(&state.sync_repo_path)?;
@@ -96,19 +107,64 @@ pub fn pull_history(fetch_remote: bool, branch: Option<&str>) -> Result<()> {
         .save_to_disk(None)
         .context("Failed to save snapshot to disk")?;
 
-    println!(
-        "  {} Snapshot created: {}",
-        "✓".green(),
-        snapshot_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| snapshot_path.display().to_string())
-    );
+    if verbosity != VerbosityLevel::Quiet {
+        println!(
+            "  {} Snapshot created: {}",
+            "✓".green(),
+            snapshot_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| snapshot_path.display().to_string())
+        );
+    }
+
+    // ============================================================================
+    // SHOW SUMMARY AND INTERACTIVE CONFIRMATION
+    // ============================================================================
+    if verbosity != VerbosityLevel::Quiet {
+        println!();
+        println!("{}", "Pull Summary:".bold().cyan());
+        println!("  {} Local sessions: {}", "•".cyan(), local_sessions.len());
+        println!("  {} Remote sessions: {}", "•".cyan(), remote_sessions.len());
+        println!();
+    }
+
+    // Show detailed file list in verbose mode
+    if verbosity == VerbosityLevel::Verbose {
+        println!("{}", "Remote sessions to be pulled:".bold());
+        for (idx, session) in remote_sessions.iter().enumerate().take(20) {
+            let relative_path = Path::new(&session.file_path)
+                .strip_prefix(&remote_projects_dir)
+                .unwrap_or(Path::new(&session.file_path));
+
+            println!("  {}. {} ({} messages)", idx + 1, relative_path.display(), session.message_count());
+        }
+        if remote_sessions.len() > 20 {
+            println!("  ... and {} more", remote_sessions.len() - 20);
+        }
+        println!();
+    }
+
+    // Interactive confirmation
+    if interactive && interactive_conflict::is_interactive() {
+        let confirm = Confirm::new("Do you want to proceed with pulling and merging these changes?")
+            .with_default(true)
+            .with_help_message("This will merge remote sessions into your local Claude Code history")
+            .prompt()
+            .context("Failed to get confirmation")?;
+
+        if !confirm {
+            println!("\n{}", "Pull cancelled.".yellow());
+            return Ok(());
+        }
+    }
 
     // ============================================================================
     // CONFLICT DETECTION AND RESOLUTION
     // ============================================================================
-    println!("  {} conflicts...", "Detecting".cyan());
+    if verbosity != VerbosityLevel::Quiet {
+        println!("  {} conflicts...", "Detecting".cyan());
+    }
     let mut detector = ConflictDetector::new();
     detector.detect(&local_sessions, &remote_sessions);
 
