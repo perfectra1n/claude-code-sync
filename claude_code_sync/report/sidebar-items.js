@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["generate_report","load_latest_report","save_conflict_report"],"struct":["ConflictDetail","ConflictReport"]};
