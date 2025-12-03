@@ -1,0 +1,1 @@
+rd_("A`claude_code_sync")
