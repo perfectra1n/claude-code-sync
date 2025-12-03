@@ -65,7 +65,7 @@ git clone https://github.com/perfectra1n/claude-code-sync
 cd claude-code-sync
 cargo build --release
 cargo install --path .
-cargo-code-sync --help
+claude-code-sync --help
 ```
 
 ### Using Cargo
