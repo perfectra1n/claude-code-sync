@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["show_config","update_config"],"struct":["FilterConfig"]};
