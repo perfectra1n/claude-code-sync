@@ -96,7 +96,7 @@ jobs:
           du -h target/release/claude-code-sync
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: claude-code-sync-binary
           path: target/release/claude-code-sync
