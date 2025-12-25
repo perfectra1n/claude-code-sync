@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OperationType","SyncOperation"],"struct":["ConversationSummary","OperationHistory","OperationRecord"]};
