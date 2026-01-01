@@ -21,7 +21,10 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     // Repository info
     println!("{}", "Repository:".bold());
     println!("  Path: {}", state.sync_repo_path.display());
-    println!("  Backend: Git");
+    let backend = scm::detect_backend(&state.sync_repo_path)
+        .map(|b| format!("{:?}", b))
+        .unwrap_or_else(|| "Unknown".to_string());
+    println!("  Backend: {}", backend);
     println!(
         "  Remote: {}",
         if state.has_remote {
