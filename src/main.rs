@@ -1,7 +1,6 @@
 mod config;
 mod conflict;
 mod filter;
-mod git;
 mod handlers;
 mod history;
 mod interactive_conflict;
@@ -10,6 +9,7 @@ mod merge;
 mod onboarding;
 mod parser;
 mod report;
+mod scm;
 mod sync;
 mod undo;
 
@@ -154,6 +154,18 @@ enum Commands {
         /// Exclude file attachments (images, etc.) from sync
         #[arg(long)]
         exclude_attachments: Option<bool>,
+
+        /// Enable Git LFS for large files
+        #[arg(long)]
+        enable_lfs: Option<bool>,
+
+        /// File patterns to track with LFS (comma-separated, e.g., "*.jsonl,*.png")
+        #[arg(long)]
+        lfs_patterns: Option<String>,
+
+        /// SCM backend: git or mercurial (default: git)
+        #[arg(long)]
+        scm_backend: Option<String>,
 
         /// Show current configuration
         #[arg(long)]
@@ -432,6 +444,9 @@ fn main() -> Result<()> {
             include_projects,
             exclude_projects,
             exclude_attachments,
+            enable_lfs,
+            lfs_patterns,
+            scm_backend,
             show,
             interactive,
             wizard,
@@ -449,6 +464,9 @@ fn main() -> Result<()> {
                     include_projects,
                     exclude_projects,
                     exclude_attachments,
+                    enable_lfs,
+                    lfs_patterns,
+                    scm_backend,
                 )?;
             }
         }

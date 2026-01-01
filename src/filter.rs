@@ -1,8 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::scm::Backend;
 
 /// Filter configuration for syncing Claude Code history
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,10 +28,32 @@ pub struct FilterConfig {
     /// Exclude file attachments (images, PDFs, etc.)
     #[serde(default)]
     pub exclude_attachments: bool,
+
+    /// Enable Git LFS for large files
+    /// When enabled, files matching lfs_patterns will be stored via LFS
+    #[serde(default)]
+    pub enable_lfs: bool,
+
+    /// File patterns to track with LFS (e.g., "*.jsonl", "*.png")
+    /// Only used when enable_lfs is true
+    #[serde(default = "default_lfs_patterns")]
+    pub lfs_patterns: Vec<String>,
+
+    /// SCM backend to use: "git" or "mercurial" (default: "git")
+    #[serde(default = "default_scm_backend")]
+    pub scm_backend: String,
+}
+
+fn default_lfs_patterns() -> Vec<String> {
+    vec!["*.jsonl".to_string()]
 }
 
 fn default_max_file_size() -> u64 {
     10 * 1024 * 1024 // 10MB
+}
+
+fn default_scm_backend() -> String {
+    "git".to_string()
 }
 
 impl Default for FilterConfig {
@@ -40,6 +64,9 @@ impl Default for FilterConfig {
             exclude_patterns: Vec::new(),
             max_file_size_bytes: default_max_file_size(),
             exclude_attachments: false,
+            enable_lfs: false,
+            lfs_patterns: default_lfs_patterns(),
+            scm_backend: default_scm_backend(),
         }
     }
 }
@@ -147,6 +174,29 @@ impl FilterConfig {
 
         true
     }
+
+    /// Get the configured SCM backend.
+    pub fn backend(&self) -> Result<Backend> {
+        match self.scm_backend.to_lowercase().as_str() {
+            "git" => Ok(Backend::Git),
+            "mercurial" | "hg" => Ok(Backend::Mercurial),
+            other => bail!("Unknown SCM backend: '{}'. Use 'git' or 'mercurial'.", other),
+        }
+    }
+
+    /// Validate the configuration.
+    ///
+    /// Returns an error if LFS is enabled with a non-git backend.
+    pub fn validate(&self) -> Result<()> {
+        if self.enable_lfs && self.scm_backend.to_lowercase() != "git" {
+            bail!(
+                "Git LFS is only supported with the 'git' backend. \
+                 Current backend: '{}'",
+                self.scm_backend
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Simple glob pattern matching
@@ -189,6 +239,9 @@ pub fn update_config(
     include_projects: Option<String>,
     exclude_projects: Option<String>,
     exclude_attachments: Option<bool>,
+    enable_lfs: Option<bool>,
+    lfs_patterns: Option<String>,
+    scm_backend: Option<String>,
 ) -> Result<()> {
     let mut config = FilterConfig::load()?;
 
@@ -231,6 +284,41 @@ pub fn update_config(
             format!("Exclude attachments: {exclude_att}").green()
         );
     }
+
+    if let Some(lfs) = enable_lfs {
+        config.enable_lfs = lfs;
+        println!(
+            "{}",
+            format!("Git LFS: {}", if lfs { "enabled" } else { "disabled" }).green()
+        );
+    }
+
+    if let Some(patterns) = lfs_patterns {
+        config.lfs_patterns = patterns
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        println!(
+            "{}",
+            format!("Set LFS patterns: {:?}", config.lfs_patterns).green()
+        );
+    }
+
+    if let Some(backend) = scm_backend {
+        let backend_lower = backend.to_lowercase();
+        if backend_lower != "git" && backend_lower != "mercurial" && backend_lower != "hg" {
+            bail!("Invalid SCM backend: '{}'. Use 'git' or 'mercurial'.", backend);
+        }
+        config.scm_backend = backend_lower;
+        println!(
+            "{}",
+            format!("Set SCM backend: {}", config.scm_backend).green()
+        );
+    }
+
+    // Validate configuration before saving
+    config.validate()?;
 
     config.save()?;
     println!("{}", "Configuration saved successfully!".green().bold());
@@ -283,6 +371,20 @@ pub fn show_config() -> Result<()> {
         } else {
             "No (all files)".yellow()
         }
+    );
+    println!(
+        "  {}: {}",
+        "Git LFS".cyan(),
+        if config.enable_lfs {
+            format!("Enabled (patterns: {})", config.lfs_patterns.join(", ")).green()
+        } else {
+            "Disabled".yellow()
+        }
+    );
+    println!(
+        "  {}: {}",
+        "SCM backend".cyan(),
+        config.scm_backend.green()
     );
 
     Ok(())

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::history::{OperationHistory, OperationType};
+use crate::scm;
 use super::snapshot::Snapshot;
 
 /// Undo the last pull operation
@@ -103,12 +104,12 @@ pub fn undo_pull(history_path: Option<PathBuf>, allowed_base_dir: Option<&Path>)
 /// 1. Loads the operation history
 /// 2. Finds the most recent push operation
 /// 3. Loads the snapshot to get the previous commit hash
-/// 4. Uses git2 to reset the repository to the previous commit
+/// 4. Uses SCM abstraction to reset the repository to the previous commit
 /// 5. Updates the operation history to mark the push as undone
 /// 6. Warns the user if they need to force push to the remote
 ///
 /// # Arguments
-/// * `repo_path` - Path to the git repository
+/// * `repo_path` - Path to the SCM repository
 /// * `history_path` - Optional custom path for operation history (for testing)
 ///
 /// # Returns
@@ -151,35 +152,25 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
     }
 
     // Get the commit hash to reset to
+    // Note: Snapshot stores this as 'git_commit_hash' for historical reasons,
+    // but it works for any SCM backend that uses commit hashes
     let target_commit = snapshot.git_commit_hash.as_ref().ok_or_else(|| {
         anyhow!(
-            "No git commit hash found in snapshot. \
+            "No commit hash found in snapshot. \
             Cannot reset repository without a target commit."
         )
     })?;
 
-    // Open the git repository
-    let repo = git2::Repository::open(repo_path)
-        .with_context(|| format!("Failed to open git repository at {}", repo_path.display()))?;
-
-    // Find the target commit
-    let oid = git2::Oid::from_str(target_commit)
-        .with_context(|| format!("Invalid commit hash: {target_commit}"))?;
-
-    let target_commit_obj = repo
-        .find_commit(oid)
-        .with_context(|| format!("Failed to find commit: {target_commit}"))?;
+    // Open the SCM repository
+    let repo = scm::open(repo_path)
+        .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
 
     // Check if we need to warn about remote (before reset)
     let branch_name = snapshot.branch.as_deref().unwrap_or("unknown");
-    let needs_force_push = if let Ok(remote) = repo.find_remote("origin") {
-        remote.url().is_some()
-    } else {
-        false
-    };
+    let needs_force_push = repo.has_remote("origin");
 
-    // TRANSACTION-LIKE ORDERING: Update history FIRST, then perform git reset.
-    // This ensures that if the git reset fails, the history is still consistent.
+    // TRANSACTION-LIKE ORDERING: Update history FIRST, then perform reset.
+    // This ensures that if the reset fails, the history is still consistent.
     // The snapshot file remains on disk until we successfully complete the reset.
 
     // Step 1: Remove the push operation from history
@@ -188,10 +179,10 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
         .remove_last_operation_by_type(OperationType::Push, history_path.clone())
         .context("Failed to remove push operation from history")?;
 
-    // Step 2: Perform the git reset
+    // Step 2: Perform the reset
     // If this fails, the history is already updated (which is safer than having
     // an inconsistent history state)
-    repo.reset(target_commit_obj.as_object(), git2::ResetType::Soft, None)
+    repo.reset_soft(target_commit)
         .context("Failed to reset repository to previous commit")?;
 
     // Step 3: Clean up the snapshot file (only after successful reset)
@@ -203,12 +194,18 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
         );
     }
 
+    let short_commit = if target_commit.len() >= 8 {
+        &target_commit[..8]
+    } else {
+        target_commit
+    };
+
     let mut summary = format!(
         "Successfully undone last push operation.\n\
         Reset repository to commit: {}\n\
         Branch: {}\n\
         Snapshot taken at: {}",
-        &target_commit[..8],
+        short_commit,
         branch_name,
         snapshot.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
     );
@@ -218,7 +215,7 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
             "\n\n\
             WARNING: The remote repository was updated by the push.\n\
             You will need to force push to update the remote:\n\
-            git push --force origin {branch_name}"
+            (For Git: git push --force origin {branch_name})"
         ));
     }
 
