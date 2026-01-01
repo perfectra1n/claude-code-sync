@@ -26,6 +26,20 @@ pub struct FilterConfig {
     /// Exclude file attachments (images, PDFs, etc.)
     #[serde(default)]
     pub exclude_attachments: bool,
+
+    /// Enable Git LFS for large files
+    /// When enabled, files matching lfs_patterns will be stored via LFS
+    #[serde(default)]
+    pub enable_lfs: bool,
+
+    /// File patterns to track with LFS (e.g., "*.jsonl", "*.png")
+    /// Only used when enable_lfs is true
+    #[serde(default = "default_lfs_patterns")]
+    pub lfs_patterns: Vec<String>,
+}
+
+fn default_lfs_patterns() -> Vec<String> {
+    vec!["*.jsonl".to_string()]
 }
 
 fn default_max_file_size() -> u64 {
@@ -40,6 +54,8 @@ impl Default for FilterConfig {
             exclude_patterns: Vec::new(),
             max_file_size_bytes: default_max_file_size(),
             exclude_attachments: false,
+            enable_lfs: false,
+            lfs_patterns: default_lfs_patterns(),
         }
     }
 }
@@ -189,6 +205,8 @@ pub fn update_config(
     include_projects: Option<String>,
     exclude_projects: Option<String>,
     exclude_attachments: Option<bool>,
+    enable_lfs: Option<bool>,
+    lfs_patterns: Option<String>,
 ) -> Result<()> {
     let mut config = FilterConfig::load()?;
 
@@ -229,6 +247,26 @@ pub fn update_config(
         println!(
             "{}",
             format!("Exclude attachments: {exclude_att}").green()
+        );
+    }
+
+    if let Some(lfs) = enable_lfs {
+        config.enable_lfs = lfs;
+        println!(
+            "{}",
+            format!("Git LFS: {}", if lfs { "enabled" } else { "disabled" }).green()
+        );
+    }
+
+    if let Some(patterns) = lfs_patterns {
+        config.lfs_patterns = patterns
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        println!(
+            "{}",
+            format!("Set LFS patterns: {:?}", config.lfs_patterns).green()
         );
     }
 
@@ -282,6 +320,15 @@ pub fn show_config() -> Result<()> {
             "Yes (only .jsonl files)".green()
         } else {
             "No (all files)".yellow()
+        }
+    );
+    println!(
+        "  {}: {}",
+        "Git LFS".cyan(),
+        if config.enable_lfs {
+            format!("Enabled (patterns: {})", config.lfs_patterns.join(", ")).green()
+        } else {
+            "Disabled".yellow()
         }
     );
 
