@@ -155,6 +155,14 @@ enum Commands {
         #[arg(long)]
         exclude_attachments: Option<bool>,
 
+        /// Enable Git LFS for large files
+        #[arg(long)]
+        enable_lfs: Option<bool>,
+
+        /// File patterns to track with LFS (comma-separated, e.g., "*.jsonl,*.png")
+        #[arg(long)]
+        lfs_patterns: Option<String>,
+
         /// Show current configuration
         #[arg(long)]
         show: bool,
@@ -432,6 +440,8 @@ fn main() -> Result<()> {
             include_projects,
             exclude_projects,
             exclude_attachments,
+            enable_lfs,
+            lfs_patterns,
             show,
             interactive,
             wizard,
@@ -449,6 +459,8 @@ fn main() -> Result<()> {
                     include_projects,
                     exclude_projects,
                     exclude_attachments,
+                    enable_lfs,
+                    lfs_patterns,
                 )?;
             }
         }

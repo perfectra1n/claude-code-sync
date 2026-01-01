@@ -40,6 +40,16 @@ pub fn push_history(
     if exclude_attachments {
         filter.exclude_attachments = true;
     }
+
+    // Set up LFS if enabled
+    if filter.enable_lfs {
+        if verbosity != VerbosityLevel::Quiet {
+            println!("  {} Git LFS...", "Configuring".cyan());
+        }
+        scm::lfs::setup(&state.sync_repo_path, &filter.lfs_patterns)
+            .context("Failed to set up Git LFS")?;
+    }
+
     let claude_dir = claude_projects_dir()?;
 
     // Get the current branch name for operation record
