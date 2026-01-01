@@ -15,6 +15,7 @@ use tempfile::TempDir;
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_init_creates_marker(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -33,6 +34,7 @@ fn test_init_creates_marker(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_open_after_init(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -49,6 +51,7 @@ fn test_open_after_init(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_open_non_repo_fails(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -66,6 +69,7 @@ fn test_open_non_repo_fails(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_has_changes_empty_repo(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -81,6 +85,7 @@ fn test_has_changes_empty_repo(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_has_changes_after_file_create(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -99,6 +104,7 @@ fn test_has_changes_after_file_create(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_stage_and_commit(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -121,6 +127,7 @@ fn test_stage_and_commit(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_current_commit_hash(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -150,6 +157,7 @@ fn test_current_commit_hash(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_current_branch(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -177,6 +185,7 @@ fn test_current_branch(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_add_remote(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -197,6 +206,7 @@ fn test_add_remote(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_get_remote_url(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -215,6 +225,7 @@ fn test_get_remote_url(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_set_remote_url(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -236,6 +247,7 @@ fn test_set_remote_url(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_remove_remote(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -255,6 +267,7 @@ fn test_remove_remote(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_list_remotes(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -286,6 +299,7 @@ fn test_list_remotes(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_reset_soft(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -326,6 +340,7 @@ fn test_reset_soft(#[case] backend: Backend) {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_detect_backend(#[case] backend: Backend) {
     if !backend.is_available() {
         eprintln!("Skipping: {:?} not installed", backend);
@@ -348,7 +363,93 @@ fn test_detect_backend_none() {
 
 #[rstest]
 #[case::git(Backend::Git)]
+#[case::mercurial(Backend::Mercurial)]
 fn test_is_available(#[case] backend: Backend) {
     // This test just verifies the method doesn't panic
     let _ = backend.is_available();
+}
+
+// =============================================================================
+// FilterConfig Backend Selection Tests
+// =============================================================================
+
+use claude_code_sync::filter::FilterConfig;
+
+#[test]
+fn test_lfs_requires_git_backend() {
+    // LFS + mercurial should error
+    let config = FilterConfig {
+        enable_lfs: true,
+        scm_backend: "mercurial".to_string(),
+        ..Default::default()
+    };
+    let result = config.validate();
+    assert!(result.is_err(), "LFS with mercurial should fail validation");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("LFS") && err.contains("git"),
+        "Error should mention LFS and git: {}",
+        err
+    );
+}
+
+#[test]
+fn test_lfs_with_git_backend_ok() {
+    // LFS + git should be fine
+    let config = FilterConfig {
+        enable_lfs: true,
+        scm_backend: "git".to_string(),
+        ..Default::default()
+    };
+    assert!(
+        config.validate().is_ok(),
+        "LFS with git should pass validation"
+    );
+}
+
+#[test]
+fn test_backend_selection_git() {
+    let config = FilterConfig {
+        scm_backend: "git".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(config.backend().unwrap(), Backend::Git);
+}
+
+#[test]
+fn test_backend_selection_mercurial() {
+    let config = FilterConfig {
+        scm_backend: "mercurial".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(config.backend().unwrap(), Backend::Mercurial);
+}
+
+#[test]
+fn test_backend_selection_hg_alias() {
+    // "hg" should also work as an alias for mercurial
+    let config = FilterConfig {
+        scm_backend: "hg".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(config.backend().unwrap(), Backend::Mercurial);
+}
+
+#[test]
+fn test_backend_selection_invalid() {
+    let config = FilterConfig {
+        scm_backend: "svn".to_string(),
+        ..Default::default()
+    };
+    assert!(
+        config.backend().is_err(),
+        "Invalid backend should fail"
+    );
+}
+
+#[test]
+fn test_default_backend_is_git() {
+    let config = FilterConfig::default();
+    assert_eq!(config.scm_backend, "git");
+    assert_eq!(config.backend().unwrap(), Backend::Git);
 }
