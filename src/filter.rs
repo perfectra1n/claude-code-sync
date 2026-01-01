@@ -42,6 +42,11 @@ pub struct FilterConfig {
     /// SCM backend to use: "git" or "mercurial" (default: "git")
     #[serde(default = "default_scm_backend")]
     pub scm_backend: String,
+
+    /// Subdirectory within sync repo to store projects (default: "projects")
+    /// Useful when using an existing repo and want to store history in a specific path
+    #[serde(default = "default_sync_subdirectory")]
+    pub sync_subdirectory: String,
 }
 
 fn default_lfs_patterns() -> Vec<String> {
@@ -56,6 +61,10 @@ fn default_scm_backend() -> String {
     "git".to_string()
 }
 
+fn default_sync_subdirectory() -> String {
+    "projects".to_string()
+}
+
 impl Default for FilterConfig {
     fn default() -> Self {
         FilterConfig {
@@ -67,6 +76,7 @@ impl Default for FilterConfig {
             enable_lfs: false,
             lfs_patterns: default_lfs_patterns(),
             scm_backend: default_scm_backend(),
+            sync_subdirectory: default_sync_subdirectory(),
         }
     }
 }
@@ -242,6 +252,7 @@ pub fn update_config(
     enable_lfs: Option<bool>,
     lfs_patterns: Option<String>,
     scm_backend: Option<String>,
+    sync_subdirectory: Option<String>,
 ) -> Result<()> {
     let mut config = FilterConfig::load()?;
 
@@ -317,6 +328,18 @@ pub fn update_config(
         );
     }
 
+    if let Some(subdir) = sync_subdirectory {
+        let subdir_trimmed = subdir.trim().to_string();
+        if subdir_trimmed.is_empty() {
+            bail!("Sync subdirectory cannot be empty");
+        }
+        config.sync_subdirectory = subdir_trimmed;
+        println!(
+            "{}",
+            format!("Set sync subdirectory: {}", config.sync_subdirectory).green()
+        );
+    }
+
     // Validate configuration before saving
     config.validate()?;
 
@@ -385,6 +408,11 @@ pub fn show_config() -> Result<()> {
         "  {}: {}",
         "SCM backend".cyan(),
         config.scm_backend.green()
+    );
+    println!(
+        "  {}: {}",
+        "Sync subdirectory".cyan(),
+        config.sync_subdirectory.green()
     );
 
     Ok(())

@@ -167,6 +167,10 @@ enum Commands {
         #[arg(long)]
         scm_backend: Option<String>,
 
+        /// Subdirectory within sync repo for storing projects (default: "projects")
+        #[arg(long)]
+        sync_subdirectory: Option<String>,
+
         /// Show current configuration
         #[arg(long)]
         show: bool,
@@ -447,6 +451,7 @@ fn main() -> Result<()> {
             enable_lfs,
             lfs_patterns,
             scm_backend,
+            sync_subdirectory,
             show,
             interactive,
             wizard,
@@ -467,6 +472,7 @@ fn main() -> Result<()> {
                     enable_lfs,
                     lfs_patterns,
                     scm_backend,
+                    sync_subdirectory,
                 )?;
             }
         }

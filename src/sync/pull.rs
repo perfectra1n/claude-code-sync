@@ -66,7 +66,7 @@ pub fn pull_history(
     );
 
     // Discover remote sessions
-    let remote_projects_dir = state.sync_repo_path.join("projects");
+    let remote_projects_dir = state.sync_repo_path.join(&filter.sync_subdirectory);
     println!("  {} remote sessions...", "Discovering".cyan());
     let remote_sessions = discover_sessions(&remote_projects_dir, &filter)?;
     println!(
