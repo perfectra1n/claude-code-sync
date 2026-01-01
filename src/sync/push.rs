@@ -3,7 +3,7 @@ use colored::Colorize;
 use inquire::Confirm;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::filter::FilterConfig;
 use crate::history::{
@@ -11,9 +11,8 @@ use crate::history::{
 };
 use crate::interactive_conflict;
 use crate::scm;
-use crate::undo::Snapshot;
 
-use super::discovery::{claude_projects_dir, discover_sessions, warn_large_files};
+use super::discovery::{claude_projects_dir, discover_sessions};
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
@@ -185,61 +184,21 @@ pub fn push_history(
 
     let has_changes = repo.has_changes()?;
     if has_changes {
-        // ============================================================================
-        // SNAPSHOT CREATION: Create a snapshot before committing changes
-        // ============================================================================
-        if verbosity != VerbosityLevel::Quiet {
-            println!("  {} snapshot before push...", "Creating".cyan());
-        }
-
         // Get the current commit hash before making any changes
         // This allows us to undo the push later by resetting to this commit
+        // Note: We don't create file snapshots for push - git already has history!
+        // Undo push simply does `git reset` to this commit.
         let commit_before_push = repo
             .current_commit_hash()
             .context("Failed to get current commit hash")?;
 
-        // Collect all file paths in the sync repository that will be affected
-        // For push operations, we snapshot the sync repository state, not local files
-        let sync_repo_files: Vec<PathBuf> = sessions
-            .iter()
-            .map(|s| {
-                let relative_path = Path::new(&s.file_path)
-                    .strip_prefix(&claude_dir)
-                    .unwrap_or(Path::new(&s.file_path));
-                state.sync_repo_path.join("projects").join(relative_path)
-            })
-            .collect();
-
-        // Check for large conversation files and warn users
-        warn_large_files(&sync_repo_files);
-
-        // Create differential snapshot of sync repository state before push
-        // Note: Snapshot creation failure is fatal because we need to ensure users can
-        // safely undo this push operation if issues occur. Without a snapshot,
-        // there would be no way to restore the previous repository state.
-        //
-        // Using differential snapshots saves disk space by only storing changed files.
-        let snapshot = Snapshot::create_differential_with_commit(
-            OperationType::Push,
-            sync_repo_files.iter(),
-            Some(&commit_before_push),
-        )
-        .context("Failed to create snapshot before push")?;
-
-        // Save snapshot to disk
-        let snapshot_path = snapshot
-            .save_to_disk(None)
-            .context("Failed to save snapshot to disk")?;
-
-        println!(
-            "  {} Snapshot created: {} (commit: {})",
-            "✓".green(),
-            snapshot_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| snapshot_path.display().to_string()),
-            &commit_before_push[..8]
-        );
+        if verbosity != VerbosityLevel::Quiet {
+            println!(
+                "  {} Recorded commit {} for undo",
+                "✓".green(),
+                &commit_before_push[..8]
+            );
+        }
 
         let default_message = format!(
             "Sync {} sessions at {}",
@@ -271,8 +230,8 @@ pub fn push_history(
             pushed_conversations.clone(),
         );
 
-        // Attach the snapshot path to the operation record
-        operation_record.snapshot_path = Some(snapshot_path);
+        // Store commit hash for undo (no file snapshot needed - git has history)
+        operation_record.commit_hash = Some(commit_before_push);
 
         // Load operation history and add this operation
         let mut history = match OperationHistory::load() {

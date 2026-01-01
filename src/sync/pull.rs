@@ -76,47 +76,63 @@ pub fn pull_history(
     );
 
     // ============================================================================
-    // SNAPSHOT CREATION: Create a snapshot before merging any changes
+    // CONFLICT DETECTION (moved before snapshot for efficiency)
     // ============================================================================
-    println!("  {} snapshot before merge...", "Creating".cyan());
-
-    // Collect all local file paths that might be affected
-    let local_file_paths: Vec<PathBuf> = local_sessions
-        .iter()
-        .map(|s| claude_dir.join(&s.file_path))
-        .collect();
-
-    // Check for large conversation files and warn users
-    warn_large_files(&local_file_paths);
-
-    // Create differential snapshot of current state (before any changes)
-    // Note: Snapshot creation failure is fatal because we need to ensure users can
-    // safely undo this pull operation if conflicts or issues occur. Without a snapshot,
-    // there would be no way to restore the previous state.
-    //
-    // Using differential snapshots saves disk space by only storing changed files.
-    let snapshot = Snapshot::create_differential(
-        OperationType::Pull,
-        local_file_paths.iter(),
-        None, // No git manager needed for pull snapshots
-    )
-    .context("Failed to create snapshot before pull")?;
-
-    // Save snapshot to disk
-    let snapshot_path = snapshot
-        .save_to_disk(None)
-        .context("Failed to save snapshot to disk")?;
-
+    // Detect conflicts FIRST so we only backup files that will be modified
     if verbosity != VerbosityLevel::Quiet {
-        println!(
-            "  {} Snapshot created: {}",
-            "✓".green(),
-            snapshot_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| snapshot_path.display().to_string())
-        );
+        println!("  {} conflicts...", "Detecting".cyan());
     }
+    let mut detector = ConflictDetector::new();
+    detector.detect(&local_sessions, &remote_sessions);
+
+    // ============================================================================
+    // SNAPSHOT CREATION: Only backup files that have conflicts
+    // ============================================================================
+    // Optimization: Only backup local files that have conflicts and will be merged.
+    // Files that are new (remote-only) or unchanged don't need backup.
+    // This reduces snapshot size from potentially gigabytes to typically <1MB.
+    let snapshot_path = if detector.has_conflicts() {
+        println!("  {} snapshot of {} conflicting files...", "Creating".cyan(), detector.conflict_count());
+
+        // Only collect paths for files that have conflicts
+        let conflicting_file_paths: Vec<PathBuf> = detector
+            .conflicts()
+            .iter()
+            .map(|c| c.local_file.clone())
+            .collect();
+
+        // Check for large conversation files and warn users
+        warn_large_files(&conflicting_file_paths);
+
+        // Create snapshot of ONLY conflicting files
+        let snapshot = Snapshot::create(
+            OperationType::Pull,
+            conflicting_file_paths.iter(),
+            None, // No git manager needed for pull snapshots
+        )
+        .context("Failed to create snapshot before pull")?;
+
+        // Save snapshot to disk
+        let path = snapshot
+            .save_to_disk(None)
+            .context("Failed to save snapshot to disk")?;
+
+        if verbosity != VerbosityLevel::Quiet {
+            println!(
+                "  {} Snapshot created: {} ({} files)",
+                "✓".green(),
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string()),
+                conflicting_file_paths.len()
+            );
+        }
+
+        Some(path)
+    } else {
+        println!("  {} No conflicts - skipping snapshot", "✓".green());
+        None
+    };
 
     // ============================================================================
     // SHOW SUMMARY AND INTERACTIVE CONFIRMATION
@@ -160,14 +176,8 @@ pub fn pull_history(
     }
 
     // ============================================================================
-    // CONFLICT DETECTION AND RESOLUTION
+    // CONFLICT RESOLUTION (detection already done above)
     // ============================================================================
-    if verbosity != VerbosityLevel::Quiet {
-        println!("  {} conflicts...", "Detecting".cyan());
-    }
-    let mut detector = ConflictDetector::new();
-    detector.detect(&local_sessions, &remote_sessions);
-
     // Track affected conversations for operation record
     let mut affected_conversations: Vec<ConversationSummary> = Vec::new();
 
@@ -459,8 +469,8 @@ pub fn pull_history(
         affected_conversations.clone(),
     );
 
-    // Attach the snapshot path to the operation record
-    operation_record.snapshot_path = Some(snapshot_path);
+    // Attach the snapshot path to the operation record (only if we created one)
+    operation_record.snapshot_path = snapshot_path;
 
     // Load operation history and add this operation
     let mut history = match OperationHistory::load() {
