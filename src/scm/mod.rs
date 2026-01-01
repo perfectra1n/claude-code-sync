@@ -1,6 +1,7 @@
 //! SCM (Source Control Management) abstraction layer.
 //!
 //! Provides a unified interface for Git using CLI commands.
+//! Designed to support multiple backends (Git, Mercurial) via the `Backend` enum.
 
 mod git;
 pub mod lfs;
@@ -9,6 +10,37 @@ use anyhow::{anyhow, Result};
 use std::path::Path;
 
 pub use git::GitScm;
+
+/// SCM backend types.
+///
+/// Used for parameterized testing and explicit backend selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// Git version control
+    Git,
+    // Mercurial,  // Future: uncomment when hg.rs is added
+}
+
+impl Backend {
+    /// Check if this backend's binary is available on the system.
+    pub fn is_available(&self) -> bool {
+        let binary = match self {
+            Backend::Git => "git",
+        };
+        std::process::Command::new(binary)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Get the marker directory for this backend (.git, .hg, etc).
+    pub fn marker(&self) -> &'static str {
+        match self {
+            Backend::Git => ".git",
+        }
+    }
+}
 
 /// Trait for source control management operations.
 pub trait Scm: Send + Sync {
@@ -80,6 +112,29 @@ pub fn init(path: &Path) -> Result<Box<dyn Scm>> {
 /// Clone a repository from a URL.
 pub fn clone(url: &str, path: &Path) -> Result<Box<dyn Scm>> {
     Ok(Box::new(GitScm::clone(url, path)?))
+}
+
+/// Initialize a new repository with the specified backend.
+///
+/// This is useful for parameterized testing where you want to test
+/// the same operations against different SCM backends.
+pub fn init_with_backend(path: &Path, backend: Backend) -> Result<Box<dyn Scm>> {
+    match backend {
+        Backend::Git => Ok(Box::new(GitScm::init(path)?)),
+    }
+}
+
+/// Detect which backend a repository uses.
+///
+/// Returns `None` if the path is not a repository.
+pub fn detect_backend(path: &Path) -> Option<Backend> {
+    if path.join(".git").exists() {
+        Some(Backend::Git)
+    // } else if path.join(".hg").exists() {
+    //     Some(Backend::Mercurial)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
