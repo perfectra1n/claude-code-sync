@@ -3,17 +3,16 @@ use colored::Colorize;
 use inquire::Confirm;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::filter::FilterConfig;
-use crate::git::GitManager;
 use crate::history::{
     ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
 };
 use crate::interactive_conflict;
-use crate::undo::Snapshot;
+use crate::scm;
 
-use super::discovery::{claude_projects_dir, discover_sessions, warn_large_files};
+use super::discovery::{claude_projects_dir, discover_sessions};
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
@@ -33,19 +32,29 @@ pub fn push_history(
     }
 
     let state = SyncState::load()?;
-    let git_manager = GitManager::open(&state.sync_repo_path)?;
+    let repo = scm::open(&state.sync_repo_path)?;
     let mut filter = FilterConfig::load()?;
 
     // Override exclude_attachments if specified in command
     if exclude_attachments {
         filter.exclude_attachments = true;
     }
+
+    // Set up LFS if enabled
+    if filter.enable_lfs {
+        if verbosity != VerbosityLevel::Quiet {
+            println!("  {} Git LFS...", "Configuring".cyan());
+        }
+        scm::lfs::setup(&state.sync_repo_path, &filter.lfs_patterns)
+            .context("Failed to set up Git LFS")?;
+    }
+
     let claude_dir = claude_projects_dir()?;
 
     // Get the current branch name for operation record
     let branch_name = branch
         .map(|s| s.to_string())
-        .or_else(|| git_manager.current_branch().ok())
+        .or_else(|| repo.current_branch().ok())
         .unwrap_or_else(|| "main".to_string());
 
     // Discover all sessions
@@ -56,7 +65,7 @@ pub fn push_history(
     // ============================================================================
     // COPY SESSIONS AND TRACK CHANGES
     // ============================================================================
-    let projects_dir = state.sync_repo_path.join("projects");
+    let projects_dir = state.sync_repo_path.join(&filter.sync_subdirectory);
     fs::create_dir_all(&projects_dir)?;
 
     // Discover existing sessions in sync repo to determine operation type
@@ -171,65 +180,25 @@ pub fn push_history(
     // ============================================================================
     // COMMIT AND PUSH CHANGES
     // ============================================================================
-    git_manager.stage_all()?;
+    repo.stage_all()?;
 
-    let has_changes = git_manager.has_changes()?;
+    let has_changes = repo.has_changes()?;
     if has_changes {
-        // ============================================================================
-        // SNAPSHOT CREATION: Create a snapshot before committing changes
-        // ============================================================================
-        if verbosity != VerbosityLevel::Quiet {
-            println!("  {} snapshot before push...", "Creating".cyan());
-        }
-
         // Get the current commit hash before making any changes
         // This allows us to undo the push later by resetting to this commit
-        let commit_before_push = git_manager
+        // Note: We don't create file snapshots for push - git already has history!
+        // Undo push simply does `git reset` to this commit.
+        let commit_before_push = repo
             .current_commit_hash()
             .context("Failed to get current commit hash")?;
 
-        // Collect all file paths in the sync repository that will be affected
-        // For push operations, we snapshot the sync repository state, not local files
-        let sync_repo_files: Vec<PathBuf> = sessions
-            .iter()
-            .map(|s| {
-                let relative_path = Path::new(&s.file_path)
-                    .strip_prefix(&claude_dir)
-                    .unwrap_or(Path::new(&s.file_path));
-                state.sync_repo_path.join("projects").join(relative_path)
-            })
-            .collect();
-
-        // Check for large conversation files and warn users
-        warn_large_files(&sync_repo_files);
-
-        // Create differential snapshot of sync repository state before push
-        // Note: Snapshot creation failure is fatal because we need to ensure users can
-        // safely undo this push operation if issues occur. Without a snapshot,
-        // there would be no way to restore the previous repository state.
-        //
-        // Using differential snapshots saves disk space by only storing changed files.
-        let snapshot = Snapshot::create_differential(
-            OperationType::Push,
-            sync_repo_files.iter(),
-            Some(&git_manager), // Pass git manager to capture commit hash
-        )
-        .context("Failed to create snapshot before push")?;
-
-        // Save snapshot to disk
-        let snapshot_path = snapshot
-            .save_to_disk(None)
-            .context("Failed to save snapshot to disk")?;
-
-        println!(
-            "  {} Snapshot created: {} (commit: {})",
-            "✓".green(),
-            snapshot_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| snapshot_path.display().to_string()),
-            &commit_before_push[..8]
-        );
+        if verbosity != VerbosityLevel::Quiet {
+            println!(
+                "  {} Recorded commit {} for undo",
+                "✓".green(),
+                &commit_before_push[..8]
+            );
+        }
 
         let default_message = format!(
             "Sync {} sessions at {}",
@@ -239,14 +208,14 @@ pub fn push_history(
         let message = commit_message.unwrap_or(&default_message);
 
         println!("  {} changes...", "Committing".cyan());
-        git_manager.commit(message)?;
+        repo.commit(message)?;
         println!("  {} Committed: {}", "✓".green(), message);
 
         // Push to remote if configured
         if push_remote && state.has_remote {
             println!("  {} to remote...", "Pushing".cyan());
 
-            match git_manager.push("origin", &branch_name) {
+            match repo.push("origin", &branch_name) {
                 Ok(_) => println!("  {} Pushed to origin/{}", "✓".green(), branch_name),
                 Err(e) => log::warn!("Failed to push: {}", e),
             }
@@ -261,8 +230,8 @@ pub fn push_history(
             pushed_conversations.clone(),
         );
 
-        // Attach the snapshot path to the operation record
-        operation_record.snapshot_path = Some(snapshot_path);
+        // Store commit hash for undo (no file snapshot needed - git has history)
+        operation_record.commit_hash = Some(commit_before_push);
 
         // Load operation history and add this operation
         let mut history = match OperationHistory::load() {

@@ -22,6 +22,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Mercurial
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mercurial
+          hg --version
+
       - name: Cache cargo registry
         uses: actions/cache@v5
         with:
@@ -51,6 +57,19 @@ jobs:
 
       - name: Run doc tests
         run: cargo test --doc --verbose
+
+      - name: Run SCM backend tests and verify Mercurial tests executed
+        run: |
+          cargo test --test scm_backend_tests --verbose 2>&1 | tee test_output.txt
+          # Verify mercurial tests ran (not skipped)
+          if grep -q "case_2_mercurial" test_output.txt; then
+            echo "✓ Mercurial tests executed successfully"
+          else
+            echo "ERROR: Mercurial tests did not run!"
+            echo "Test output:"
+            cat test_output.txt
+            exit 1
+          fi
 
   code-quality:
     name: Code Quality Checks

@@ -66,7 +66,7 @@ pub fn sync_bidirectional(
 mod tests {
     use super::*;
     use crate::filter::FilterConfig;
-    use crate::git::GitManager;
+    use crate::scm;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -76,7 +76,7 @@ mod tests {
         let repo_path = temp_dir.path().join("test-repo");
 
         // Initialize a test repo
-        GitManager::init(&repo_path).unwrap();
+        scm::init(&repo_path).unwrap();
 
         // Save a test state
         let state = SyncState {
