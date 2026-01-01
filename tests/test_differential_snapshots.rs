@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use claude_code_sync::scm::{self, Scm};
+use claude_code_sync::scm;
 use claude_code_sync::history::OperationType;
 use claude_code_sync::parser::ConversationEntry;
 use claude_code_sync::undo::Snapshot;

@@ -11,9 +11,6 @@ pub use git::GitScm;
 
 /// Trait for source control management operations.
 pub trait Scm: Send + Sync {
-    /// Get the working directory path.
-    fn workdir(&self) -> &Path;
-
     /// Get the current branch name.
     fn current_branch(&self) -> Result<String>;
 
@@ -49,9 +46,6 @@ pub trait Scm: Send + Sync {
 
     /// Push to a remote repository.
     fn push(&self, remote: &str, branch: &str) -> Result<()>;
-
-    /// Fetch from a remote repository.
-    fn fetch(&self, remote: &str) -> Result<()>;
 
     /// Pull from a remote repository (fetch + merge/update).
     fn pull(&self, remote: &str, branch: &str) -> Result<()>;

@@ -116,10 +116,6 @@ impl GitScm {
 }
 
 impl Scm for GitScm {
-    fn workdir(&self) -> &Path {
-        &self.workdir
-    }
-
     fn current_branch(&self) -> Result<String> {
         self.run_git(&["branch", "--show-current"])
     }
@@ -195,10 +191,6 @@ impl Scm for GitScm {
         Ok(())
     }
 
-    fn fetch(&self, remote: &str) -> Result<()> {
-        self.run_git_ok(&["fetch", remote])
-    }
-
     fn pull(&self, remote: &str, branch: &str) -> Result<()> {
         let output = Command::new("git")
             .args(["pull", remote, branch])
@@ -230,10 +222,12 @@ mod tests {
     #[test]
     fn test_git_init_and_open() {
         let temp = TempDir::new().unwrap();
-        let scm = GitScm::init(temp.path()).unwrap();
+        let _scm = GitScm::init(temp.path()).unwrap();
 
         assert!(temp.path().join(".git").exists());
-        assert_eq!(scm.workdir(), temp.path().canonicalize().unwrap());
+
+        // Verify we can open the initialized repo
+        let _reopened = GitScm::open(temp.path()).unwrap();
     }
 
     #[test]

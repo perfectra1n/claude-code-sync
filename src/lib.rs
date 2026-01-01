@@ -68,7 +68,7 @@ pub mod filter;
 
 /// Source Control Management abstraction layer.
 ///
-/// Provides a unified interface for Git and Mercurial backends using CLI commands.
+/// Provides a unified interface for Git using CLI commands.
 /// Supports repository initialization, cloning, committing, pushing, pulling,
 /// and other common SCM operations through the [`scm::Scm`] trait.
 pub mod scm;

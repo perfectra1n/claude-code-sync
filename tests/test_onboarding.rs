@@ -1,7 +1,7 @@
 use anyhow::Result;
 use claude_code_sync::config::ConfigManager;
 use claude_code_sync::filter::FilterConfig;
-use claude_code_sync::scm::{self, Scm};
+use claude_code_sync::scm;
 use claude_code_sync::sync::SyncState;
 use serial_test::serial;
 use tempfile::TempDir;

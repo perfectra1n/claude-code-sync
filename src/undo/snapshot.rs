@@ -113,6 +113,7 @@ impl Snapshot {
     ///
     /// # Returns
     /// A new Snapshot instance with all file contents captured
+    #[allow(dead_code)] // Used in integration tests
     pub fn create<P, I>(
         operation_type: OperationType,
         file_paths: I,
@@ -519,6 +520,7 @@ impl Snapshot {
     /// Reconstruct the full file state using the default snapshots directory
     ///
     /// This is a convenience wrapper around `reconstruct_full_state_with_dir`.
+    #[allow(dead_code)] // Used in unit tests
     pub(crate) fn reconstruct_full_state(&self) -> Result<HashMap<String, Vec<u8>>> {
         self.reconstruct_full_state_with_dir(None)
     }

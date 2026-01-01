@@ -4,7 +4,7 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 // Import the necessary modules from claude_code_sync
-use claude_code_sync::scm::{self, Scm};
+use claude_code_sync::scm;
 use claude_code_sync::history::{
     ConversationSummary, OperationHistory, OperationType, SyncOperation,
 };
