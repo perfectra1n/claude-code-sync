@@ -4,7 +4,7 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 // Import the necessary modules from claude_code_sync
-use claude_code_sync::git::GitManager;
+use claude_code_sync::scm;
 use claude_code_sync::history::{
     ConversationSummary, OperationHistory, OperationType, SyncOperation,
 };
@@ -134,14 +134,14 @@ fn test_full_push_pull_cycle() {
         "Expected at least 5 test files, found {file_count}"
     );
 
-    // Initialize sync repository (git init)
-    let git_manager = GitManager::init(sync_repo_path).unwrap();
+    // Initialize sync repository
+    let repo = scm::init(sync_repo_path).unwrap();
 
-    // Create an initial commit so we have a valid git history
+    // Create an initial commit so we have a valid history
     let readme_path = sync_repo_path.join("README.md");
     fs::write(&readme_path, "# Claude Sync Test Repo\n").unwrap();
-    git_manager.stage_all().unwrap();
-    git_manager.commit("Initial commit").unwrap();
+    repo.stage_all().unwrap();
+    repo.commit("Initial commit").unwrap();
 
     // Create sync state and filter config
     let _state_file = create_test_sync_state(sync_repo_path, config_dir.path()).unwrap();
@@ -178,11 +178,11 @@ fn test_full_push_pull_cycle() {
     }
 
     // Commit the push
-    git_manager.stage_all().unwrap();
-    let has_changes = git_manager.has_changes().unwrap();
+    repo.stage_all().unwrap();
+    let has_changes = repo.has_changes().unwrap();
     assert!(has_changes, "Should have changes to commit");
 
-    git_manager.commit("Test push").unwrap();
+    repo.commit("Test push").unwrap();
 
     // Create operation history for the push
     let history_path = config_dir
@@ -243,8 +243,8 @@ fn test_full_push_pull_cycle() {
         fs::write(&session_path, modified_content).unwrap();
 
         // Commit the modification
-        git_manager.stage_all().unwrap();
-        git_manager.commit("Modified conversation").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Modified conversation").unwrap();
     }
 
     // Pull from sync repo to "another machine" (different temp dir)
@@ -383,36 +383,37 @@ fn test_undo_pull_restores_files() {
 }
 
 #[test]
-fn test_undo_push_resets_git() {
+fn test_undo_push_resets_repo() {
     let test_dir = TempDir::new().unwrap();
     let history_path = test_dir.path().join("history.json");
     let snapshots_dir = test_dir.path().join("snapshots");
 
-    // Initialize git repository
-    let git_manager = GitManager::init(test_dir.path()).unwrap();
+    // Initialize repository
+    let repo = scm::init(test_dir.path()).unwrap();
 
     // Create and commit initial file
     let file1 = test_dir.path().join("file1.txt");
     fs::write(&file1, "initial content").unwrap();
-    git_manager.stage_all().unwrap();
-    git_manager.commit("Initial commit").unwrap();
+    repo.stage_all().unwrap();
+    repo.commit("Initial commit").unwrap();
 
     // Get initial commit hash
-    let initial_commit_hash = git_manager.current_commit_hash().unwrap();
+    let initial_commit_hash = repo.current_commit_hash().unwrap();
 
     // Create and commit another file (simulating a push)
     let file2 = test_dir.path().join("file2.txt");
     fs::write(&file2, "new content").unwrap();
-    git_manager.stage_all().unwrap();
-    git_manager.commit("Second commit").unwrap();
+    repo.stage_all().unwrap();
+    repo.commit("Second commit").unwrap();
 
     // Verify we're at a different commit
-    let second_commit_hash = git_manager.current_commit_hash().unwrap();
+    let second_commit_hash = repo.current_commit_hash().unwrap();
     assert_ne!(initial_commit_hash, second_commit_hash);
 
     // Create a snapshot with the initial commit hash
+    let commit_hash = repo.current_commit_hash().ok();
     let mut snapshot =
-        Snapshot::create(OperationType::Push, vec![&file2], Some(&git_manager)).unwrap();
+        Snapshot::create(OperationType::Push, vec![&file2], commit_hash.as_deref()).unwrap();
 
     // Override the git commit hash to point to initial commit
     snapshot.git_commit_hash = Some(initial_commit_hash.clone());
@@ -443,7 +444,7 @@ fn test_undo_push_resets_git() {
     history.save_to(Some(history_path.clone())).unwrap();
 
     // Verify we have the second commit
-    let current_hash_before_undo = git_manager.current_commit_hash().unwrap();
+    let current_hash_before_undo = repo.current_commit_hash().unwrap();
     assert_eq!(current_hash_before_undo, second_commit_hash);
 
     // Undo the push
@@ -451,10 +452,10 @@ fn test_undo_push_resets_git() {
     assert!(result.contains("Successfully undone"));
     assert!(result.contains(&initial_commit_hash[..8]));
 
-    // Verify git was reset to previous commit
-    let repo = git2::Repository::open(test_dir.path()).unwrap();
-    let current_commit = repo.head().unwrap().peel_to_commit().unwrap();
-    assert_eq!(current_commit.id().to_string(), initial_commit_hash);
+    // Verify repo was reset to previous commit using scm module
+    let reopened_repo = scm::open(test_dir.path()).unwrap();
+    let current_hash_after = reopened_repo.current_commit_hash().unwrap();
+    assert_eq!(current_hash_after, initial_commit_hash);
 
     // Verify operation history was updated
     let history_after_undo = OperationHistory::from_path(Some(history_path)).unwrap();

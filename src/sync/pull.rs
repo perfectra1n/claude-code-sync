@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 
 use crate::conflict::ConflictDetector;
 use crate::filter::FilterConfig;
-use crate::git::GitManager;
 use crate::history::{
     ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
 };
 use crate::interactive_conflict;
 use crate::parser::ConversationSession;
 use crate::report::{save_conflict_report, ConflictReport};
+use crate::scm;
 use crate::undo::Snapshot;
 
 use super::discovery::{claude_projects_dir, discover_sessions, warn_large_files};
@@ -33,21 +33,21 @@ pub fn pull_history(
     }
 
     let state = SyncState::load()?;
-    let git_manager = GitManager::open(&state.sync_repo_path)?;
+    let repo = scm::open(&state.sync_repo_path)?;
     let filter = FilterConfig::load()?;
     let claude_dir = claude_projects_dir()?;
 
     // Get the current branch name for operation record
     let branch_name = branch
         .map(|s| s.to_string())
-        .or_else(|| git_manager.current_branch().ok())
+        .or_else(|| repo.current_branch().ok())
         .unwrap_or_else(|| "main".to_string());
 
     // Fetch from remote if configured
     if fetch_remote && state.has_remote {
         println!("  {} from remote...", "Fetching".cyan());
 
-        match git_manager.pull("origin", &branch_name) {
+        match repo.pull("origin", &branch_name) {
             Ok(_) => println!("  {} Pulled from origin/{}", "✓".green(), branch_name),
             Err(e) => {
                 log::warn!("Failed to pull: {}", e);
