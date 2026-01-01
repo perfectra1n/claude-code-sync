@@ -6,11 +6,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::filter::FilterConfig;
-use crate::git::GitManager;
 use crate::history::{
     ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
 };
 use crate::interactive_conflict;
+use crate::scm;
 use crate::undo::Snapshot;
 
 use super::discovery::{claude_projects_dir, discover_sessions, warn_large_files};
@@ -33,7 +33,7 @@ pub fn push_history(
     }
 
     let state = SyncState::load()?;
-    let git_manager = GitManager::open(&state.sync_repo_path)?;
+    let repo = scm::open(&state.sync_repo_path)?;
     let mut filter = FilterConfig::load()?;
 
     // Override exclude_attachments if specified in command
@@ -45,7 +45,7 @@ pub fn push_history(
     // Get the current branch name for operation record
     let branch_name = branch
         .map(|s| s.to_string())
-        .or_else(|| git_manager.current_branch().ok())
+        .or_else(|| repo.current_branch().ok())
         .unwrap_or_else(|| "main".to_string());
 
     // Discover all sessions
@@ -171,9 +171,9 @@ pub fn push_history(
     // ============================================================================
     // COMMIT AND PUSH CHANGES
     // ============================================================================
-    git_manager.stage_all()?;
+    repo.stage_all()?;
 
-    let has_changes = git_manager.has_changes()?;
+    let has_changes = repo.has_changes()?;
     if has_changes {
         // ============================================================================
         // SNAPSHOT CREATION: Create a snapshot before committing changes
@@ -184,7 +184,7 @@ pub fn push_history(
 
         // Get the current commit hash before making any changes
         // This allows us to undo the push later by resetting to this commit
-        let commit_before_push = git_manager
+        let commit_before_push = repo
             .current_commit_hash()
             .context("Failed to get current commit hash")?;
 
@@ -209,10 +209,10 @@ pub fn push_history(
         // there would be no way to restore the previous repository state.
         //
         // Using differential snapshots saves disk space by only storing changed files.
-        let snapshot = Snapshot::create_differential(
+        let snapshot = Snapshot::create_differential_with_commit(
             OperationType::Push,
             sync_repo_files.iter(),
-            Some(&git_manager), // Pass git manager to capture commit hash
+            Some(&commit_before_push),
         )
         .context("Failed to create snapshot before push")?;
 
@@ -239,14 +239,14 @@ pub fn push_history(
         let message = commit_message.unwrap_or(&default_message);
 
         println!("  {} changes...", "Committing".cyan());
-        git_manager.commit(message)?;
+        repo.commit(message)?;
         println!("  {} Committed: {}", "✓".green(), message);
 
         // Push to remote if configured
         if push_remote && state.has_remote {
             println!("  {} to remote...", "Pushing".cyan());
 
-            match git_manager.push("origin", &branch_name) {
+            match repo.push("origin", &branch_name) {
                 Ok(_) => println!("  {} Pushed to origin/{}", "✓".green(), branch_name),
                 Err(e) => log::warn!("Failed to push: {}", e),
             }

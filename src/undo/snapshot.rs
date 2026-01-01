@@ -6,7 +6,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::git::GitManager;
 use crate::history::OperationType;
 
 /// Represents a snapshot of conversation files at a point in time
@@ -110,14 +109,14 @@ impl Snapshot {
     /// # Arguments
     /// * `operation_type` - Type of operation this snapshot is for
     /// * `file_paths` - Iterator of file paths to include in snapshot
-    /// * `git_manager` - Optional git manager to capture commit hash
+    /// * `commit_hash` - Optional git commit hash to store in the snapshot
     ///
     /// # Returns
     /// A new Snapshot instance with all file contents captured
     pub fn create<P, I>(
         operation_type: OperationType,
         file_paths: I,
-        git_manager: Option<&GitManager>,
+        commit_hash: Option<&str>,
     ) -> Result<Self>
     where
         P: AsRef<Path>,
@@ -151,22 +150,13 @@ impl Snapshot {
             }
         }
 
-        // Capture git commit hash if available (for push operations)
-        let (git_commit_hash, branch) = if let Some(git) = git_manager {
-            let hash = git.current_commit_hash()?;
-            let branch = git.current_branch().ok();
-            (Some(hash), branch)
-        } else {
-            (None, None)
-        };
-
         Ok(Snapshot {
             snapshot_id,
             timestamp,
             operation_type,
-            git_commit_hash,
+            git_commit_hash: commit_hash.map(|s| s.to_string()),
             files,
-            branch,
+            branch: None,
             base_snapshot_id: None,
             deleted_files: Vec::new(),
         })
@@ -179,7 +169,7 @@ impl Snapshot {
     /// # Arguments
     /// * `operation_type` - Type of operation this snapshot is for
     /// * `file_paths` - Iterator of file paths to include in snapshot
-    /// * `git_manager` - Optional git manager to capture commit hash
+    /// * `commit_hash` - Optional git commit hash to store in the snapshot
     /// * `snapshots_dir` - Optional custom snapshots directory (for testing)
     ///
     /// # Returns
@@ -187,7 +177,7 @@ impl Snapshot {
     pub fn create_differential_with_dir<P, I>(
         operation_type: OperationType,
         file_paths: I,
-        git_manager: Option<&GitManager>,
+        commit_hash: Option<&str>,
         snapshots_dir: Option<&Path>,
     ) -> Result<Self>
     where
@@ -255,22 +245,13 @@ impl Snapshot {
             (current_files, None, Vec::new())
         };
 
-        // Capture git commit hash if available
-        let (git_commit_hash, branch) = if let Some(git) = git_manager {
-            let hash = git.current_commit_hash()?;
-            let branch = git.current_branch().ok();
-            (Some(hash), branch)
-        } else {
-            (None, None)
-        };
-
         Ok(Snapshot {
             snapshot_id,
             timestamp,
             operation_type,
-            git_commit_hash,
+            git_commit_hash: commit_hash.map(|s| s.to_string()),
             files,
-            branch,
+            branch: None,
             base_snapshot_id,
             deleted_files,
         })
@@ -284,20 +265,36 @@ impl Snapshot {
     /// # Arguments
     /// * `operation_type` - Type of operation this snapshot is for
     /// * `file_paths` - Iterator of file paths to include in snapshot
-    /// * `git_manager` - Optional git manager to capture commit hash
+    /// * `commit_hash` - Optional git commit hash to store in the snapshot
     ///
     /// # Returns
     /// A new differential Snapshot, or a full snapshot if no base exists
     pub fn create_differential<P, I>(
         operation_type: OperationType,
         file_paths: I,
-        git_manager: Option<&GitManager>,
+        commit_hash: Option<&str>,
     ) -> Result<Self>
     where
         P: AsRef<Path>,
         I: IntoIterator<Item = P>,
     {
-        Self::create_differential_with_dir(operation_type, file_paths, git_manager, None)
+        Self::create_differential_with_dir(operation_type, file_paths, commit_hash, None)
+    }
+
+    /// Create a differential snapshot with a commit hash (convenience alias)
+    ///
+    /// This is the same as `create_differential` but with a clearer name
+    /// when used with push operations that need to store a commit hash.
+    pub fn create_differential_with_commit<P, I>(
+        operation_type: OperationType,
+        file_paths: I,
+        commit_hash: Option<&str>,
+    ) -> Result<Self>
+    where
+        P: AsRef<Path>,
+        I: IntoIterator<Item = P>,
+    {
+        Self::create_differential(operation_type, file_paths, commit_hash)
     }
 
     /// Find the most recent snapshot of a given operation type

@@ -66,12 +66,12 @@ pub mod interactive_conflict;
 /// excluding attachments to sync only JSONL conversation files).
 pub mod filter;
 
-/// Git repository operations for conversation history management.
+/// Source Control Management abstraction layer.
 ///
-/// Provides a high-level interface to libgit2 for common Git operations including
-/// initializing repositories, cloning, committing, pushing, pulling, and fetching.
-/// Handles authentication via Git credential helpers and SSH agents.
-pub mod git;
+/// Provides a unified interface for Git and Mercurial backends using CLI commands.
+/// Supports repository initialization, cloning, committing, pushing, pulling,
+/// and other common SCM operations through the [`scm::Scm`] trait.
+pub mod scm;
 
 /// Operation history tracking and persistence.
 ///

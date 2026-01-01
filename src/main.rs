@@ -1,7 +1,6 @@
 mod config;
 mod conflict;
 mod filter;
-mod git;
 mod handlers;
 mod history;
 mod interactive_conflict;
@@ -10,6 +9,7 @@ mod merge;
 mod onboarding;
 mod parser;
 mod report;
+mod scm;
 mod sync;
 mod undo;
 

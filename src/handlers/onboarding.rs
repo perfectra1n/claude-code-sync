@@ -8,8 +8,8 @@ use colored::Colorize;
 
 use crate::config;
 use crate::filter;
-use crate::git;
 use crate::onboarding;
+use crate::scm;
 use crate::sync;
 
 /// Check if claude-code-sync has been initialized
@@ -30,7 +30,7 @@ pub fn run_onboarding_flow() -> Result<()> {
             println!();
             println!("{}", "✓ Cloning repository...".cyan());
 
-            git::GitManager::clone(remote_url, &onboarding_config.repo_path)
+            scm::clone(remote_url, &onboarding_config.repo_path)
                 .context("Failed to clone repository")?;
 
             println!("{}", "✓ Repository cloned successfully!".green());

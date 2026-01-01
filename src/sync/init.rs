@@ -2,7 +2,7 @@ use anyhow::Result;
 use colored::Colorize;
 use std::path::Path;
 
-use crate::git::GitManager;
+use crate::scm;
 
 use super::state::SyncState;
 
@@ -16,16 +16,16 @@ pub fn init_from_onboarding(
 
     // If this is a cloned repo and it already exists, just open it
     // Otherwise, initialize a new one
-    let git_manager = if repo_path.exists() && repo_path.join(".git").exists() {
-        GitManager::open(repo_path)?
+    let scm = if repo_path.exists() && scm::is_repo(repo_path) {
+        scm::open(repo_path)?
     } else {
-        GitManager::init(repo_path)?
+        scm::init(repo_path)?
     };
 
     // Add remote if specified
     let has_remote = if let Some(url) = remote_url {
-        if !git_manager.has_remote("origin") {
-            git_manager.add_remote("origin", url)?;
+        if !scm.has_remote("origin") {
+            scm.add_remote("origin", url)?;
         }
         true
     } else {
@@ -50,27 +50,27 @@ pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> 
         "Initializing Claude Code sync repository...".cyan().bold()
     );
 
-    // Create/open the git repository
-    let git_manager = if repo_path.exists() && repo_path.join(".git").exists() {
+    // Create/open the repository
+    let scm = if repo_path.exists() && scm::is_repo(repo_path) {
         println!(
             "  {} existing repository at {}",
             "Using".green(),
             repo_path.display()
         );
-        GitManager::open(repo_path)?
+        scm::open(repo_path)?
     } else {
         println!(
             "  {} new repository at {}",
             "Creating".green(),
             repo_path.display()
         );
-        GitManager::init(repo_path)?
+        scm::init(repo_path)?
     };
 
     // Add remote if specified
     let has_remote = if let Some(url) = remote_url {
-        if !git_manager.has_remote("origin") {
-            git_manager.add_remote("origin", url)?;
+        if !scm.has_remote("origin") {
+            scm.add_remote("origin", url)?;
             println!("  {} remote 'origin' -> {}", "Added".green(), url);
         } else {
             println!("  {} Remote 'origin' already exists", "Note:".yellow());

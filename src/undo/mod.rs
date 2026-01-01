@@ -20,7 +20,7 @@ pub use cleanup::{SnapshotCleanupConfig, cleanup_old_snapshots, cleanup_old_snap
 mod tests {
     use super::*;
     use crate::history::{ConversationSummary, OperationRecord, OperationType, SyncOperation, OperationHistory};
-    use crate::git::GitManager;
+    use crate::scm::{self, Scm};
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -34,18 +34,18 @@ mod tests {
         path
     }
 
-    /// Helper to setup test git repository
-    fn setup_test_git_repo() -> (TempDir, GitManager) {
+    /// Helper to setup test SCM repository
+    fn setup_test_repo() -> (TempDir, Box<dyn Scm>) {
         let temp_dir = tempdir().unwrap();
-        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+        let repo = scm::init(temp_dir.path()).unwrap();
 
         // Create and commit a test file
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "initial content").unwrap();
-        git_manager.stage_all().unwrap();
-        git_manager.commit("Initial commit").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Initial commit").unwrap();
 
-        (temp_dir, git_manager)
+        (temp_dir, repo)
     }
 
     #[test]
@@ -67,19 +67,20 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_with_git_commit() {
-        let (temp_dir, git_manager) = setup_test_git_repo();
+    fn test_snapshot_with_commit_hash() {
+        let (temp_dir, repo) = setup_test_repo();
         let file1 = temp_dir.path().join("test.txt");
+        let commit_hash = repo.current_commit_hash().unwrap();
 
         let snapshot =
-            Snapshot::create(OperationType::Push, vec![&file1], Some(&git_manager)).unwrap();
+            Snapshot::create(OperationType::Push, vec![&file1], Some(&commit_hash)).unwrap();
 
         assert_eq!(snapshot.operation_type, OperationType::Push);
         assert!(snapshot.git_commit_hash.is_some());
-        assert!(snapshot.branch.is_some());
 
-        let commit_hash = snapshot.git_commit_hash.unwrap();
-        assert_eq!(commit_hash.len(), 40); // Git SHA-1 hash length
+        let stored_hash = snapshot.git_commit_hash.unwrap();
+        assert_eq!(stored_hash.len(), 40); // Git SHA-1 hash length
+        assert_eq!(stored_hash, commit_hash);
     }
 
     #[test]
@@ -256,27 +257,24 @@ mod tests {
 
     #[test]
     fn test_undo_push_success() {
-        let (temp_dir, git_manager) = setup_test_git_repo();
+        let (temp_dir, repo) = setup_test_repo();
         let history_path = temp_dir.path().join("history.json");
         let snapshots_dir = temp_dir.path().join("snapshots");
 
         // Get the initial commit hash
-        let repo = git2::Repository::open(temp_dir.path()).unwrap();
-        let initial_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        let initial_hash = initial_commit.id().to_string();
+        let initial_hash = repo.current_commit_hash().unwrap();
 
         // Create and commit a new file (simulating a push)
         let new_file = temp_dir.path().join("new.txt");
         fs::write(&new_file, "new content").unwrap();
-        git_manager.stage_all().unwrap();
-        git_manager.commit("Second commit").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Second commit").unwrap();
 
         // Create a snapshot with the initial commit hash
-        let snapshot =
-            Snapshot::create(OperationType::Push, vec![&new_file], Some(&git_manager)).unwrap();
+        let mut snapshot =
+            Snapshot::create(OperationType::Push, vec![&new_file], Some(&initial_hash)).unwrap();
 
-        // Manually set the commit hash to the initial commit
-        let mut snapshot = snapshot;
+        // Set the commit hash to the initial commit (for undo)
         snapshot.git_commit_hash = Some(initial_hash.clone());
 
         let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
@@ -309,9 +307,9 @@ mod tests {
         assert!(result.contains(&initial_hash[..8]));
 
         // Verify we're back at the initial commit
-        let repo = git2::Repository::open(temp_dir.path()).unwrap();
-        let current_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(current_commit.id().to_string(), initial_hash);
+        let repo_check = scm::open(temp_dir.path()).unwrap();
+        let current_hash = repo_check.current_commit_hash().unwrap();
+        assert_eq!(current_hash, initial_hash);
     }
 
     #[test]
@@ -369,12 +367,12 @@ mod tests {
         history.add_operation(record).unwrap();
         history.save_to(Some(history_path.clone())).unwrap();
 
-        // Initialize a git repo for testing
-        let git_manager = GitManager::init(temp_dir.path()).unwrap();
+        // Initialize a repo for testing
+        let repo = scm::init(temp_dir.path()).unwrap();
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "test").unwrap();
-        git_manager.stage_all().unwrap();
-        git_manager.commit("Initial commit").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Initial commit").unwrap();
 
         // Try to undo
         let result = undo_push(temp_dir.path(), Some(history_path));
@@ -382,7 +380,7 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("No git commit hash found"));
+            .contains("No commit hash found"));
     }
 
     #[test]
@@ -635,24 +633,22 @@ mod tests {
 
     #[test]
     fn test_undo_push_preserves_other_operations() {
-        let (temp_dir, git_manager) = setup_test_git_repo();
+        let (temp_dir, repo) = setup_test_repo();
         let history_path = temp_dir.path().join("history.json");
         let snapshots_dir = temp_dir.path().join("snapshots");
 
         // Get the initial commit hash
-        let repo = git2::Repository::open(temp_dir.path()).unwrap();
-        let initial_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        let initial_hash = initial_commit.id().to_string();
+        let initial_hash = repo.current_commit_hash().unwrap();
 
         // Create and commit a new file
         let new_file = temp_dir.path().join("new.txt");
         fs::write(&new_file, "new content").unwrap();
-        git_manager.stage_all().unwrap();
-        git_manager.commit("Second commit").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Second commit").unwrap();
 
         // Create a snapshot with the initial commit hash
         let mut snapshot =
-            Snapshot::create(OperationType::Push, vec![&new_file], Some(&git_manager)).unwrap();
+            Snapshot::create(OperationType::Push, vec![&new_file], Some(&initial_hash)).unwrap();
         snapshot.git_commit_hash = Some(initial_hash.clone());
         let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
 
@@ -797,25 +793,23 @@ mod tests {
 
     #[test]
     fn test_undo_push_transaction_safety() {
-        // This test verifies that history is updated FIRST, then git reset is performed.
-        let (temp_dir, git_manager) = setup_test_git_repo();
+        // This test verifies that history is updated FIRST, then reset is performed.
+        let (temp_dir, repo) = setup_test_repo();
         let history_path = temp_dir.path().join("history.json");
         let snapshots_dir = temp_dir.path().join("snapshots");
 
         // Get the initial commit hash
-        let repo = git2::Repository::open(temp_dir.path()).unwrap();
-        let initial_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        let initial_hash = initial_commit.id().to_string();
+        let initial_hash = repo.current_commit_hash().unwrap();
 
         // Create and commit a new file (simulating a push)
         let new_file = temp_dir.path().join("new.txt");
         fs::write(&new_file, "new content").unwrap();
-        git_manager.stage_all().unwrap();
-        git_manager.commit("Second commit").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Second commit").unwrap();
 
         // Create a snapshot with the initial commit hash
         let mut snapshot =
-            Snapshot::create(OperationType::Push, vec![&new_file], Some(&git_manager)).unwrap();
+            Snapshot::create(OperationType::Push, vec![&new_file], Some(&initial_hash)).unwrap();
         snapshot.git_commit_hash = Some(initial_hash.clone());
         let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
 
@@ -861,9 +855,9 @@ mod tests {
 
         // If successful, verify we're back at the initial commit
         if result.is_ok() {
-            let repo = git2::Repository::open(temp_dir.path()).unwrap();
-            let current_commit = repo.head().unwrap().peel_to_commit().unwrap();
-            assert_eq!(current_commit.id().to_string(), initial_hash);
+            let repo_check = scm::open(temp_dir.path()).unwrap();
+            let current_hash = repo_check.current_commit_hash().unwrap();
+            assert_eq!(current_hash, initial_hash);
             assert!(
                 !snapshot_path.exists(),
                 "Snapshot should be cleaned up on success"
