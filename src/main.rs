@@ -38,11 +38,15 @@ enum Commands {
     Init {
         /// Path to the git repository for storing history
         #[arg(short, long)]
-        repo: PathBuf,
+        repo: Option<PathBuf>,
 
         /// Remote git URL (optional, for pushing to remote)
-        #[arg(short, long)]
+        #[arg(short = 'R', long)]
         remote: Option<String>,
+
+        /// Path to a TOML configuration file for non-interactive setup
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
 
     /// Push local Claude Code history to the sync repository
@@ -356,16 +360,41 @@ fn main() -> Result<()> {
         }
     };
 
-    // Run onboarding if needed
-    if needs_onboarding {
+    // Check if this is an Init command (skip auto-onboarding for Init)
+    let is_init_command = matches!(command, Commands::Init { .. });
+
+    // Run onboarding if needed (but not for Init command - it handles its own setup)
+    if needs_onboarding && !is_init_command {
         log::info!("Running onboarding flow - first time setup detected");
-        run_onboarding_flow()?;
+
+        // Try non-interactive init first (from config file)
+        let initialized = try_init_from_config().unwrap_or(false);
+
+        if !initialized {
+            // Fall back to interactive onboarding
+            run_onboarding_flow()?;
+        }
+
         log::info!("Onboarding completed successfully");
     }
 
     match command {
-        Commands::Init { repo, remote } => {
-            sync::init_sync_repo(&repo, remote.as_deref())?;
+        Commands::Init { repo, remote, config } => {
+            // If config file is provided, use non-interactive init
+            if config.is_some() {
+                run_init_from_config(config)?;
+            } else if let Some(repo_path) = repo {
+                // Use CLI args for init
+                sync::init_sync_repo(&repo_path, remote.as_deref())?;
+            } else {
+                // No args provided, try config file or error
+                if !try_init_from_config()? {
+                    return Err(anyhow::anyhow!(
+                        "No config file found. Use --repo to specify a repository path, \
+                         or create a config file at ~/.claude-code-sync-init.toml"
+                    ));
+                }
+            }
         }
         Commands::Push {
             message,
