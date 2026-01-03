@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::path::Path;
 
 use crate::filter::FilterConfig;
-use crate::git::GitManager;
+use crate::scm;
 
 use super::discovery::{claude_projects_dir, discover_sessions};
 use super::state::SyncState;
@@ -11,7 +11,7 @@ use super::state::SyncState;
 /// Show sync status
 pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     let state = SyncState::load()?;
-    let git_manager = GitManager::open(&state.sync_repo_path)?;
+    let repo = scm::open(&state.sync_repo_path)?;
     let filter = FilterConfig::load()?;
     let claude_dir = claude_projects_dir()?;
 
@@ -21,6 +21,10 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     // Repository info
     println!("{}", "Repository:".bold());
     println!("  Path: {}", state.sync_repo_path.display());
+    let backend = scm::detect_backend(&state.sync_repo_path)
+        .map(|b| format!("{:?}", b))
+        .unwrap_or_else(|| "Unknown".to_string());
+    println!("  Backend: {}", backend);
     println!(
         "  Remote: {}",
         if state.has_remote {
@@ -30,11 +34,11 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
         }
     );
 
-    if let Ok(branch) = git_manager.current_branch() {
+    if let Ok(branch) = repo.current_branch() {
         println!("  Branch: {}", branch.cyan());
     }
 
-    if let Ok(has_changes) = git_manager.has_changes() {
+    if let Ok(has_changes) = repo.has_changes() {
         println!(
             "  Uncommitted changes: {}",
             if has_changes {
@@ -51,7 +55,7 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     let local_sessions = discover_sessions(&claude_dir, &filter)?;
     println!("  Local: {}", local_sessions.len().to_string().cyan());
 
-    let remote_projects_dir = state.sync_repo_path.join("projects");
+    let remote_projects_dir = state.sync_repo_path.join(&filter.sync_subdirectory);
     if remote_projects_dir.exists() {
         let remote_sessions = discover_sessions(&remote_projects_dir, &filter)?;
         println!("  Sync repo: {}", remote_sessions.len().to_string().cyan());

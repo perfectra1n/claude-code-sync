@@ -26,6 +26,13 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
+      - name: Install Mercurial (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mercurial
+          hg --version
+
       - name: Cache cargo registry
         uses: actions/cache@v5
         with:

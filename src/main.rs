@@ -1,7 +1,6 @@
 mod config;
 mod conflict;
 mod filter;
-mod git;
 mod handlers;
 mod history;
 mod interactive_conflict;
@@ -10,6 +9,7 @@ mod merge;
 mod onboarding;
 mod parser;
 mod report;
+mod scm;
 mod sync;
 mod undo;
 
@@ -38,11 +38,15 @@ enum Commands {
     Init {
         /// Path to the git repository for storing history
         #[arg(short, long)]
-        repo: PathBuf,
+        repo: Option<PathBuf>,
 
         /// Remote git URL (optional, for pushing to remote)
-        #[arg(short, long)]
+        #[arg(short = 'R', long)]
         remote: Option<String>,
+
+        /// Path to a TOML configuration file for non-interactive setup
+        #[arg(short, long)]
+        config: Option<PathBuf>,
     },
 
     /// Push local Claude Code history to the sync repository
@@ -154,6 +158,22 @@ enum Commands {
         /// Exclude file attachments (images, etc.) from sync
         #[arg(long)]
         exclude_attachments: Option<bool>,
+
+        /// Enable Git LFS for large files
+        #[arg(long)]
+        enable_lfs: Option<bool>,
+
+        /// File patterns to track with LFS (comma-separated, e.g., "*.jsonl,*.png")
+        #[arg(long)]
+        lfs_patterns: Option<String>,
+
+        /// SCM backend: git or mercurial (default: git)
+        #[arg(long)]
+        scm_backend: Option<String>,
+
+        /// Subdirectory within sync repo for storing projects (default: "projects")
+        #[arg(long)]
+        sync_subdirectory: Option<String>,
 
         /// Show current configuration
         #[arg(long)]
@@ -340,16 +360,41 @@ fn main() -> Result<()> {
         }
     };
 
-    // Run onboarding if needed
-    if needs_onboarding {
+    // Check if this is an Init command (skip auto-onboarding for Init)
+    let is_init_command = matches!(command, Commands::Init { .. });
+
+    // Run onboarding if needed (but not for Init command - it handles its own setup)
+    if needs_onboarding && !is_init_command {
         log::info!("Running onboarding flow - first time setup detected");
-        run_onboarding_flow()?;
+
+        // Try non-interactive init first (from config file)
+        let initialized = try_init_from_config().unwrap_or(false);
+
+        if !initialized {
+            // Fall back to interactive onboarding
+            run_onboarding_flow()?;
+        }
+
         log::info!("Onboarding completed successfully");
     }
 
     match command {
-        Commands::Init { repo, remote } => {
-            sync::init_sync_repo(&repo, remote.as_deref())?;
+        Commands::Init { repo, remote, config } => {
+            // If config file is provided, use non-interactive init
+            if config.is_some() {
+                run_init_from_config(config)?;
+            } else if let Some(repo_path) = repo {
+                // Use CLI args for init
+                sync::init_sync_repo(&repo_path, remote.as_deref())?;
+            } else {
+                // No args provided, try config file or error
+                if !try_init_from_config()? {
+                    return Err(anyhow::anyhow!(
+                        "No config file found. Use --repo to specify a repository path, \
+                         or create a config file at ~/.claude-code-sync-init.toml"
+                    ));
+                }
+            }
         }
         Commands::Push {
             message,
@@ -432,6 +477,10 @@ fn main() -> Result<()> {
             include_projects,
             exclude_projects,
             exclude_attachments,
+            enable_lfs,
+            lfs_patterns,
+            scm_backend,
+            sync_subdirectory,
             show,
             interactive,
             wizard,
@@ -449,6 +498,10 @@ fn main() -> Result<()> {
                     include_projects,
                     exclude_projects,
                     exclude_attachments,
+                    enable_lfs,
+                    lfs_patterns,
+                    scm_backend,
+                    sync_subdirectory,
                 )?;
             }
         }
