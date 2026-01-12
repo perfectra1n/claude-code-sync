@@ -541,8 +541,23 @@ fn main() -> Result<()> {
             interactive,
             wizard,
         } => {
-            // Priority: interactive > wizard > show > individual settings
-            if interactive {
+            // Check if ANY flag was provided
+            let has_any_flag = exclude_older_than.is_some()
+                || include_projects.is_some()
+                || exclude_projects.is_some()
+                || exclude_attachments.is_some()
+                || enable_lfs.is_some()
+                || lfs_patterns.is_some()
+                || scm_backend.is_some()
+                || sync_subdirectory.is_some()
+                || show
+                || interactive
+                || wizard;
+
+            if !has_any_flag {
+                // No args provided - show repo selector menu
+                handle_repo_selector()?;
+            } else if interactive {
                 handle_config_interactive()?;
             } else if wizard {
                 handle_config_wizard()?;

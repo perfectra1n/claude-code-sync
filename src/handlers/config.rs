@@ -5,9 +5,10 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use inquire::{Confirm, MultiSelect, Text};
+use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::filter::FilterConfig;
+use crate::sync::MultiRepoState;
 
 /// Handle interactive configuration menu
 ///
@@ -385,4 +386,122 @@ fn display_config_summary(config: &FilterConfig) {
             "No (all files)".yellow().to_string()
         }
     );
+}
+
+/// Handle the repository selector menu
+///
+/// Shows when `claude-code-sync config` is run with no arguments.
+/// Displays all configured repositories and allows switching between them.
+pub fn handle_repo_selector() -> Result<()> {
+    println!("{}", "Repository Configuration".cyan().bold());
+    println!("{}", "=".repeat(60).cyan());
+    println!();
+
+    let mut state = MultiRepoState::load()?;
+
+    if state.repos.is_empty() {
+        println!("{}", "No repositories configured.".yellow());
+        println!("Run 'claude-code-sync init' to set up your first repository.");
+        return Ok(());
+    }
+
+    // Build sorted list of repos (active first, then alphabetical)
+    let mut repo_entries: Vec<_> = state.repos.values().collect();
+    repo_entries.sort_by(|a, b| {
+        // Active repo first
+        if a.name == state.active_repo {
+            std::cmp::Ordering::Less
+        } else if b.name == state.active_repo {
+            std::cmp::Ordering::Greater
+        } else {
+            a.name.cmp(&b.name)
+        }
+    });
+
+    // Build display options
+    let mut options: Vec<String> = repo_entries
+        .iter()
+        .map(|repo| {
+            let active_marker = if repo.name == state.active_repo {
+                format!(" {}", "[ACTIVE]".green().bold())
+            } else {
+                String::new()
+            };
+
+            let path_str = repo.sync_repo_path.display().to_string();
+            let remote_info = repo
+                .remote_url
+                .as_ref()
+                .map(|u| format!(" ({})", u.dimmed()))
+                .unwrap_or_default();
+
+            format!("{}{} - {}{}", repo.name, active_marker, path_str, remote_info)
+        })
+        .collect();
+
+    // Add separator and management options
+    options.push(format!("{}", "─── Actions ───".dimmed()));
+    options.push("Configure filters (current repo)".to_string());
+    options.push("Exit".to_string());
+
+    let selection = Select::new("Select a repository to make active:", options.clone())
+        .with_help_message("Use arrow keys to navigate, Enter to select")
+        .prompt()
+        .context("Failed to get user selection")?;
+
+    // Handle selection
+    if selection.contains("─── Actions ───") || selection == "Exit" {
+        return Ok(());
+    }
+
+    if selection == "Configure filters (current repo)" {
+        return handle_config_interactive();
+    }
+
+    // Extract repo name from selection (first word before space or marker)
+    let repo_name = selection
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Invalid selection"))?;
+
+    // Check if this repo is already active
+    if repo_name == state.active_repo {
+        println!();
+        println!(
+            "{} '{}' is already the active repository.",
+            "ℹ".blue(),
+            repo_name.cyan()
+        );
+        return Ok(());
+    }
+
+    // Switch to selected repo
+    if state.repos.contains_key(repo_name) {
+        state.active_repo = repo_name.to_string();
+        state.save()?;
+
+        println!();
+        println!(
+            "{} Switched to repository '{}'",
+            "✓".green().bold(),
+            repo_name.cyan()
+        );
+
+        // Show repo details
+        if let Some(repo) = state.repos.get(repo_name) {
+            println!("  Path: {}", repo.sync_repo_path.display());
+            if let Some(ref url) = repo.remote_url {
+                println!("  Remote: {}", url);
+            }
+            if repo.has_remote {
+                println!("  Has remote: {}", "Yes".green());
+            } else {
+                println!("  Has remote: {}", "No (local only)".yellow());
+            }
+        }
+    } else {
+        return Err(anyhow::anyhow!("Repository '{}' not found", repo_name));
+    }
+
+    Ok(())
 }
