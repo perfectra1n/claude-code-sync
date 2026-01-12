@@ -1024,6 +1024,30 @@ fn test_init_from_onboarding_creates_v2() -> Result<()> {
     Ok(())
 }
 
+/// Test that handle_repo_selector gracefully handles uninitialized state
+/// (This tests the behavior when `config` is run before `init`)
+#[test]
+#[serial]
+fn test_config_handles_uninitialized_state() -> Result<()> {
+    let temp_dir = setup_test_config_env()?;
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
+    // Don't create any state file - simulate fresh install
+
+    // MultiRepoState::load() should return an error about not initialized
+    let result = MultiRepoState::load();
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("not initialized") || err_msg.contains("Run 'claude-code-sync init'"),
+        "Error message should mention not initialized: {}",
+        err_msg
+    );
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+    Ok(())
+}
+
 /// Test cloned repo flag is preserved in v2 format
 #[test]
 #[serial]

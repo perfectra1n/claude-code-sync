@@ -7,8 +7,11 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use inquire::{Confirm, MultiSelect, Select, Text};
 
+use crate::config::ConfigManager;
 use crate::filter::FilterConfig;
-use crate::sync::MultiRepoState;
+use crate::scm;
+use crate::sync::{MultiRepoState, RepoConfig};
+use std::collections::HashMap;
 
 /// Handle interactive configuration menu
 ///
@@ -388,6 +391,71 @@ fn display_config_summary(config: &FilterConfig) {
     );
 }
 
+/// Try to recover an existing repo if state.json is missing but repo exists
+///
+/// This handles the case where a user has a valid repo in the default location
+/// but the state.json file is missing (e.g., from an older version or deletion).
+fn try_recover_existing_repo() -> Result<Option<MultiRepoState>> {
+    // Check if default repo directory exists and is a valid git repo
+    let default_repo = match ConfigManager::default_repo_dir() {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+
+    if !default_repo.exists() || !scm::is_repo(&default_repo) {
+        return Ok(None);
+    }
+
+    // Try to detect if it has a remote
+    let (has_remote, remote_url) = match scm::open(&default_repo) {
+        Ok(repo) => {
+            let has_remote = repo.has_remote("origin");
+            let remote_url = if has_remote {
+                repo.get_remote_url("origin").ok()
+            } else {
+                None
+            };
+            (has_remote, remote_url)
+        }
+        Err(_) => (false, None),
+    };
+
+    println!(
+        "{} Found existing repo at: {}",
+        "!".yellow(),
+        default_repo.display()
+    );
+    if let Some(ref url) = remote_url {
+        println!("  Remote: {}", url.cyan());
+    }
+    println!("  Recovering configuration...");
+    println!();
+
+    // Create the recovered state
+    let repo_config = RepoConfig {
+        name: "default".to_string(),
+        sync_repo_path: default_repo,
+        has_remote,
+        is_cloned_repo: false, // We can't know this for sure
+        remote_url,
+        description: Some("Recovered from existing repository".to_string()),
+    };
+
+    let mut repos = HashMap::new();
+    repos.insert("default".to_string(), repo_config);
+
+    let state = MultiRepoState {
+        version: 2,
+        active_repo: "default".to_string(),
+        repos,
+    };
+
+    // Save the recovered state
+    state.save()?;
+
+    Ok(Some(state))
+}
+
 /// Handle the repository selector menu
 ///
 /// Shows when `claude-code-sync config` is run with no arguments.
@@ -397,11 +465,33 @@ pub fn handle_repo_selector() -> Result<()> {
     println!("{}", "=".repeat(60).cyan());
     println!();
 
-    let mut state = MultiRepoState::load()?;
+    // Try to load state, but handle "not initialized" gracefully
+    let mut state = match MultiRepoState::load() {
+        Ok(s) => s,
+        Err(e) => {
+            let err_msg = e.to_string();
+            if err_msg.contains("not initialized") || err_msg.contains("Run 'claude-code-sync init'") {
+                // Check if there's an existing repo in the default location that we can recover
+                if let Some(recovered) = try_recover_existing_repo()? {
+                    println!("{}", "Found existing repository - recovered configuration!".green());
+                    println!();
+                    recovered
+                } else {
+                    println!("{}", "No repositories configured.".yellow());
+                    println!();
+                    println!("Run '{}' to set up your first repository.", "claude-code-sync init".cyan());
+                    return Ok(());
+                }
+            } else {
+                return Err(e);
+            }
+        }
+    };
 
     if state.repos.is_empty() {
         println!("{}", "No repositories configured.".yellow());
-        println!("Run 'claude-code-sync init' to set up your first repository.");
+        println!();
+        println!("Run '{}' to set up your first repository.", "claude-code-sync init".cyan());
         return Ok(());
     }
 

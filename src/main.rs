@@ -365,11 +365,12 @@ fn main() -> Result<()> {
         }
     };
 
-    // Check if this is an Init command (skip auto-onboarding for Init)
+    // Check if this is an Init or Config command (skip auto-onboarding for these)
     let is_init_command = matches!(command, Commands::Init { .. });
+    let is_config_command = matches!(command, Commands::Config { .. });
 
-    // Run onboarding if needed (but not for Init command - it handles its own setup)
-    if needs_onboarding && !is_init_command {
+    // Run onboarding if needed (but not for Init or Config commands - they handle their own setup)
+    if needs_onboarding && !is_init_command && !is_config_command {
         log::info!("Running onboarding flow - first time setup detected");
 
         // Try non-interactive init first (from config file)
