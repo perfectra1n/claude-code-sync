@@ -374,3 +374,178 @@ fn test_init_sync_repo_does_not_overwrite_existing_filter_config() -> Result<()>
 
     Ok(())
 }
+
+// ============================================================================
+// Tests for --clone flag and remote-only init
+// ============================================================================
+
+#[test]
+fn test_clone_with_invalid_url_fails() -> Result<()> {
+    let temp_dir = setup_test_config_env()?;
+    let clone_path = temp_dir.path().join("clone-test-repo");
+
+    // Try to clone from an invalid URL
+    let result = scm::clone("not-a-valid-url", &clone_path);
+    assert!(result.is_err(), "Clone should fail with invalid URL");
+
+    Ok(())
+}
+
+#[test]
+fn test_clone_creates_parent_directories() -> Result<()> {
+    let temp_dir = setup_test_config_env()?;
+    let nested_path = temp_dir.path().join("deeply").join("nested").join("path").join("repo");
+
+    // Even though clone will fail (invalid URL), it should create parent directories
+    let result = scm::clone("https://invalid-url-that-wont-work.example.com/repo.git", &nested_path);
+
+    // Clone fails but parent directory should be created
+    assert!(result.is_err());
+    // Parent should exist even though clone failed
+    assert!(nested_path.parent().unwrap().exists());
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_init_from_onboarding_sets_is_cloned_flag() -> Result<()> {
+    let temp_dir = setup_test_config_env()?;
+    let repo_path = temp_dir.path().join("cloned-repo-test");
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
+    // Initialize a repo first (simulating post-clone state)
+    scm::init(&repo_path)?;
+
+    // Test init_from_onboarding with is_cloned = true
+    claude_code_sync::sync::init_from_onboarding(
+        &repo_path,
+        Some("https://github.com/user/repo.git"),
+        true, // is_cloned
+    )?;
+
+    // Verify state was saved with is_cloned_repo = true
+    let state = SyncState::load()?;
+    assert_eq!(state.sync_repo_path, repo_path);
+    assert!(state.has_remote);
+    assert!(state.is_cloned_repo, "is_cloned_repo should be true for cloned repos");
+
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_init_from_onboarding_local_repo_not_cloned() -> Result<()> {
+    let temp_dir = setup_test_config_env()?;
+    let repo_path = temp_dir.path().join("local-repo-test");
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
+    // Initialize a repo first
+    scm::init(&repo_path)?;
+
+    // Test init_from_onboarding with is_cloned = false (local repo)
+    claude_code_sync::sync::init_from_onboarding(
+        &repo_path,
+        None,
+        false, // not cloned
+    )?;
+
+    // Verify state was saved with is_cloned_repo = false
+    let state = SyncState::load()?;
+    assert_eq!(state.sync_repo_path, repo_path);
+    assert!(!state.has_remote);
+    assert!(!state.is_cloned_repo, "is_cloned_repo should be false for local repos");
+
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
+
+    Ok(())
+}
+
+#[test]
+fn test_default_repo_dir_exists() -> Result<()> {
+    // Test that we can get the default repo directory
+    let default_dir = ConfigManager::default_repo_dir()?;
+
+    // Should end with "repo"
+    assert!(default_dir.ends_with("repo"));
+
+    // Should contain claude-code-sync in path
+    assert!(default_dir.to_string_lossy().contains("claude-code-sync"));
+
+    Ok(())
+}
+
+// ============================================================================
+// Tests for InitConfig validation
+// ============================================================================
+
+#[test]
+fn test_init_config_clone_requires_remote_url() -> Result<()> {
+    use claude_code_sync::onboarding::InitConfig;
+    use std::io::Write;
+
+    let temp_dir = setup_test_config_env()?;
+
+    // Create config file with clone=true but no remote_url
+    let config_path = temp_dir.path().join("init.toml");
+    let mut file = std::fs::File::create(&config_path)?;
+    writeln!(
+        file,
+        r#"
+repo_path = "/tmp/test"
+clone = true
+"#
+    )?;
+
+    let result = InitConfig::load(&config_path);
+
+    assert!(
+        result.is_err(),
+        "clone=true without remote_url should fail validation"
+    );
+    let err_msg = result.err().unwrap().to_string();
+    assert!(
+        err_msg.contains("remote_url"),
+        "Error should mention remote_url: {err_msg}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_init_config_clone_with_remote_url_valid() -> Result<()> {
+    use claude_code_sync::onboarding::InitConfig;
+    use std::io::Write;
+
+    let temp_dir = setup_test_config_env()?;
+
+    // Create config file with clone=true and remote_url
+    let config_path = temp_dir.path().join("init.toml");
+    let mut file = std::fs::File::create(&config_path)?;
+    writeln!(
+        file,
+        r#"
+repo_path = "/tmp/test"
+remote_url = "https://github.com/user/repo.git"
+clone = true
+"#
+    )?;
+
+    let result = InitConfig::load(&config_path);
+
+    assert!(
+        result.is_ok(),
+        "clone=true with remote_url should be valid: {:?}",
+        result.err()
+    );
+
+    Ok(())
+}

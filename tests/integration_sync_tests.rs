@@ -830,3 +830,64 @@ fn test_concurrent_push_pull_operations() {
         assert_eq!(op.affected_conversations[0].session_id, expected_session_id);
     }
 }
+
+// ============================================================================
+// Tests for push on new repo with no commits
+// ============================================================================
+
+#[test]
+fn test_push_on_new_repo_without_commits() {
+    // Create a brand new repo with no commits
+    let temp_dir = TempDir::new().unwrap();
+    let repo_path = temp_dir.path();
+
+    // Initialize git repo (no commits yet)
+    let repo = scm::init(repo_path).unwrap();
+
+    // Verify there are no commits yet
+    let commit_result = repo.current_commit_hash();
+    assert!(commit_result.is_err(), "New repo should have no commits");
+
+    // Create a file and stage it
+    fs::write(repo_path.join("test.txt"), "hello").unwrap();
+    repo.stage_all().unwrap();
+
+    // Should be able to commit even on new repo
+    repo.commit("Initial commit").unwrap();
+
+    // Now should have a commit hash
+    let hash = repo.current_commit_hash().unwrap();
+    assert!(!hash.is_empty());
+}
+
+#[test]
+fn test_operation_record_with_no_commit_hash() {
+    // Test that OperationRecord can handle None commit_hash
+    use claude_code_sync::history::OperationRecord;
+
+    let conv = ConversationSummary::new(
+        "test-session".to_string(),
+        "path/test.jsonl".to_string(),
+        Some("2025-01-01T00:00:00Z".to_string()),
+        10,
+        SyncOperation::Added,
+    )
+    .unwrap();
+
+    let mut record = OperationRecord::new(
+        OperationType::Push,
+        Some("main".to_string()),
+        vec![conv],
+    );
+
+    // commit_hash should be None by default
+    assert!(record.commit_hash.is_none());
+
+    // Should be able to set it to None explicitly
+    record.commit_hash = None;
+    assert!(record.commit_hash.is_none());
+
+    // Should be able to set it to Some
+    record.commit_hash = Some("abc123".to_string());
+    assert_eq!(record.commit_hash, Some("abc123".to_string()));
+}
