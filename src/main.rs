@@ -39,10 +39,10 @@ enum Commands {
     Init {
         /// Local filesystem path where the sync repository will be stored
         #[arg(short, long)]
-        repo: Option<PathBuf>,
+        local: Option<PathBuf>,
 
         /// Remote git URL for cloning or pushing (e.g., git@github.com:user/repo.git)
-        #[arg(short = 'R', long)]
+        #[arg(short, long)]
         remote: Option<String>,
 
         /// Clone from the remote URL instead of initializing a new local repo
@@ -384,7 +384,7 @@ fn main() -> Result<()> {
     }
 
     match command {
-        Commands::Init { repo, remote, clone, config } => {
+        Commands::Init { local, remote, clone, config } => {
             // If config file is provided, use non-interactive init
             if config.is_some() {
                 run_init_from_config(config)?;
@@ -395,7 +395,7 @@ fn main() -> Result<()> {
                 })?;
 
                 // Determine clone destination
-                let clone_path = if let Some(ref path) = repo {
+                let clone_path = if let Some(ref path) = local {
                     path.clone()
                 } else {
                     config::ConfigManager::default_repo_dir()?
@@ -419,9 +419,9 @@ fn main() -> Result<()> {
                     "{}",
                     "Clone and initialization complete!".green().bold()
                 );
-            } else if let Some(repo_path) = repo {
-                // Use CLI args for init (local repo path)
-                sync::init_sync_repo(&repo_path, remote.as_deref())?;
+            } else if let Some(local_path) = local {
+                // Use CLI args for init (local path)
+                sync::init_sync_repo(&local_path, remote.as_deref())?;
             } else if let Some(remote_url) = remote {
                 // Just --remote provided: clone to default location
                 let default_path = config::ConfigManager::default_repo_dir()?;
