@@ -312,6 +312,8 @@ pub fn run_onboarding() -> Result<OnboardingConfig> {
                 "Clone location:",
                 vec![CloneLocation::Default, CloneLocation::Custom],
             )
+            .without_filtering()
+            .with_help_message("Use arrow keys to select, Enter to confirm")
             .prompt()
             .context("Failed to get clone location")?;
 

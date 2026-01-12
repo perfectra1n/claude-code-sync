@@ -15,6 +15,7 @@ mod undo;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use std::path::PathBuf;
 
 // Import all handler functions
@@ -36,13 +37,17 @@ struct Cli {
 enum Commands {
     /// Initialize a new sync repository
     Init {
-        /// Path to the git repository for storing history
+        /// Local filesystem path where the sync repository will be stored
         #[arg(short, long)]
         repo: Option<PathBuf>,
 
-        /// Remote git URL (optional, for pushing to remote)
+        /// Remote git URL for cloning or pushing (e.g., git@github.com:user/repo.git)
         #[arg(short = 'R', long)]
         remote: Option<String>,
+
+        /// Clone from the remote URL instead of initializing a new local repo
+        #[arg(long)]
+        clone: bool,
 
         /// Path to a TOML configuration file for non-interactive setup
         #[arg(short, long)]
@@ -379,20 +384,71 @@ fn main() -> Result<()> {
     }
 
     match command {
-        Commands::Init { repo, remote, config } => {
+        Commands::Init { repo, remote, clone, config } => {
             // If config file is provided, use non-interactive init
             if config.is_some() {
                 run_init_from_config(config)?;
+            } else if clone {
+                // Clone mode: requires remote URL
+                let remote_url = remote.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("--clone requires --remote <URL> to be specified")
+                })?;
+
+                // Determine clone destination
+                let clone_path = if let Some(ref path) = repo {
+                    path.clone()
+                } else {
+                    config::ConfigManager::default_repo_dir()?
+                };
+
+                println!(
+                    "{}",
+                    format!("Cloning from {} to {}...", remote_url, clone_path.display()).cyan()
+                );
+
+                scm::clone(remote_url, &clone_path)?;
+                sync::init_from_onboarding(&clone_path, Some(remote_url), true)?;
+
+                // Save default filter configuration if it doesn't exist
+                let filter_config_path = config::ConfigManager::filter_config_path()?;
+                if !filter_config_path.exists() {
+                    filter::FilterConfig::default().save()?;
+                }
+
+                println!(
+                    "{}",
+                    "Clone and initialization complete!".green().bold()
+                );
             } else if let Some(repo_path) = repo {
-                // Use CLI args for init
+                // Use CLI args for init (local repo path)
                 sync::init_sync_repo(&repo_path, remote.as_deref())?;
+            } else if let Some(remote_url) = remote {
+                // Just --remote provided: clone to default location
+                let default_path = config::ConfigManager::default_repo_dir()?;
+
+                println!(
+                    "{}",
+                    format!("Cloning from {} to {}...", remote_url, default_path.display()).cyan()
+                );
+
+                scm::clone(&remote_url, &default_path)?;
+                sync::init_from_onboarding(&default_path, Some(&remote_url), true)?;
+
+                // Save default filter configuration if it doesn't exist
+                let filter_config_path = config::ConfigManager::filter_config_path()?;
+                if !filter_config_path.exists() {
+                    filter::FilterConfig::default().save()?;
+                }
+
+                println!(
+                    "{}",
+                    "Clone and initialization complete!".green().bold()
+                );
             } else {
-                // No args provided, try config file or error
+                // No args provided, try config file first, then fall back to interactive onboarding
                 if !try_init_from_config()? {
-                    return Err(anyhow::anyhow!(
-                        "No config file found. Use --repo to specify a repository path, \
-                         or create a config file at ~/.claude-code-sync-init.toml"
-                    ));
+                    // No config file found, run interactive onboarding
+                    run_onboarding_flow()?;
                 }
             }
         }

@@ -188,15 +188,21 @@ pub fn push_history(
         // This allows us to undo the push later by resetting to this commit
         // Note: We don't create file snapshots for push - git already has history!
         // Undo push simply does `git reset` to this commit.
-        let commit_before_push = repo
-            .current_commit_hash()
-            .context("Failed to get current commit hash")?;
+        // On a brand new repo with no commits, this will be None (no undo available for first push)
+        let commit_before_push = repo.current_commit_hash().ok();
 
-        if verbosity != VerbosityLevel::Quiet {
+        if let Some(ref hash) = commit_before_push {
+            if verbosity != VerbosityLevel::Quiet {
+                println!(
+                    "  {} Recorded commit {} for undo",
+                    "✓".green(),
+                    &hash[..8]
+                );
+            }
+        } else if verbosity != VerbosityLevel::Quiet {
             println!(
-                "  {} Recorded commit {} for undo",
-                "✓".green(),
-                &commit_before_push[..8]
+                "  {} First push - no previous commit to undo to",
+                "ℹ".cyan()
             );
         }
 
@@ -231,7 +237,8 @@ pub fn push_history(
         );
 
         // Store commit hash for undo (no file snapshot needed - git has history)
-        operation_record.commit_hash = Some(commit_before_push);
+        // On first push (no prior commits), this will be None
+        operation_record.commit_hash = commit_before_push;
 
         // Load operation history and add this operation
         let mut history = match OperationHistory::load() {

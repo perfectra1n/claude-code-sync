@@ -262,3 +262,115 @@ fn test_multiple_config_operations() -> Result<()> {
 
     Ok(())
 }
+
+// ============================================================================
+// Tests for Bug Fixes: --repo flag creating FilterConfig
+// ============================================================================
+
+#[test]
+#[serial]
+fn test_init_sync_repo_creates_filter_config() -> Result<()> {
+    let temp_dir = setup_test_config_env()?;
+    let repo_path = temp_dir.path().join("cli-init-test-repo");
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
+    // Initialize using init_sync_repo (simulates --repo flag)
+    claude_code_sync::sync::init_sync_repo(&repo_path, None)?;
+
+    // Verify state was saved
+    let state = SyncState::load()?;
+    assert_eq!(state.sync_repo_path, repo_path);
+    assert!(!state.has_remote);
+    assert!(!state.is_cloned_repo);
+
+    // BUG FIX: Verify filter config was also saved
+    let filter_config_path = ConfigManager::filter_config_path()?;
+    assert!(
+        filter_config_path.exists(),
+        "Filter config should be created by init_sync_repo"
+    );
+
+    // Verify we can load the filter config
+    let filter_config = FilterConfig::load()?;
+    // Default values should be set
+    assert!(!filter_config.exclude_attachments);
+
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_init_sync_repo_with_remote_creates_filter_config() -> Result<()> {
+    let temp_dir = setup_test_config_env()?;
+    let repo_path = temp_dir.path().join("cli-remote-test-repo");
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
+    // Initialize with remote URL using init_sync_repo (simulates --repo --remote flags)
+    claude_code_sync::sync::init_sync_repo(
+        &repo_path,
+        Some("https://github.com/user/repo.git"),
+    )?;
+
+    // Verify state was saved with remote
+    let state = SyncState::load()?;
+    assert_eq!(state.sync_repo_path, repo_path);
+    assert!(state.has_remote);
+    assert!(!state.is_cloned_repo); // Not cloned, just added as origin
+
+    // Verify filter config was also saved
+    let filter_config_path = ConfigManager::filter_config_path()?;
+    assert!(
+        filter_config_path.exists(),
+        "Filter config should be created by init_sync_repo with remote"
+    );
+
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_init_sync_repo_does_not_overwrite_existing_filter_config() -> Result<()> {
+    let temp_dir = setup_test_config_env()?;
+    let repo_path = temp_dir.path().join("no-overwrite-test-repo");
+
+    // Set XDG_CONFIG_HOME to isolate test config
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
+    // Create an existing filter config with custom values
+    let custom_config = FilterConfig {
+        exclude_attachments: true,
+        exclude_older_than_days: Some(42),
+        ..Default::default()
+    };
+    custom_config.save()?;
+
+    // Initialize using init_sync_repo
+    claude_code_sync::sync::init_sync_repo(&repo_path, None)?;
+
+    // Verify the existing filter config was NOT overwritten
+    let loaded_config = FilterConfig::load()?;
+    assert!(
+        loaded_config.exclude_attachments,
+        "Existing filter config should not be overwritten"
+    );
+    assert_eq!(
+        loaded_config.exclude_older_than_days,
+        Some(42),
+        "Custom exclude_older_than_days should be preserved"
+    );
+
+    // Clean up env var
+    std::env::remove_var("XDG_CONFIG_HOME");
+
+    Ok(())
+}

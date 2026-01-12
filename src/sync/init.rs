@@ -45,6 +45,9 @@ pub fn init_from_onboarding(
 
 /// Initialize a new sync repository
 pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> {
+    // Ensure config directory exists
+    crate::config::ConfigManager::ensure_config_dir()?;
+
     println!(
         "{}",
         "Initializing Claude Code sync repository...".cyan().bold()
@@ -87,6 +90,12 @@ pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> 
         is_cloned_repo: false,
     };
     state.save()?;
+
+    // Save default filter configuration if it doesn't exist
+    let filter_config_path = crate::config::ConfigManager::filter_config_path()?;
+    if !filter_config_path.exists() {
+        crate::filter::FilterConfig::default().save()?;
+    }
 
     println!(
         "{}",
