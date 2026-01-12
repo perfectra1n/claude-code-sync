@@ -3,6 +3,7 @@
 //! Provides a unified interface for Git using CLI commands.
 
 mod git;
+pub mod lfs;
 
 use anyhow::{anyhow, Result};
 use std::path::Path;
