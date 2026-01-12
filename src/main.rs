@@ -163,6 +163,10 @@ enum Commands {
         #[arg(long)]
         lfs_patterns: Option<String>,
 
+        /// SCM backend: git or mercurial (default: git)
+        #[arg(long)]
+        scm_backend: Option<String>,
+
         /// Show current configuration
         #[arg(long)]
         show: bool,
@@ -442,6 +446,7 @@ fn main() -> Result<()> {
             exclude_attachments,
             enable_lfs,
             lfs_patterns,
+            scm_backend,
             show,
             interactive,
             wizard,
@@ -461,6 +466,7 @@ fn main() -> Result<()> {
                     exclude_attachments,
                     enable_lfs,
                     lfs_patterns,
+                    scm_backend,
                 )?;
             }
         }

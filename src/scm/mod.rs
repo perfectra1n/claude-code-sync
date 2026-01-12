@@ -1,15 +1,17 @@
 //! SCM (Source Control Management) abstraction layer.
 //!
-//! Provides a unified interface for Git using CLI commands.
-//! Designed to support multiple backends (Git, Mercurial) via the `Backend` enum.
+//! Provides a unified interface for Git and Mercurial using CLI commands.
+//! Backend selection is controlled via the `Backend` enum.
 
 mod git;
+mod hg;
 pub mod lfs;
 
 use anyhow::{anyhow, Result};
 use std::path::Path;
 
 pub use git::GitScm;
+pub use hg::HgScm;
 
 /// SCM backend types.
 ///
@@ -18,7 +20,8 @@ pub use git::GitScm;
 pub enum Backend {
     /// Git version control
     Git,
-    // Mercurial,  // Future: uncomment when hg.rs is added
+    /// Mercurial version control
+    Mercurial,
 }
 
 impl Backend {
@@ -26,6 +29,7 @@ impl Backend {
     pub fn is_available(&self) -> bool {
         let binary = match self {
             Backend::Git => "git",
+            Backend::Mercurial => "hg",
         };
         std::process::Command::new(binary)
             .arg("--version")
@@ -38,6 +42,7 @@ impl Backend {
     pub fn marker(&self) -> &'static str {
         match self {
             Backend::Git => ".git",
+            Backend::Mercurial => ".hg",
         }
     }
 }
@@ -87,18 +92,22 @@ pub trait Scm: Send + Sync {
     fn reset_soft(&self, commit: &str) -> Result<()>;
 }
 
-/// Check if a directory is a Git repository.
+/// Check if a directory is a repository (Git or Mercurial).
 pub fn is_repo(path: &Path) -> bool {
-    path.join(".git").exists()
+    path.join(".git").exists() || path.join(".hg").exists()
 }
 
-/// Open an existing Git repository.
+/// Open an existing repository (Git or Mercurial).
+///
+/// Automatically detects the backend based on the marker directory.
 pub fn open(path: &Path) -> Result<Box<dyn Scm>> {
-    if is_repo(path) {
+    if path.join(".git").exists() {
         Ok(Box::new(GitScm::open(path)?))
+    } else if path.join(".hg").exists() {
+        Ok(Box::new(HgScm::open(path)?))
     } else {
         Err(anyhow!(
-            "No Git repository found at '{}'. Expected .git directory.",
+            "No repository found at '{}'. Expected .git or .hg directory.",
             path.display()
         ))
     }
@@ -121,6 +130,7 @@ pub fn clone(url: &str, path: &Path) -> Result<Box<dyn Scm>> {
 pub fn init_with_backend(path: &Path, backend: Backend) -> Result<Box<dyn Scm>> {
     match backend {
         Backend::Git => Ok(Box::new(GitScm::init(path)?)),
+        Backend::Mercurial => Ok(Box::new(HgScm::init(path)?)),
     }
 }
 
@@ -130,8 +140,8 @@ pub fn init_with_backend(path: &Path, backend: Backend) -> Result<Box<dyn Scm>> 
 pub fn detect_backend(path: &Path) -> Option<Backend> {
     if path.join(".git").exists() {
         Some(Backend::Git)
-    // } else if path.join(".hg").exists() {
-    //     Some(Backend::Mercurial)
+    } else if path.join(".hg").exists() {
+        Some(Backend::Mercurial)
     } else {
         None
     }
