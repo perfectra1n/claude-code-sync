@@ -26,8 +26,11 @@ cargo doc --open --no-deps --all-features
 | **Smart Merge** | Automatically combines non-conflicting conversation changes |
 | **Bidirectional Sync** | Pull and push changes in one command with `sync` |
 | **Interactive Onboarding** | First-time setup wizard guides you through configuration |
+| **Non-Interactive Init** | Config file support for CI/CD and automation |
 | **Smart Conflict Resolution** | Interactive TUI for resolving conflicts with preview |
 | **Selective Sync** | Filter by project, date, or exclude attachments |
+| **Git LFS Support** | Efficiently store large conversation files with Git LFS |
+| **Mercurial Support** | Use Mercurial (hg) as an alternative to Git |
 | **Undo Operations** | Rollback pull/push with automatic snapshots |
 | **Operation History** | Track and review past sync operations |
 | **Branch Management** | Sync to different branches, manage remotes |
@@ -154,10 +157,37 @@ claude-code-sync init --repo <path> [--remote <url>]
 **Options:**
 - `--repo, -r <PATH>`: Path to the git repository for storing history
 - `--remote <URL>`: Optional remote git URL for pushing/pulling
+- `--config <PATH>`: Load configuration from TOML file (for non-interactive init)
 
 **Example:**
 ```bash
 claude-code-sync init --repo ~/claude-backup --remote git@github.com:user/claude-history.git
+```
+
+#### Non-Interactive Initialization (CI/CD)
+
+For automation and headless environments, use a config file:
+
+```bash
+# Use explicit config file
+claude-code-sync init --config /path/to/init-config.toml
+
+# Or use default config file locations (checked in order):
+# 1. $CLAUDE_CODE_SYNC_INIT_CONFIG environment variable
+# 2. ~/.claude-code-sync-init.toml
+# 3. <config-dir>/init.toml
+claude-code-sync init
+```
+
+**Example config file (`~/.claude-code-sync-init.toml`):**
+```toml
+repo_path = "~/claude-history-sync"
+remote_url = "https://github.com/user/repo.git"
+clone = true
+exclude_attachments = true
+enable_lfs = true
+scm_backend = "git"
+sync_subdirectory = "projects"
 ```
 
 ### `sync`
@@ -248,6 +278,10 @@ claude-code-sync config [OPTIONS] [--show]
 - `--include-projects <PATTERNS>`: Include only specific project paths (comma-separated)
 - `--exclude-projects <PATTERNS>`: Exclude specific project paths (comma-separated)
 - `--exclude-attachments <true|false>`: Exclude file attachments (images, PDFs, etc.)
+- `--enable-lfs <true|false>`: Enable Git LFS for large files
+- `--lfs-patterns <PATTERNS>`: File patterns to track with LFS (comma-separated, default: `*.jsonl`)
+- `--scm-backend <BACKEND>`: SCM backend to use: `git` or `mercurial` (default: `git`)
+- `--sync-subdirectory <DIR>`: Subdirectory within sync repo for projects (default: `projects`)
 - `--show`: Show current configuration
 
 **Examples:**
@@ -263,6 +297,15 @@ claude-code-sync config --exclude-projects "*test*,*temp*"
 
 # Permanently exclude attachments from all syncs
 claude-code-sync config --exclude-attachments true
+
+# Enable Git LFS for large files
+claude-code-sync config --enable-lfs true --lfs-patterns "*.jsonl,*.png"
+
+# Use Mercurial instead of Git
+claude-code-sync config --scm-backend mercurial
+
+# Store projects in a custom subdirectory
+claude-code-sync config --sync-subdirectory "claude-history"
 
 # Show current config
 claude-code-sync config --show
@@ -531,6 +574,21 @@ exclude_patterns = ["*test*", "*temp*"]
 
 # Maximum file size in bytes (10MB default)
 max_file_size_bytes = 10485760
+
+# Exclude file attachments (images, PDFs, etc.)
+exclude_attachments = false
+
+# Enable Git LFS for large files
+enable_lfs = false
+
+# File patterns to track with LFS
+lfs_patterns = ["*.jsonl"]
+
+# SCM backend: "git" or "mercurial"
+scm_backend = "git"
+
+# Subdirectory within sync repo for projects
+sync_subdirectory = "projects"
 ```
 
 ## Sync State
@@ -585,17 +643,20 @@ Add to your crontab:
 ### Module Overview
 
 - **parser.rs**: JSONL conversation file parser
-- **git.rs**: Git operations wrapper (using `git2` crate)
-- **sync.rs**: Core sync engine with push/pull logic and snapshot integration
+- **scm/**: SCM abstraction layer supporting multiple backends
+  - **mod.rs**: `Scm` trait and factory functions
+  - **git.rs**: Git backend via CLI commands
+  - **hg.rs**: Mercurial backend via CLI commands
+  - **lfs.rs**: Git LFS support
+- **sync/**: Core sync engine with push/pull logic and snapshot integration
 - **conflict.rs**: Conflict detection and resolution
-- **interactive_conflict.rs**: Interactive TUI for conflict resolution (NEW!)
+- **interactive_conflict.rs**: Interactive TUI for conflict resolution
 - **filter.rs**: Configuration and filtering system
-- **config.rs**: Configuration management and defaults (NEW!)
 - **report.rs**: Conflict reporting in JSON/Markdown formats
-- **history.rs**: Operation history tracking and management
-- **undo.rs**: Snapshot-based undo functionality for pull/push operations
-- **onboarding.rs**: Interactive first-time setup wizard (NEW!)
-- **logger.rs**: Enhanced logging system with file and console output (NEW!)
+- **history/**: Operation history tracking and management
+- **undo/**: Snapshot-based undo functionality for pull/push operations
+- **onboarding.rs**: Interactive first-time setup wizard with config file support
+- **logger.rs**: Enhanced logging system with file and console output
 - **main.rs**: CLI interface (using `clap`)
 
 ### File Format
@@ -614,7 +675,6 @@ Each line is a separate JSON object representing a conversation event.
 
 - `clap`: CLI argument parsing
 - `serde` + `serde_json`: JSON parsing
-- `git2`: Git operations
 - `toml`: Configuration parsing
 - `anyhow`: Error handling
 - `chrono`: Timestamp handling
@@ -627,6 +687,9 @@ Each line is a separate JSON object representing a conversation event.
 - `log`: Logging facade
 - `env_logger`: Console logging implementation
 - `atty`: Terminal detection for interactive mode
+- `rstest`: Parameterized testing (dev dependency)
+
+**Note:** Git/Mercurial operations are performed via CLI commands, not library bindings. This ensures compatibility with git hooks, LFS, and credential helpers.
 
 ## Security Considerations
 

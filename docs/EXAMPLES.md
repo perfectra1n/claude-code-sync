@@ -445,3 +445,153 @@ cd ~/claude-backup
 git tag -a v1.0-pre-refactor -m "Before major refactoring"
 git push origin v1.0-pre-refactor
 ```
+
+## Git LFS for Large Files
+
+If you have large conversation files, enable Git LFS:
+
+### Enable LFS
+
+```bash
+# Enable LFS with default patterns (*.jsonl)
+claude-code-sync config --enable-lfs true
+
+# Or specify custom patterns
+claude-code-sync config --enable-lfs true --lfs-patterns "*.jsonl,*.png,*.pdf"
+```
+
+### View LFS Status
+
+```bash
+# Check which files are tracked by LFS
+cd ~/claude-backup
+git lfs ls-files
+```
+
+**Note:** Git LFS must be installed on your system. Install with:
+```bash
+# macOS
+brew install git-lfs
+
+# Ubuntu/Debian
+sudo apt-get install git-lfs
+
+# Then initialize
+git lfs install
+```
+
+## Using Mercurial Instead of Git
+
+If you prefer Mercurial (hg) over Git:
+
+### Setup with Mercurial
+
+```bash
+# Configure to use Mercurial backend
+claude-code-sync config --scm-backend mercurial
+
+# Initialize repository
+claude-code-sync init --repo ~/claude-backup-hg
+
+# Push your history
+claude-code-sync push
+```
+
+### Mercurial with Remote
+
+```bash
+# Initialize with Mercurial and remote
+claude-code-sync init \
+  --repo ~/claude-backup-hg \
+  --remote https://bitbucket.org/user/claude-history
+
+# Sync
+claude-code-sync sync
+```
+
+**Note:** LFS is only supported with Git. If you need LFS, use the Git backend.
+
+## Non-Interactive Initialization (CI/CD)
+
+For automated setups, use a config file:
+
+### Create Config File
+
+Create `~/.claude-code-sync-init.toml`:
+
+```toml
+repo_path = "~/claude-history-sync"
+remote_url = "git@github.com:user/claude-history.git"
+clone = true
+exclude_attachments = true
+enable_lfs = true
+scm_backend = "git"
+sync_subdirectory = "projects"
+```
+
+### Run Non-Interactive Init
+
+```bash
+# Uses default config file locations
+claude-code-sync init
+
+# Or specify explicit path
+claude-code-sync init --config /path/to/config.toml
+
+# Or use environment variable
+CLAUDE_CODE_SYNC_INIT_CONFIG=/path/to/config.toml claude-code-sync init
+```
+
+### CI/CD Pipeline Example (GitHub Actions)
+
+```yaml
+name: Sync Claude History
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.5.4
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Install claude-code-sync
+        run: cargo install --git https://github.com/user/claude-code-sync
+
+      - name: Create init config
+        run: |
+          cat > /tmp/init-config.toml << EOF
+          repo_path = "/tmp/claude-sync"
+          remote_url = "git@github.com:user/claude-history.git"
+          clone = true
+          EOF
+
+      - name: Sync
+        run: |
+          claude-code-sync init --config /tmp/init-config.toml
+          claude-code-sync sync --message "CI sync $(date +%Y-%m-%d)"
+```
+
+## Custom Sync Subdirectory
+
+Store projects in a custom subdirectory within the sync repository:
+
+```bash
+# Set custom subdirectory (default is "projects")
+claude-code-sync config --sync-subdirectory "claude-conversations"
+
+# Now files will be stored in:
+# ~/claude-backup/claude-conversations/<project>/<session>.jsonl
+# instead of:
+# ~/claude-backup/projects/<project>/<session>.jsonl
+```
+
+This is useful when:
+- Using an existing repository with other content
+- Organizing multiple tools' data in one repo
+- Following specific directory conventions
