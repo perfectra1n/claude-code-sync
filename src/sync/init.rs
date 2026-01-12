@@ -1,10 +1,11 @@
 use anyhow::Result;
 use colored::Colorize;
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::scm;
 
-use super::state::SyncState;
+use super::state::{MultiRepoState, RepoConfig};
 
 /// Initialize sync repository from onboarding config
 pub fn init_from_onboarding(
@@ -32,11 +33,24 @@ pub fn init_from_onboarding(
         false
     };
 
-    // Save sync state
-    let state = SyncState {
+    // Create repo config
+    let repo_name = "default".to_string();
+    let repo_config = RepoConfig {
+        name: repo_name.clone(),
         sync_repo_path: repo_path.to_path_buf(),
         has_remote,
         is_cloned_repo: is_cloned,
+        remote_url: remote_url.map(String::from),
+        description: None,
+    };
+
+    // Save multi-repo state (v2 format)
+    let mut repos = HashMap::new();
+    repos.insert(repo_name.clone(), repo_config);
+    let state = MultiRepoState {
+        version: 2,
+        active_repo: repo_name,
+        repos,
     };
     state.save()?;
 
@@ -83,11 +97,24 @@ pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> 
         false
     };
 
-    // Save sync state
-    let state = SyncState {
+    // Create repo config
+    let repo_name = "default".to_string();
+    let repo_config = RepoConfig {
+        name: repo_name.clone(),
         sync_repo_path: repo_path.to_path_buf(),
         has_remote,
         is_cloned_repo: false,
+        remote_url: remote_url.map(String::from),
+        description: None,
+    };
+
+    // Save multi-repo state (v2 format)
+    let mut repos = HashMap::new();
+    repos.insert(repo_name.clone(), repo_config);
+    let state = MultiRepoState {
+        version: 2,
+        active_repo: repo_name,
+        repos,
     };
     state.save()?;
 

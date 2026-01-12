@@ -12,7 +12,7 @@ pub use init::{init_from_onboarding, init_sync_repo};
 pub use pull::pull_history;
 pub use push::push_history;
 pub use remote::{remove_remote, set_remote, show_remote};
-pub use state::SyncState;
+pub use state::{MultiRepoState, RepoConfig, SyncState};
 pub use status::show_status;
 
 use anyhow::Result;

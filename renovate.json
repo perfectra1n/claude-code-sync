@@ -13,32 +13,6 @@
   ],
   "rangeStrategy": "bump",
   "semanticCommits": "enabled",
-  "packageRules": [
-    {
-      "matchManagers": [
-        "cargo"
-      ],
-      "groupName": "Rust dependencies",
-      "semanticCommitType": "chore",
-      "semanticCommitScope": "deps"
-    },
-    {
-      "matchManagers": [
-        "github-actions"
-      ],
-      "groupName": "GitHub Actions",
-      "semanticCommitType": "ci",
-      "automerge": true,
-      "automergeType": "pr"
-    },
-    {
-      "matchDepTypes": [
-        "devDependencies"
-      ],
-      "automerge": true,
-      "automergeType": "pr"
-    }
-  ],
   "vulnerabilityAlerts": {
     "labels": [
       "security"
@@ -46,7 +20,6 @@
     "automerge": true,
     "automergeType": "pr"
   },
-  "prConcurrentLimit": 10,
-  "prCreation": "immediate",
-  "prHourlyLimit": 2
+  "prConcurrentLimit": 20,
+  "prCreation": "immediate"
 }
