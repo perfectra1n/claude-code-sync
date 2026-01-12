@@ -1,16 +1,16 @@
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
 
-use crate::git::GitManager;
+use crate::scm;
 
 use super::state::SyncState;
 
 /// Show current remote configuration
 pub fn show_remote() -> Result<()> {
     let state = SyncState::load()?;
-    let git_manager = GitManager::open(&state.sync_repo_path)?;
+    let repo = scm::open(&state.sync_repo_path)?;
 
-    println!("{}", "=== Git Remote Configuration ===".bold().cyan());
+    println!("{}", "=== SCM Remote Configuration ===".bold().cyan());
     println!();
 
     // Show sync repository directory
@@ -20,18 +20,18 @@ pub fn show_remote() -> Result<()> {
         state.sync_repo_path.display().to_string().cyan()
     );
 
+    // Show backend type
+    println!("{} Git", "Backend:".bold());
+
     // Show current branch
-    if let Ok(branch) = git_manager.current_branch() {
+    if let Ok(branch) = repo.current_branch() {
         println!("{} {}", "Current Branch:".bold(), branch.cyan());
     }
 
     println!();
 
-    // Get repository
-    let repo = git2::Repository::open(&state.sync_repo_path)?;
-
     // List all remotes
-    let remotes = repo.remotes()?;
+    let remotes = repo.list_remotes()?;
 
     if remotes.is_empty() {
         println!("{}", "No remotes configured".yellow());
@@ -42,22 +42,16 @@ pub fn show_remote() -> Result<()> {
         return Ok(());
     }
 
-    for name in remotes.iter().flatten() {
-        if let Ok(remote) = repo.find_remote(name) {
-            println!("{} {}", "Remote:".bold(), name.cyan());
+    for name in &remotes {
+        println!("{} {}", "Remote:".bold(), name.cyan());
 
-            if let Some(url) = remote.url() {
-                println!("  URL: {url}");
-            } else {
-                println!("  URL: {}", "None".yellow());
-            }
-
-            if let Some(push_url) = remote.pushurl() {
-                println!("  Push URL: {push_url}");
-            }
-
-            println!();
+        if let Ok(url) = repo.get_remote_url(name) {
+            println!("  URL: {url}");
+        } else {
+            println!("  URL: {}", "None".yellow());
         }
+
+        println!();
     }
 
     Ok(())
@@ -66,26 +60,27 @@ pub fn show_remote() -> Result<()> {
 /// Set or update remote URL
 pub fn set_remote(name: &str, url: &str) -> Result<()> {
     let state = SyncState::load()?;
-    let repo = git2::Repository::open(&state.sync_repo_path)?;
+    let repo = scm::open(&state.sync_repo_path)?;
 
     // Validate URL format
-    if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("git@") {
+    if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("git@") && !url.starts_with("ssh://") {
         return Err(anyhow!(
             "Invalid URL format: {url}\n\
             \n\
             URL must start with:\n\
             - https:// (e.g., https://github.com/user/repo.git)\n\
             - http:// (e.g., http://gitlab.com/user/repo.git)\n\
-            - git@ (e.g., git@github.com:user/repo.git)"
+            - git@ (e.g., git@github.com:user/repo.git)\n\
+            - ssh:// (e.g., ssh://git@github.com/user/repo.git)"
         ));
     }
 
     // Check if remote exists
-    let remote_exists = repo.find_remote(name).is_ok();
+    let remote_exists = repo.has_remote(name);
 
     if remote_exists {
         // Update existing remote
-        repo.remote_set_url(name, url)
+        repo.set_remote_url(name, url)
             .with_context(|| format!("Failed to update remote '{name}' URL"))?;
 
         println!(
@@ -96,7 +91,7 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
         );
     } else {
         // Create new remote
-        repo.remote(name, url)
+        repo.add_remote(name, url)
             .with_context(|| format!("Failed to create remote '{name}'"))?;
 
         println!(
@@ -122,15 +117,15 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
 /// Remove a remote
 pub fn remove_remote(name: &str) -> Result<()> {
     let state = SyncState::load()?;
-    let repo = git2::Repository::open(&state.sync_repo_path)?;
+    let repo = scm::open(&state.sync_repo_path)?;
 
     // Check if remote exists
-    if repo.find_remote(name).is_err() {
+    if !repo.has_remote(name) {
         return Err(anyhow!("Remote '{name}' not found"));
     }
 
     // Remove the remote
-    repo.remote_delete(name)
+    repo.remove_remote(name)
         .with_context(|| format!("Failed to remove remote '{name}'"))?;
 
     println!("{} Removed remote '{}'", "✓".green().bold(), name.cyan());

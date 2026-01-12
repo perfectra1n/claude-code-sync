@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use claude_code_sync::git::GitManager;
+use claude_code_sync::scm;
 use claude_code_sync::history::OperationType;
 use claude_code_sync::parser::ConversationEntry;
 use claude_code_sync::undo::Snapshot;
@@ -144,13 +144,13 @@ fn calculate_snapshot_size(snapshot_path: &Path) -> Result<u64> {
 fn push_and_get_snapshot(
     snapshots_dir: &Path,
     file_paths: &[PathBuf],
-    git_manager: Option<&GitManager>,
+    commit_hash: Option<&str>,
 ) -> Result<(Snapshot, PathBuf)> {
     // Create differential snapshot
     let snapshot = Snapshot::create_differential_with_dir(
         OperationType::Push,
         file_paths.iter(),
-        git_manager,
+        commit_hash,
         Some(snapshots_dir),
     )?;
 
@@ -628,57 +628,56 @@ fn test_broken_snapshot_chain() {
 }
 
 #[test]
-fn test_differential_snapshot_with_git() {
-    println!("\n=== Test: Differential Snapshots with Git Integration ===\n");
+fn test_differential_snapshot_with_scm() {
+    println!("\n=== Test: Differential Snapshots with SCM Integration ===\n");
 
     let temp_dir = TempDir::new().unwrap();
-    let git_repo = temp_dir.path().join("repo");
+    let repo_dir = temp_dir.path().join("repo");
     let snapshots_dir = temp_dir.path().join("snapshots");
 
-    fs::create_dir_all(&git_repo).unwrap();
+    fs::create_dir_all(&repo_dir).unwrap();
     fs::create_dir_all(&snapshots_dir).unwrap();
 
-    // Initialize git repository
-    let git_manager = GitManager::init(&git_repo).unwrap();
+    // Initialize repository
+    let repo = scm::init(&repo_dir).unwrap();
 
     // Create initial commit
-    let file1 = git_repo.join("file1.txt");
+    let file1 = repo_dir.join("file1.txt");
     fs::write(&file1, b"initial content").unwrap();
-    git_manager.stage_all().unwrap();
-    git_manager.commit("Initial commit").unwrap();
+    repo.stage_all().unwrap();
+    repo.commit("Initial commit").unwrap();
 
-    let initial_commit = git_manager.current_commit_hash().unwrap();
+    let initial_commit = repo.current_commit_hash().unwrap();
     println!("Initial commit: {}", &initial_commit[..8]);
 
-    // Create first snapshot with git info
-    println!("Creating snapshot with git information...");
+    // Create first snapshot with commit hash
+    println!("Creating snapshot with commit information...");
     let (snapshot1, _) = push_and_get_snapshot(
         &snapshots_dir,
         &[file1.clone()],
-        Some(&git_manager),
+        Some(&initial_commit),
     ).unwrap();
 
-    assert!(snapshot1.git_commit_hash.is_some(), "Snapshot should capture git commit hash");
+    assert!(snapshot1.git_commit_hash.is_some(), "Snapshot should capture commit hash");
     assert_eq!(
         snapshot1.git_commit_hash.as_ref().unwrap(),
         &initial_commit,
         "Should capture correct commit hash"
     );
-    assert!(snapshot1.branch.is_some(), "Snapshot should capture branch name");
 
     // Make changes and commit
     fs::write(&file1, b"modified content").unwrap();
-    git_manager.stage_all().unwrap();
-    git_manager.commit("Second commit").unwrap();
+    repo.stage_all().unwrap();
+    repo.commit("Second commit").unwrap();
 
-    let second_commit = git_manager.current_commit_hash().unwrap();
+    let second_commit = repo.current_commit_hash().unwrap();
     println!("Second commit: {}", &second_commit[..8]);
 
     // Create differential snapshot
     let (snapshot2, _) = push_and_get_snapshot(
         &snapshots_dir,
         &[file1.clone()],
-        Some(&git_manager),
+        Some(&second_commit),
     ).unwrap();
 
     assert!(snapshot2.base_snapshot_id.is_some(), "Should be differential");
@@ -688,7 +687,7 @@ fn test_differential_snapshot_with_git() {
         "Should capture new commit hash"
     );
 
-    println!("\n✓ Test passed! Git integration with differential snapshots works correctly.\n");
+    println!("\n✓ Test passed! SCM integration with differential snapshots works correctly.\n");
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use claude_code_sync::config::ConfigManager;
 use claude_code_sync::filter::FilterConfig;
-use claude_code_sync::git::GitManager;
+use claude_code_sync::scm;
 use claude_code_sync::sync::SyncState;
 use serial_test::serial;
 use tempfile::TempDir;
@@ -111,7 +111,7 @@ fn test_filter_config_save_and_load() -> Result<()> {
 }
 
 #[test]
-fn test_git_manager_clone_validates_path() -> Result<()> {
+fn test_scm_clone_validates_path() -> Result<()> {
     let temp_dir = setup_test_config_env()?;
     let clone_path = temp_dir.path().join("cloned-repo");
 
@@ -119,13 +119,13 @@ fn test_git_manager_clone_validates_path() -> Result<()> {
     // But we can test that the path validation and setup works
 
     // Try to clone from an invalid URL (this will fail, but we can test the error handling)
-    let result = GitManager::clone("invalid-url", &clone_path);
+    let result = scm::clone("invalid-url", &clone_path);
     assert!(result.is_err());
 
     // The error should contain helpful information
     let err = result.err().unwrap();
     let err_msg = format!("{err}");
-    assert!(err_msg.contains("Failed to clone"));
+    assert!(err_msg.contains("clone failed") || err_msg.contains("Failed"));
 
     Ok(())
 }
@@ -139,8 +139,8 @@ fn test_init_from_onboarding() -> Result<()> {
     // Set XDG_CONFIG_HOME to isolate test config
     std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
-    // Initialize a git repo first
-    GitManager::init(&repo_path)?;
+    // Initialize a repo first
+    scm::init(&repo_path)?;
 
     // Test init_from_onboarding with a local repository
     claude_code_sync::sync::init_from_onboarding(&repo_path, None, false)?;
@@ -166,8 +166,8 @@ fn test_init_from_onboarding_with_remote() -> Result<()> {
     // Set XDG_CONFIG_HOME to isolate test config
     std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
-    // Initialize a git repo first
-    GitManager::init(&repo_path)?;
+    // Initialize a repo first
+    scm::init(&repo_path)?;
 
     // Test with remote URL
     claude_code_sync::sync::init_from_onboarding(
