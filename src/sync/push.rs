@@ -65,7 +65,7 @@ pub fn push_history(
     // ============================================================================
     // COPY SESSIONS AND TRACK CHANGES
     // ============================================================================
-    let projects_dir = state.sync_repo_path.join("projects");
+    let projects_dir = state.sync_repo_path.join(&filter.sync_subdirectory);
     fs::create_dir_all(&projects_dir)?;
 
     // Discover existing sessions in sync repo to determine operation type

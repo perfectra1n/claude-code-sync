@@ -55,7 +55,7 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     let local_sessions = discover_sessions(&claude_dir, &filter)?;
     println!("  Local: {}", local_sessions.len().to_string().cyan());
 
-    let remote_projects_dir = state.sync_repo_path.join("projects");
+    let remote_projects_dir = state.sync_repo_path.join(&filter.sync_subdirectory);
     if remote_projects_dir.exists() {
         let remote_sessions = discover_sessions(&remote_projects_dir, &filter)?;
         println!("  Sync repo: {}", remote_sessions.len().to_string().cyan());
