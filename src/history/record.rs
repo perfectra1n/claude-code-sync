@@ -21,19 +21,20 @@ pub struct OperationRecord {
     /// List of conversations affected by this operation
     pub affected_conversations: Vec<ConversationSummary>,
 
-    /// Path to snapshot for undo capability
+    /// Path to snapshot for undo capability (used for pull operations)
     ///
-    /// Snapshots are created during sync operations to enable undo functionality.
-    /// The snapshot implementation is in `src/undo/snapshot.rs` and provides:
-    /// - Complete state of all conversation files before the operation
-    /// - Differential snapshots to minimize disk usage
-    /// - Metadata about the sync operation for context
-    /// - Timestamp and operation type for verification
-    ///
-    /// This enables the `claude-code-sync undo` command to restore
-    /// the previous state if a sync operation needs to be reversed.
+    /// Snapshots are created during pull operations to enable undo functionality.
+    /// Only files with conflicts are backed up, not the entire history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot_path: Option<PathBuf>,
+
+    /// Git commit hash before the operation (used for push undo)
+    ///
+    /// For push operations, we store the commit hash instead of creating
+    /// a file snapshot. Undo simply resets to this commit.
+    /// This is much more efficient than storing file contents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_hash: Option<String>,
 }
 
 impl OperationRecord {
@@ -49,6 +50,7 @@ impl OperationRecord {
             branch,
             affected_conversations,
             snapshot_path: None,
+            commit_hash: None,
         }
     }
 
