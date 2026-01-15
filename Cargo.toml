@@ -12,7 +12,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 toml = "0.9.8"
 anyhow = "1.0.100"
-chrono = { version = "0.4.42", features = ["serde"] }
+chrono = { version = "0.4.43", features = ["serde"] }
 walkdir = "2.5"
 colored = "3.0.0"
 dirs = "6.0.0"
