@@ -192,7 +192,13 @@ pub fn push_history(
         println!("  {} Added: {}", "•".green(), added_count);
         println!("  {} Modified: {}", "•".yellow(), modified_count);
         println!("  {} Unchanged: {}", "•".dimmed(), unchanged_count);
-        println!("  {} Total: {}", "•".cyan(), sessions.len());
+        let total_with_cwd = sessions.len().saturating_sub(skipped_no_cwd);
+        println!("  {} Skipped (no cwd): {}", "•".dimmed(), skipped_no_cwd);
+        println!(
+            "  {} Sessions (with project context): {}",
+            "•".cyan(),
+            total_with_cwd
+        );
         println!();
     }
 
