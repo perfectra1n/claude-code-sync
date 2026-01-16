@@ -3,7 +3,7 @@ use colored::Colorize;
 use inquire::Confirm;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::filter::FilterConfig;
 use crate::history::{
@@ -12,7 +12,7 @@ use crate::history::{
 use crate::interactive_conflict;
 use crate::scm;
 
-use super::discovery::{claude_projects_dir, discover_sessions};
+use super::discovery::{claude_projects_dir, discover_sessions, find_colliding_projects};
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
@@ -62,6 +62,36 @@ pub fn push_history(
     let sessions = discover_sessions(&claude_dir, &filter)?;
     println!("  {} {} sessions", "Found".green(), sessions.len());
 
+    // Check for project name collisions when using project-name-only mode
+    if filter.use_project_name_only {
+        let collisions = find_colliding_projects(&claude_dir);
+        if !collisions.is_empty() {
+            println!();
+            println!(
+                "{}",
+                "Warning: Multiple projects map to the same name:".yellow().bold()
+            );
+            for (name, paths) in &collisions {
+                println!("  {} -> {} locations:", name.cyan(), paths.len());
+                for path in paths.iter().take(3) {
+                    let display_path = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown");
+                    println!("    - {}", display_path);
+                }
+                if paths.len() > 3 {
+                    println!("    ... and {} more", paths.len() - 3);
+                }
+            }
+            println!();
+            println!(
+                "{}",
+                "Sessions from colliding projects will be merged into the same directory.".yellow()
+            );
+            println!();
+        }
+    }
+
     // ============================================================================
     // COPY SESSIONS AND TRACK CHANGES
     // ============================================================================
@@ -82,12 +112,41 @@ pub fn push_history(
     let mut modified_count = 0;
     let mut unchanged_count = 0;
 
-    for session in &sessions {
-        let relative_path = Path::new(&session.file_path)
-            .strip_prefix(&claude_dir)
-            .unwrap_or(Path::new(&session.file_path));
+    // Track sessions skipped due to missing cwd
+    let mut skipped_no_cwd = 0;
 
-        let dest_path = projects_dir.join(relative_path);
+    // Closure to compute the relative path for a session, respecting use_project_name_only
+    let compute_relative_path =
+        |session: &crate::parser::ConversationSession| -> Option<PathBuf> {
+            if filter.use_project_name_only {
+                let full_relative = Path::new(&session.file_path)
+                    .strip_prefix(&claude_dir)
+                    .unwrap_or(Path::new(&session.file_path));
+
+                let filename = full_relative.file_name()?;
+                let project_name = session.project_name()?;
+                Some(PathBuf::from(project_name).join(filename))
+            } else {
+                Some(
+                    Path::new(&session.file_path)
+                        .strip_prefix(&claude_dir)
+                        .unwrap_or(Path::new(&session.file_path))
+                        .to_path_buf(),
+                )
+            }
+        };
+
+    for session in &sessions {
+        let relative_path = match compute_relative_path(session) {
+            Some(path) => path,
+            None => {
+                skipped_no_cwd += 1;
+                log::debug!("Skipping session {} (no cwd)", session.session_id);
+                continue;
+            }
+        };
+
+        let dest_path = projects_dir.join(&relative_path);
 
         // Determine operation type based on existing state
         let operation = if let Some(existing) = existing_map.get(&session.session_id) {
@@ -133,7 +192,13 @@ pub fn push_history(
         println!("  {} Added: {}", "•".green(), added_count);
         println!("  {} Modified: {}", "•".yellow(), modified_count);
         println!("  {} Unchanged: {}", "•".dimmed(), unchanged_count);
-        println!("  {} Total: {}", "•".cyan(), sessions.len());
+        let total_with_cwd = sessions.len().saturating_sub(skipped_no_cwd);
+        println!("  {} Skipped (no cwd): {}", "•".dimmed(), skipped_no_cwd);
+        println!(
+            "  {} Sessions (with project context): {}",
+            "•".cyan(),
+            total_with_cwd
+        );
         println!();
     }
 
@@ -141,9 +206,9 @@ pub fn push_history(
     if verbosity == VerbosityLevel::Verbose {
         println!("{}", "Files to be pushed:".bold());
         for (idx, session) in sessions.iter().enumerate().take(20) {
-            let relative_path = Path::new(&session.file_path)
-                .strip_prefix(&claude_dir)
-                .unwrap_or(Path::new(&session.file_path));
+            let Some(relative_path) = compute_relative_path(session) else {
+                continue;
+            };
 
             let status = if let Some(existing) = existing_map.get(&session.session_id) {
                 if existing.content_hash() == session.content_hash() {

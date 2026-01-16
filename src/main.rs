@@ -180,6 +180,10 @@ enum Commands {
         #[arg(long)]
         sync_subdirectory: Option<String>,
 
+        /// Use only project name instead of full path (enables multi-device sync)
+        #[arg(long)]
+        use_project_name_only: Option<bool>,
+
         /// Show current configuration
         #[arg(long)]
         show: bool,
@@ -538,6 +542,7 @@ fn main() -> Result<()> {
             lfs_patterns,
             scm_backend,
             sync_subdirectory,
+            use_project_name_only,
             show,
             interactive,
             wizard,
@@ -574,6 +579,7 @@ fn main() -> Result<()> {
                     lfs_patterns,
                     scm_backend,
                     sync_subdirectory,
+                    use_project_name_only,
                 )?;
             }
         }
