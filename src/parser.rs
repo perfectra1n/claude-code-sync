@@ -209,6 +209,15 @@ impl ConversationSession {
             .count()
     }
 
+    /// Get the project name from the first entry's `cwd` path
+    pub fn project_name(&self) -> Option<&str> {
+        self.entries
+            .iter()
+            .find_map(|e| e.cwd.as_ref())
+            .and_then(|cwd| std::path::Path::new(cwd).file_name())
+            .and_then(|name| name.to_str())
+    }
+
     /// Calculate a simple hash of the conversation content
     pub fn content_hash(&self) -> String {
         use std::collections::hash_map::DefaultHasher;
@@ -317,5 +326,29 @@ mod tests {
         let session = ConversationSession::from_file(&session_file).unwrap();
         assert_eq!(session.session_id, "test-123");
         assert_eq!(session.entries.len(), 2);
+    }
+
+    #[test]
+    fn test_project_name_from_cwd() {
+        let json = r#"{"type":"user","uuid":"1","cwd":"/Users/abc/my-cool-project"}"#;
+        let entry: ConversationEntry = serde_json::from_str(json).unwrap();
+        let session = ConversationSession {
+            session_id: "test".to_string(),
+            entries: vec![entry],
+            file_path: "test.jsonl".to_string(),
+        };
+        assert_eq!(session.project_name(), Some("my-cool-project"));
+    }
+
+    #[test]
+    fn test_project_name_no_cwd() {
+        let json = r#"{"type":"user","uuid":"1"}"#;
+        let entry: ConversationEntry = serde_json::from_str(json).unwrap();
+        let session = ConversationSession {
+            session_id: "test".to_string(),
+            entries: vec![entry],
+            file_path: "test.jsonl".to_string(),
+        };
+        assert_eq!(session.project_name(), None);
     }
 }

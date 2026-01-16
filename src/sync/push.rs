@@ -112,39 +112,39 @@ pub fn push_history(
     let mut modified_count = 0;
     let mut unchanged_count = 0;
 
-    // Closure to compute the relative path for a session, respecting use_project_name_only
-    let compute_relative_path = |file_path: &str| -> PathBuf {
-        if filter.use_project_name_only {
-            // Extract just the project name and session filename
-            // From: -Users-abc-Documents-GitHub-myproject/session.jsonl
-            // To: myproject/session.jsonl
-            let full_relative = Path::new(file_path)
-                .strip_prefix(&claude_dir)
-                .unwrap_or(Path::new(file_path));
+    // Track sessions skipped due to missing cwd
+    let mut skipped_no_cwd = 0;
 
-            // Get the directory name (encoded project path) and filename
-            if let (Some(project_dir), Some(filename)) =
-                (full_relative.parent(), full_relative.file_name())
-            {
-                let project_name = project_dir
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| super::discovery::extract_project_name(n))
-                    .unwrap_or("unknown");
-                PathBuf::from(project_name).join(filename)
+    // Closure to compute the relative path for a session, respecting use_project_name_only
+    let compute_relative_path =
+        |session: &crate::parser::ConversationSession| -> Option<PathBuf> {
+            if filter.use_project_name_only {
+                let full_relative = Path::new(&session.file_path)
+                    .strip_prefix(&claude_dir)
+                    .unwrap_or(Path::new(&session.file_path));
+
+                let filename = full_relative.file_name()?;
+                let project_name = session.project_name()?;
+                Some(PathBuf::from(project_name).join(filename))
             } else {
-                full_relative.to_path_buf()
+                Some(
+                    Path::new(&session.file_path)
+                        .strip_prefix(&claude_dir)
+                        .unwrap_or(Path::new(&session.file_path))
+                        .to_path_buf(),
+                )
             }
-        } else {
-            Path::new(file_path)
-                .strip_prefix(&claude_dir)
-                .unwrap_or(Path::new(file_path))
-                .to_path_buf()
-        }
-    };
+        };
 
     for session in &sessions {
-        let relative_path = compute_relative_path(&session.file_path);
+        let relative_path = match compute_relative_path(session) {
+            Some(path) => path,
+            None => {
+                skipped_no_cwd += 1;
+                log::debug!("Skipping session {} (no cwd)", session.session_id);
+                continue;
+            }
+        };
 
         let dest_path = projects_dir.join(&relative_path);
 
@@ -192,7 +192,13 @@ pub fn push_history(
         println!("  {} Added: {}", "•".green(), added_count);
         println!("  {} Modified: {}", "•".yellow(), modified_count);
         println!("  {} Unchanged: {}", "•".dimmed(), unchanged_count);
-        println!("  {} Total: {}", "•".cyan(), sessions.len());
+        let total_with_cwd = sessions.len().saturating_sub(skipped_no_cwd);
+        println!("  {} Skipped (no cwd): {}", "•".dimmed(), skipped_no_cwd);
+        println!(
+            "  {} Sessions (with project context): {}",
+            "•".cyan(),
+            total_with_cwd
+        );
         println!();
     }
 
@@ -200,7 +206,9 @@ pub fn push_history(
     if verbosity == VerbosityLevel::Verbose {
         println!("{}", "Files to be pushed:".bold());
         for (idx, session) in sessions.iter().enumerate().take(20) {
-            let relative_path = compute_relative_path(&session.file_path);
+            let Some(relative_path) = compute_relative_path(session) else {
+                continue;
+            };
 
             let status = if let Some(existing) = existing_map.get(&session.session_id) {
                 if existing.content_hash() == session.content_hash() {
