@@ -47,6 +47,13 @@ pub struct FilterConfig {
     /// Useful when using an existing repo and want to store history in a specific path
     #[serde(default = "default_sync_subdirectory")]
     pub sync_subdirectory: String,
+
+    /// Use only the project name (not full path) when syncing
+    /// When enabled, stores conversations using only the project directory name
+    /// instead of the full encoded path. This enables multi-device compatibility
+    /// when usernames or paths differ across machines.
+    #[serde(default)]
+    pub use_project_name_only: bool,
 }
 
 fn default_lfs_patterns() -> Vec<String> {
@@ -77,6 +84,7 @@ impl Default for FilterConfig {
             lfs_patterns: default_lfs_patterns(),
             scm_backend: default_scm_backend(),
             sync_subdirectory: default_sync_subdirectory(),
+            use_project_name_only: false,
         }
     }
 }
@@ -253,6 +261,7 @@ pub fn update_config(
     lfs_patterns: Option<String>,
     scm_backend: Option<String>,
     sync_subdirectory: Option<String>,
+    use_project_name_only: Option<bool>,
 ) -> Result<()> {
     let mut config = FilterConfig::load()?;
 
@@ -340,6 +349,22 @@ pub fn update_config(
         );
     }
 
+    if let Some(project_name_only) = use_project_name_only {
+        config.use_project_name_only = project_name_only;
+        println!(
+            "{}",
+            format!(
+                "Use project name only: {}",
+                if project_name_only {
+                    "enabled (multi-device mode)"
+                } else {
+                    "disabled (full path mode)"
+                }
+            )
+            .green()
+        );
+    }
+
     // Validate configuration before saving
     config.validate()?;
 
@@ -413,6 +438,15 @@ pub fn show_config() -> Result<()> {
         "  {}: {}",
         "Sync subdirectory".cyan(),
         config.sync_subdirectory.green()
+    );
+    println!(
+        "  {}: {}",
+        "Use project name only".cyan(),
+        if config.use_project_name_only {
+            "Yes (multi-device mode)".green()
+        } else {
+            "No (full path mode)".yellow()
+        }
     );
 
     Ok(())

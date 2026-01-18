@@ -40,6 +40,9 @@ use crate::config::ConfigManager;
 ///
 /// # Optional: Subdirectory for storing projects (default: "projects")
 /// sync_subdirectory = "claude-history"
+///
+/// # Optional: Use only project name for multi-device sync (default: false)
+/// use_project_name_only = true
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitConfig {
@@ -73,6 +76,11 @@ pub struct InitConfig {
     /// Subdirectory within sync repo for storing projects (default: "projects").
     #[serde(default = "default_sync_subdirectory")]
     pub sync_subdirectory: String,
+
+    /// Use only project name instead of full path (default: false).
+    /// Enables multi-device sync compatibility.
+    #[serde(default)]
+    pub use_project_name_only: bool,
 }
 
 fn default_scm_backend() -> String {
@@ -512,6 +520,7 @@ mod tests {
             enable_lfs: false,
             scm_backend: "git".to_string(),
             sync_subdirectory: "projects".to_string(),
+            use_project_name_only: false,
         };
         assert!(config.validate().is_err());
     }
@@ -527,6 +536,7 @@ mod tests {
             enable_lfs: true,
             scm_backend: "mercurial".to_string(),
             sync_subdirectory: "projects".to_string(),
+            use_project_name_only: false,
         };
         assert!(config.validate().is_err());
     }
@@ -542,6 +552,7 @@ mod tests {
             enable_lfs: false,
             scm_backend: "svn".to_string(),
             sync_subdirectory: "projects".to_string(),
+            use_project_name_only: false,
         };
         assert!(config.validate().is_err());
     }
@@ -557,6 +568,7 @@ mod tests {
             enable_lfs: true,
             scm_backend: "git".to_string(),
             sync_subdirectory: "projects".to_string(),
+            use_project_name_only: false,
         };
         let onboarding = config.to_onboarding_config().unwrap();
         assert_eq!(onboarding.repo_path, PathBuf::from("/tmp/test"));
