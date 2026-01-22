@@ -34,10 +34,9 @@ impl ConfigManager {
         #[cfg(target_os = "windows")]
         {
             // Use Windows APPDATA
-            dirs::config_dir()
+            Ok(dirs::config_dir()
                 .context("Failed to get Windows config directory")?
-                .join("claude-code-sync")
-                .into()
+                .join("claude-code-sync"))
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
