@@ -1,0 +1,2 @@
+createSrcSidebar('[["claude_code_sync",["",[["history",[],["mod.rs","record.rs","storage.rs","summary.rs","types.rs"]],["scm",[],["git.rs","hg.rs","lfs.rs","mod.rs"]],["sync",[],["discovery.rs","init.rs","mod.rs","pull.rs","push.rs","remote.rs","state.rs","status.rs"]],["undo",[],["cleanup.rs","mod.rs","operations.rs","preview.rs","restore.rs","snapshot.rs"]]],["config.rs","conflict.rs","filter.rs","interactive_conflict.rs","lib.rs","logger.rs","merge.rs","onboarding.rs","parser.rs","report.rs"]]]]');
+//{"start":19,"fragment_lengths":[483]}

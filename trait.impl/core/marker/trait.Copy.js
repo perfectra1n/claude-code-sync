@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["claude_code_sync",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"claude_code_sync/enum.VerbosityLevel.html\" title=\"enum claude_code_sync::VerbosityLevel\">VerbosityLevel</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"claude_code_sync/history/enum.OperationType.html\" title=\"enum claude_code_sync::history::OperationType\">OperationType</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"claude_code_sync/history/enum.SyncOperation.html\" title=\"enum claude_code_sync::history::SyncOperation\">SyncOperation</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"claude_code_sync/scm/enum.Backend.html\" title=\"enum claude_code_sync::scm::Backend\">Backend</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.93.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"claude_code_sync/undo/enum.VerbosityLevel.html\" title=\"enum claude_code_sync::undo::VerbosityLevel\">VerbosityLevel</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[1459]}

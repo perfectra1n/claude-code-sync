@@ -1,0 +1,482 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/conflict.rs`."><title>conflict.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-ca0dd0c4.css"><script id="default-settings" 
+data-use_system_theme="false"
+data-theme="ayu"></script><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="claude_code_sync" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.0 (254b59607 2026-01-19)" data-channel="1.93.0" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-a3946164.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-a410ff4d.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">claude_code_sync/</div>conflict.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>anyhow::Result;
+<a href=#2 id=2 data-nosnippet>2</a><span class="kw">use </span>serde::{Deserialize, Serialize};
+<a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>std::path::{Path, PathBuf};
+<a href=#4 id=4 data-nosnippet>4</a>
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">crate</span>::merge;
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span><span class="kw">crate</span>::parser::ConversationSession;
+<a href=#7 id=7 data-nosnippet>7</a>
+<a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// Represents a conflict between local and remote versions of the same conversation session.
+<a href=#9 id=9 data-nosnippet>9</a>///
+<a href=#10 id=10 data-nosnippet>10</a>/// A `Conflict` is detected when both local and remote filesystems contain a conversation
+<a href=#11 id=11 data-nosnippet>11</a>/// with the same session ID but different content (as determined by content hashes). This
+<a href=#12 id=12 data-nosnippet>12</a>/// typically occurs when the same conversation has been modified on different machines or
+<a href=#13 id=13 data-nosnippet>13</a>/// when changes haven't been synchronized properly.
+<a href=#14 id=14 data-nosnippet>14</a>///
+<a href=#15 id=15 data-nosnippet>15</a>/// The conflict contains metadata about both versions to help users make informed decisions
+<a href=#16 id=16 data-nosnippet>16</a>/// about how to resolve the discrepancy.
+<a href=#17 id=17 data-nosnippet>17</a>///
+<a href=#18 id=18 data-nosnippet>18</a>/// # Examples
+<a href=#19 id=19 data-nosnippet>19</a>///
+<a href=#20 id=20 data-nosnippet>20</a>/// ```ignore
+<a href=#21 id=21 data-nosnippet>21</a>/// use claude_code_sync::conflict::Conflict;
+<a href=#22 id=22 data-nosnippet>22</a>/// use claude_code_sync::parser::ConversationSession;
+<a href=#23 id=23 data-nosnippet>23</a>///
+<a href=#24 id=24 data-nosnippet>24</a>/// let conflict = Conflict::new(local, remote);
+<a href=#25 id=25 data-nosnippet>25</a>///
+<a href=#26 id=26 data-nosnippet>26</a>/// if conflict.is_real_conflict() {
+<a href=#27 id=27 data-nosnippet>27</a>///     println!("{}", conflict.description());
+<a href=#28 id=28 data-nosnippet>28</a>/// }
+<a href=#29 id=29 data-nosnippet>29</a>/// ```
+<a href=#30 id=30 data-nosnippet>30</a></span><span class="attr">#[derive(Debug, Clone, Serialize, Deserialize)]
+<a href=#31 id=31 data-nosnippet>31</a></span><span class="kw">pub struct </span>Conflict {
+<a href=#32 id=32 data-nosnippet>32</a>    <span class="doccomment">/// The unique identifier for the conversation session that has conflicted.
+<a href=#33 id=33 data-nosnippet>33</a>    ///
+<a href=#34 id=34 data-nosnippet>34</a>    /// This ID is shared between both the local and remote versions, as they represent
+<a href=#35 id=35 data-nosnippet>35</a>    /// different states of the same conversation.
+<a href=#36 id=36 data-nosnippet>36</a>    </span><span class="kw">pub </span>session_id: String,
+<a href=#37 id=37 data-nosnippet>37</a>
+<a href=#38 id=38 data-nosnippet>38</a>    <span class="doccomment">/// The file path to the local version of the conversation.
+<a href=#39 id=39 data-nosnippet>39</a>    ///
+<a href=#40 id=40 data-nosnippet>40</a>    /// This points to the conversation file in the local filesystem, typically in the
+<a href=#41 id=41 data-nosnippet>41</a>    /// user's local conversation storage directory.
+<a href=#42 id=42 data-nosnippet>42</a>    </span><span class="kw">pub </span>local_file: PathBuf,
+<a href=#43 id=43 data-nosnippet>43</a>
+<a href=#44 id=44 data-nosnippet>44</a>    <span class="doccomment">/// The file path to the remote version of the conversation.
+<a href=#45 id=45 data-nosnippet>45</a>    ///
+<a href=#46 id=46 data-nosnippet>46</a>    /// This points to the conversation file from the remote source (e.g., synced from
+<a href=#47 id=47 data-nosnippet>47</a>    /// another machine or cloud storage).
+<a href=#48 id=48 data-nosnippet>48</a>    </span><span class="kw">pub </span>remote_file: PathBuf,
+<a href=#49 id=49 data-nosnippet>49</a>
+<a href=#50 id=50 data-nosnippet>50</a>    <span class="doccomment">/// The timestamp of the most recent message in the local version.
+<a href=#51 id=51 data-nosnippet>51</a>    ///
+<a href=#52 id=52 data-nosnippet>52</a>    /// This is `None` if the local conversation has no messages with timestamps.
+<a href=#53 id=53 data-nosnippet>53</a>    /// The timestamp helps users understand which version is more recent.
+<a href=#54 id=54 data-nosnippet>54</a>    </span><span class="kw">pub </span>local_timestamp: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#55 id=55 data-nosnippet>55</a>
+<a href=#56 id=56 data-nosnippet>56</a>    <span class="doccomment">/// The timestamp of the most recent message in the remote version.
+<a href=#57 id=57 data-nosnippet>57</a>    ///
+<a href=#58 id=58 data-nosnippet>58</a>    /// This is `None` if the remote conversation has no messages with timestamps.
+<a href=#59 id=59 data-nosnippet>59</a>    /// The timestamp helps users understand which version is more recent.
+<a href=#60 id=60 data-nosnippet>60</a>    </span><span class="kw">pub </span>remote_timestamp: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#61 id=61 data-nosnippet>61</a>
+<a href=#62 id=62 data-nosnippet>62</a>    <span class="doccomment">/// The total number of messages in the local version of the conversation.
+<a href=#63 id=63 data-nosnippet>63</a>    ///
+<a href=#64 id=64 data-nosnippet>64</a>    /// This count includes all conversation entries (user messages, assistant responses, etc.)
+<a href=#65 id=65 data-nosnippet>65</a>    /// and helps users compare the relative completeness of each version.
+<a href=#66 id=66 data-nosnippet>66</a>    </span><span class="kw">pub </span>local_message_count: usize,
+<a href=#67 id=67 data-nosnippet>67</a>
+<a href=#68 id=68 data-nosnippet>68</a>    <span class="doccomment">/// The total number of messages in the remote version of the conversation.
+<a href=#69 id=69 data-nosnippet>69</a>    ///
+<a href=#70 id=70 data-nosnippet>70</a>    /// This count includes all conversation entries (user messages, assistant responses, etc.)
+<a href=#71 id=71 data-nosnippet>71</a>    /// and helps users compare the relative completeness of each version.
+<a href=#72 id=72 data-nosnippet>72</a>    </span><span class="kw">pub </span>remote_message_count: usize,
+<a href=#73 id=73 data-nosnippet>73</a>
+<a href=#74 id=74 data-nosnippet>74</a>    <span class="doccomment">/// A hash of the local conversation's content.
+<a href=#75 id=75 data-nosnippet>75</a>    ///
+<a href=#76 id=76 data-nosnippet>76</a>    /// This hash is used to detect whether the local and remote versions are truly different.
+<a href=#77 id=77 data-nosnippet>77</a>    /// If the hashes match, the conversations are identical despite any metadata differences.
+<a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">pub </span>local_hash: String,
+<a href=#79 id=79 data-nosnippet>79</a>
+<a href=#80 id=80 data-nosnippet>80</a>    <span class="doccomment">/// A hash of the remote conversation's content.
+<a href=#81 id=81 data-nosnippet>81</a>    ///
+<a href=#82 id=82 data-nosnippet>82</a>    /// This hash is used to detect whether the local and remote versions are truly different.
+<a href=#83 id=83 data-nosnippet>83</a>    /// If the hashes match, the conversations are identical despite any metadata differences.
+<a href=#84 id=84 data-nosnippet>84</a>    </span><span class="kw">pub </span>remote_hash: String,
+<a href=#85 id=85 data-nosnippet>85</a>
+<a href=#86 id=86 data-nosnippet>86</a>    <span class="doccomment">/// The current resolution status of the conflict.
+<a href=#87 id=87 data-nosnippet>87</a>    ///
+<a href=#88 id=88 data-nosnippet>88</a>    /// Initially set to `ConflictResolution::Pending` when a conflict is detected.
+<a href=#89 id=89 data-nosnippet>89</a>    /// Updated to one of the other variants once the user or system decides how to
+<a href=#90 id=90 data-nosnippet>90</a>    /// resolve the conflict.
+<a href=#91 id=91 data-nosnippet>91</a>    </span><span class="kw">pub </span>resolution: ConflictResolution,
+<a href=#92 id=92 data-nosnippet>92</a>}
+<a href=#93 id=93 data-nosnippet>93</a>
+<a href=#94 id=94 data-nosnippet>94</a><span class="doccomment">/// Represents the resolution strategy for a conversation conflict.
+<a href=#95 id=95 data-nosnippet>95</a>///
+<a href=#96 id=96 data-nosnippet>96</a>/// When a conflict is detected between local and remote versions of the same conversation,
+<a href=#97 id=97 data-nosnippet>97</a>/// the user or system must choose how to resolve it. This enum captures the different
+<a href=#98 id=98 data-nosnippet>98</a>/// resolution strategies available.
+<a href=#99 id=99 data-nosnippet>99</a>///
+<a href=#100 id=100 data-nosnippet>100</a>/// # Resolution Strategies
+<a href=#101 id=101 data-nosnippet>101</a>///
+<a href=#102 id=102 data-nosnippet>102</a>/// - **SmartMerge**: Intelligently combines both versions by merging non-conflicting changes
+<a href=#103 id=103 data-nosnippet>103</a>/// - **KeepBoth**: Preserves both versions by renaming the remote file to avoid overwriting
+<a href=#104 id=104 data-nosnippet>104</a>/// - **KeepLocal**: Discards the remote version and keeps only the local version
+<a href=#105 id=105 data-nosnippet>105</a>/// - **KeepRemote**: Discards the local version and keeps only the remote version
+<a href=#106 id=106 data-nosnippet>106</a>/// - **Pending**: No resolution has been chosen yet (default state for new conflicts)
+<a href=#107 id=107 data-nosnippet>107</a></span><span class="attr">#[derive(Debug, Clone, Serialize, Deserialize)]
+<a href=#108 id=108 data-nosnippet>108</a></span><span class="kw">pub enum </span>ConflictResolution {
+<a href=#109 id=109 data-nosnippet>109</a>    <span class="doccomment">/// Intelligently merge both versions into a single conversation.
+<a href=#110 id=110 data-nosnippet>110</a>    ///
+<a href=#111 id=111 data-nosnippet>111</a>    /// This strategy attempts to combine messages from both local and remote versions
+<a href=#112 id=112 data-nosnippet>112</a>    /// by analyzing message UUIDs, parent relationships, and timestamps. It can handle:
+<a href=#113 id=113 data-nosnippet>113</a>    /// - Non-overlapping messages (simple merge)
+<a href=#114 id=114 data-nosnippet>114</a>    /// - Edited messages (resolved by timestamp)
+<a href=#115 id=115 data-nosnippet>115</a>    /// - Conversation branches (all branches preserved)
+<a href=#116 id=116 data-nosnippet>116</a>    /// - Entries without UUIDs (merged by timestamp)
+<a href=#117 id=117 data-nosnippet>117</a>    ///
+<a href=#118 id=118 data-nosnippet>118</a>    /// If smart merge fails (e.g., due to corrupted data or circular references),
+<a href=#119 id=119 data-nosnippet>119</a>    /// the system will fall back to another resolution strategy.
+<a href=#120 id=120 data-nosnippet>120</a>    ///
+<a href=#121 id=121 data-nosnippet>121</a>    /// # Fields
+<a href=#122 id=122 data-nosnippet>122</a>    ///
+<a href=#123 id=123 data-nosnippet>123</a>    /// * `merged_entries` - The result of merging both conversations
+<a href=#124 id=124 data-nosnippet>124</a>    /// * `stats` - Statistics about the merge operation
+<a href=#125 id=125 data-nosnippet>125</a>    </span>SmartMerge {
+<a href=#126 id=126 data-nosnippet>126</a>        <span class="doccomment">/// The merged conversation entries
+<a href=#127 id=127 data-nosnippet>127</a>        </span>merged_entries: Vec&lt;<span class="kw">crate</span>::parser::ConversationEntry&gt;,
+<a href=#128 id=128 data-nosnippet>128</a>        <span class="doccomment">/// Statistics about the merge operation
+<a href=#129 id=129 data-nosnippet>129</a>        </span>stats: merge::MergeStats,
+<a href=#130 id=130 data-nosnippet>130</a>    },
+<a href=#131 id=131 data-nosnippet>131</a>
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="doccomment">/// Keep both versions by renaming the remote file with a conflict suffix.
+<a href=#133 id=133 data-nosnippet>133</a>    ///
+<a href=#134 id=134 data-nosnippet>134</a>    /// This strategy preserves both the local and remote versions of the conversation.
+<a href=#135 id=135 data-nosnippet>135</a>    /// The local file retains its original name and location, while the remote file
+<a href=#136 id=136 data-nosnippet>136</a>    /// is renamed to include a conflict marker (typically a timestamp-based suffix)
+<a href=#137 id=137 data-nosnippet>137</a>    /// to prevent overwriting the local version.
+<a href=#138 id=138 data-nosnippet>138</a>    ///
+<a href=#139 id=139 data-nosnippet>139</a>    /// # Fields
+<a href=#140 id=140 data-nosnippet>140</a>    ///
+<a href=#141 id=141 data-nosnippet>141</a>    /// * `renamed_remote_file` - The new path where the remote file will be saved.
+<a href=#142 id=142 data-nosnippet>142</a>    ///   This path includes a conflict suffix to distinguish it from the local version.
+<a href=#143 id=143 data-nosnippet>143</a>    ///
+<a href=#144 id=144 data-nosnippet>144</a>    /// # Example
+<a href=#145 id=145 data-nosnippet>145</a>    ///
+<a href=#146 id=146 data-nosnippet>146</a>    /// If the local file is `conversation.jsonl` and a conflict is detected,
+<a href=#147 id=147 data-nosnippet>147</a>    /// the remote version might be saved as `conversation-conflict-20250122-143000.jsonl`.
+<a href=#148 id=148 data-nosnippet>148</a>    </span>KeepBoth {
+<a href=#149 id=149 data-nosnippet>149</a>        <span class="doccomment">/// The destination path for the renamed remote file, including the conflict suffix.
+<a href=#150 id=150 data-nosnippet>150</a>        </span>renamed_remote_file: PathBuf,
+<a href=#151 id=151 data-nosnippet>151</a>    },
+<a href=#152 id=152 data-nosnippet>152</a>
+<a href=#153 id=153 data-nosnippet>153</a>    <span class="doccomment">/// Keep only the local version and discard the remote version.
+<a href=#154 id=154 data-nosnippet>154</a>    ///
+<a href=#155 id=155 data-nosnippet>155</a>    /// This strategy assumes the local version is correct and the remote version
+<a href=#156 id=156 data-nosnippet>156</a>    /// should be ignored. The local file remains unchanged, and the remote version
+<a href=#157 id=157 data-nosnippet>157</a>    /// is not saved to disk.
+<a href=#158 id=158 data-nosnippet>158</a>    </span>KeepLocal,
+<a href=#159 id=159 data-nosnippet>159</a>
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="doccomment">/// Keep only the remote version and discard the local version.
+<a href=#161 id=161 data-nosnippet>161</a>    ///
+<a href=#162 id=162 data-nosnippet>162</a>    /// This strategy assumes the remote version is correct and should replace the
+<a href=#163 id=163 data-nosnippet>163</a>    /// local version. The local file will be overwritten with the remote content.
+<a href=#164 id=164 data-nosnippet>164</a>    </span>KeepRemote,
+<a href=#165 id=165 data-nosnippet>165</a>
+<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// The conflict has not yet been resolved.
+<a href=#167 id=167 data-nosnippet>167</a>    ///
+<a href=#168 id=168 data-nosnippet>168</a>    /// This is the default state for newly detected conflicts. The user must choose
+<a href=#169 id=169 data-nosnippet>169</a>    /// one of the other resolution strategies before the conflict can be resolved.
+<a href=#170 id=170 data-nosnippet>170</a>    </span>Pending,
+<a href=#171 id=171 data-nosnippet>171</a>}
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a><span class="kw">impl </span>Conflict {
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="doccomment">/// Creates a new `Conflict` by comparing local and remote conversation sessions.
+<a href=#175 id=175 data-nosnippet>175</a>    ///
+<a href=#176 id=176 data-nosnippet>176</a>    /// This function constructs a conflict record from two versions of the same conversation
+<a href=#177 id=177 data-nosnippet>177</a>    /// session (identified by matching session IDs). It extracts and stores relevant metadata
+<a href=#178 id=178 data-nosnippet>178</a>    /// from both versions, including timestamps, message counts, and content hashes.
+<a href=#179 id=179 data-nosnippet>179</a>    ///
+<a href=#180 id=180 data-nosnippet>180</a>    /// The conflict is initialized with a `Pending` resolution status, indicating that no
+<a href=#181 id=181 data-nosnippet>181</a>    /// resolution strategy has been chosen yet.
+<a href=#182 id=182 data-nosnippet>182</a>    ///
+<a href=#183 id=183 data-nosnippet>183</a>    /// # Arguments
+<a href=#184 id=184 data-nosnippet>184</a>    ///
+<a href=#185 id=185 data-nosnippet>185</a>    /// * `local` - A reference to the local version of the conversation session
+<a href=#186 id=186 data-nosnippet>186</a>    /// * `remote` - A reference to the remote version of the conversation session
+<a href=#187 id=187 data-nosnippet>187</a>    ///
+<a href=#188 id=188 data-nosnippet>188</a>    /// # Returns
+<a href=#189 id=189 data-nosnippet>189</a>    ///
+<a href=#190 id=190 data-nosnippet>190</a>    /// A new `Conflict` instance containing metadata from both conversation versions,
+<a href=#191 id=191 data-nosnippet>191</a>    /// with the resolution status set to `Pending`.
+<a href=#192 id=192 data-nosnippet>192</a>    ///
+<a href=#193 id=193 data-nosnippet>193</a>    /// # Examples
+<a href=#194 id=194 data-nosnippet>194</a>    ///
+<a href=#195 id=195 data-nosnippet>195</a>    /// ```ignore
+<a href=#196 id=196 data-nosnippet>196</a>    /// use claude_code_sync::conflict::Conflict;
+<a href=#197 id=197 data-nosnippet>197</a>    /// use claude_code_sync::parser::ConversationSession;
+<a href=#198 id=198 data-nosnippet>198</a>    ///
+<a href=#199 id=199 data-nosnippet>199</a>    /// let conflict = Conflict::new(local_session, remote_session);
+<a href=#200 id=200 data-nosnippet>200</a>    ///
+<a href=#201 id=201 data-nosnippet>201</a>    /// println!("Conflict in session: {}", conflict.session_id);
+<a href=#202 id=202 data-nosnippet>202</a>    /// println!("Local messages: {}", conflict.local_message_count);
+<a href=#203 id=203 data-nosnippet>203</a>    /// println!("Remote messages: {}", conflict.remote_message_count);
+<a href=#204 id=204 data-nosnippet>204</a>    /// ```
+<a href=#205 id=205 data-nosnippet>205</a>    </span><span class="kw">pub fn </span>new(local: <span class="kw-2">&amp;</span>ConversationSession, remote: <span class="kw-2">&amp;</span>ConversationSession) -&gt; <span class="self">Self </span>{
+<a href=#206 id=206 data-nosnippet>206</a>        Conflict {
+<a href=#207 id=207 data-nosnippet>207</a>            session_id: local.session_id.clone(),
+<a href=#208 id=208 data-nosnippet>208</a>            local_file: PathBuf::from(<span class="kw-2">&amp;</span>local.file_path),
+<a href=#209 id=209 data-nosnippet>209</a>            remote_file: PathBuf::from(<span class="kw-2">&amp;</span>remote.file_path),
+<a href=#210 id=210 data-nosnippet>210</a>            local_timestamp: local.latest_timestamp(),
+<a href=#211 id=211 data-nosnippet>211</a>            remote_timestamp: remote.latest_timestamp(),
+<a href=#212 id=212 data-nosnippet>212</a>            local_message_count: local.message_count(),
+<a href=#213 id=213 data-nosnippet>213</a>            remote_message_count: remote.message_count(),
+<a href=#214 id=214 data-nosnippet>214</a>            local_hash: local.content_hash(),
+<a href=#215 id=215 data-nosnippet>215</a>            remote_hash: remote.content_hash(),
+<a href=#216 id=216 data-nosnippet>216</a>            resolution: ConflictResolution::Pending,
+<a href=#217 id=217 data-nosnippet>217</a>        }
+<a href=#218 id=218 data-nosnippet>218</a>    }
+<a href=#219 id=219 data-nosnippet>219</a>
+<a href=#220 id=220 data-nosnippet>220</a>    <span class="doccomment">/// Attempts to resolve the conflict using smart merge
+<a href=#221 id=221 data-nosnippet>221</a>    ///
+<a href=#222 id=222 data-nosnippet>222</a>    /// This method tries to intelligently combine local and remote versions
+<a href=#223 id=223 data-nosnippet>223</a>    /// by analyzing message UUIDs, timestamps, and parent relationships.
+<a href=#224 id=224 data-nosnippet>224</a>    ///
+<a href=#225 id=225 data-nosnippet>225</a>    /// # Arguments
+<a href=#226 id=226 data-nosnippet>226</a>    ///
+<a href=#227 id=227 data-nosnippet>227</a>    /// * `local_session` - The local conversation session
+<a href=#228 id=228 data-nosnippet>228</a>    /// * `remote_session` - The remote conversation session
+<a href=#229 id=229 data-nosnippet>229</a>    ///
+<a href=#230 id=230 data-nosnippet>230</a>    /// # Returns
+<a href=#231 id=231 data-nosnippet>231</a>    ///
+<a href=#232 id=232 data-nosnippet>232</a>    /// Returns `Ok(())` if the smart merge succeeds, or an error if it fails.
+<a href=#233 id=233 data-nosnippet>233</a>    /// On success, the conflict resolution is set to `SmartMerge` with the merged entries.
+<a href=#234 id=234 data-nosnippet>234</a>    </span><span class="kw">pub fn </span>try_smart_merge(
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#236 id=236 data-nosnippet>236</a>        local_session: <span class="kw-2">&amp;</span>ConversationSession,
+<a href=#237 id=237 data-nosnippet>237</a>        remote_session: <span class="kw-2">&amp;</span>ConversationSession,
+<a href=#238 id=238 data-nosnippet>238</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#239 id=239 data-nosnippet>239</a>        <span class="kw">let </span>merge_result = merge::merge_conversations(local_session, remote_session)<span class="question-mark">?</span>;
+<a href=#240 id=240 data-nosnippet>240</a>
+<a href=#241 id=241 data-nosnippet>241</a>        <span class="self">self</span>.resolution = ConflictResolution::SmartMerge {
+<a href=#242 id=242 data-nosnippet>242</a>            merged_entries: merge_result.merged_entries,
+<a href=#243 id=243 data-nosnippet>243</a>            stats: merge_result.stats,
+<a href=#244 id=244 data-nosnippet>244</a>        };
+<a href=#245 id=245 data-nosnippet>245</a>
+<a href=#246 id=246 data-nosnippet>246</a>        <span class="prelude-val">Ok</span>(())
+<a href=#247 id=247 data-nosnippet>247</a>    }
+<a href=#248 id=248 data-nosnippet>248</a>
+<a href=#249 id=249 data-nosnippet>249</a>    <span class="doccomment">/// Resolve the conflict by keeping both versions
+<a href=#250 id=250 data-nosnippet>250</a>    </span><span class="kw">pub fn </span>resolve_keep_both(<span class="kw-2">&amp;mut </span><span class="self">self</span>, conflict_suffix: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;PathBuf&gt; {
+<a href=#251 id=251 data-nosnippet>251</a>        <span class="kw">let </span>remote_file_name = <span class="self">self
+<a href=#252 id=252 data-nosnippet>252</a>            </span>.remote_file
+<a href=#253 id=253 data-nosnippet>253</a>            .file_stem()
+<a href=#254 id=254 data-nosnippet>254</a>            .and_then(|s| s.to_str())
+<a href=#255 id=255 data-nosnippet>255</a>            .unwrap_or(<span class="string">"unknown"</span>);
+<a href=#256 id=256 data-nosnippet>256</a>
+<a href=#257 id=257 data-nosnippet>257</a>        <span class="kw">let </span>remote_file_ext = <span class="self">self
+<a href=#258 id=258 data-nosnippet>258</a>            </span>.remote_file
+<a href=#259 id=259 data-nosnippet>259</a>            .extension()
+<a href=#260 id=260 data-nosnippet>260</a>            .and_then(|s| s.to_str())
+<a href=#261 id=261 data-nosnippet>261</a>            .unwrap_or(<span class="string">"jsonl"</span>);
+<a href=#262 id=262 data-nosnippet>262</a>
+<a href=#263 id=263 data-nosnippet>263</a>        <span class="kw">let </span>parent = <span class="self">self</span>.remote_file.parent().unwrap_or_else(|| Path::new(<span class="string">"."</span>));
+<a href=#264 id=264 data-nosnippet>264</a>
+<a href=#265 id=265 data-nosnippet>265</a>        <span class="kw">let </span>new_name = <span class="macro">format!</span>(
+<a href=#266 id=266 data-nosnippet>266</a>            <span class="string">"{remote_file_name}-{conflict_suffix}.{remote_file_ext}"
+<a href=#267 id=267 data-nosnippet>267</a>        </span>);
+<a href=#268 id=268 data-nosnippet>268</a>        <span class="kw">let </span>renamed_path = parent.join(new_name);
+<a href=#269 id=269 data-nosnippet>269</a>
+<a href=#270 id=270 data-nosnippet>270</a>        <span class="self">self</span>.resolution = ConflictResolution::KeepBoth {
+<a href=#271 id=271 data-nosnippet>271</a>            renamed_remote_file: renamed_path.clone(),
+<a href=#272 id=272 data-nosnippet>272</a>        };
+<a href=#273 id=273 data-nosnippet>273</a>
+<a href=#274 id=274 data-nosnippet>274</a>        <span class="prelude-val">Ok</span>(renamed_path)
+<a href=#275 id=275 data-nosnippet>275</a>    }
+<a href=#276 id=276 data-nosnippet>276</a>
+<a href=#277 id=277 data-nosnippet>277</a>    <span class="doccomment">/// Get a human-readable description of the conflict
+<a href=#278 id=278 data-nosnippet>278</a>    </span><span class="kw">pub fn </span>description(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; String {
+<a href=#279 id=279 data-nosnippet>279</a>        <span class="macro">format!</span>(
+<a href=#280 id=280 data-nosnippet>280</a>            <span class="string">"Session {} has diverged:\n  Local: {} messages, last update: {}\n  Remote: {} messages, last update: {}"</span>,
+<a href=#281 id=281 data-nosnippet>281</a>            <span class="self">self</span>.session_id,
+<a href=#282 id=282 data-nosnippet>282</a>            <span class="self">self</span>.local_message_count,
+<a href=#283 id=283 data-nosnippet>283</a>            <span class="self">self</span>.local_timestamp.as_deref().unwrap_or(<span class="string">"unknown"</span>),
+<a href=#284 id=284 data-nosnippet>284</a>            <span class="self">self</span>.remote_message_count,
+<a href=#285 id=285 data-nosnippet>285</a>            <span class="self">self</span>.remote_timestamp.as_deref().unwrap_or(<span class="string">"unknown"</span>)
+<a href=#286 id=286 data-nosnippet>286</a>        )
+<a href=#287 id=287 data-nosnippet>287</a>    }
+<a href=#288 id=288 data-nosnippet>288</a>
+<a href=#289 id=289 data-nosnippet>289</a>    <span class="doccomment">/// Determine if this is a real conflict (different content)
+<a href=#290 id=290 data-nosnippet>290</a>    </span><span class="kw">pub fn </span>is_real_conflict(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#291 id=291 data-nosnippet>291</a>        <span class="self">self</span>.<span class="macro">local_hash !</span>= <span class="self">self</span>.remote_hash
+<a href=#292 id=292 data-nosnippet>292</a>    }
+<a href=#293 id=293 data-nosnippet>293</a>}
+<a href=#294 id=294 data-nosnippet>294</a>
+<a href=#295 id=295 data-nosnippet>295</a><span class="doccomment">/// Conflict detector for conversation sessions
+<a href=#296 id=296 data-nosnippet>296</a></span><span class="kw">pub struct </span>ConflictDetector {
+<a href=#297 id=297 data-nosnippet>297</a>    conflicts: Vec&lt;Conflict&gt;,
+<a href=#298 id=298 data-nosnippet>298</a>}
+<a href=#299 id=299 data-nosnippet>299</a>
+<a href=#300 id=300 data-nosnippet>300</a><span class="kw">impl </span>ConflictDetector {
+<a href=#301 id=301 data-nosnippet>301</a>    <span class="doccomment">/// Creates a new `ConflictDetector` with an empty conflict list.
+<a href=#302 id=302 data-nosnippet>302</a>    ///
+<a href=#303 id=303 data-nosnippet>303</a>    /// The conflict detector is used to identify and manage conflicts between local and remote
+<a href=#304 id=304 data-nosnippet>304</a>    /// conversation sessions. It maintains a list of detected conflicts and provides methods
+<a href=#305 id=305 data-nosnippet>305</a>    /// to resolve them according to different strategies.
+<a href=#306 id=306 data-nosnippet>306</a>    ///
+<a href=#307 id=307 data-nosnippet>307</a>    /// The detector starts with no conflicts; conflicts are added by calling the [`detect`]
+<a href=#308 id=308 data-nosnippet>308</a>    /// method with local and remote conversation sessions.
+<a href=#309 id=309 data-nosnippet>309</a>    ///
+<a href=#310 id=310 data-nosnippet>310</a>    /// [`detect`]: ConflictDetector::detect
+<a href=#311 id=311 data-nosnippet>311</a>    ///
+<a href=#312 id=312 data-nosnippet>312</a>    /// # Returns
+<a href=#313 id=313 data-nosnippet>313</a>    ///
+<a href=#314 id=314 data-nosnippet>314</a>    /// A new `ConflictDetector` instance with an empty internal conflict list, ready to
+<a href=#315 id=315 data-nosnippet>315</a>    /// detect and manage conflicts between conversation sessions.
+<a href=#316 id=316 data-nosnippet>316</a>    ///
+<a href=#317 id=317 data-nosnippet>317</a>    /// # Examples
+<a href=#318 id=318 data-nosnippet>318</a>    ///
+<a href=#319 id=319 data-nosnippet>319</a>    /// ```
+<a href=#320 id=320 data-nosnippet>320</a>    /// # use claude_code_sync::conflict::ConflictDetector;
+<a href=#321 id=321 data-nosnippet>321</a>    /// # use claude_code_sync::parser::ConversationSession;
+<a href=#322 id=322 data-nosnippet>322</a>    /// # fn example(local_sessions: Vec&lt;ConversationSession&gt;, remote_sessions: Vec&lt;ConversationSession&gt;) {
+<a href=#323 id=323 data-nosnippet>323</a>    /// let mut detector = ConflictDetector::new();
+<a href=#324 id=324 data-nosnippet>324</a>    ///
+<a href=#325 id=325 data-nosnippet>325</a>    /// // Detect conflicts between local and remote sessions
+<a href=#326 id=326 data-nosnippet>326</a>    /// detector.detect(&amp;local_sessions, &amp;remote_sessions);
+<a href=#327 id=327 data-nosnippet>327</a>    ///
+<a href=#328 id=328 data-nosnippet>328</a>    /// if detector.has_conflicts() {
+<a href=#329 id=329 data-nosnippet>329</a>    ///     println!("Found {} conflicts", detector.conflict_count());
+<a href=#330 id=330 data-nosnippet>330</a>    /// }
+<a href=#331 id=331 data-nosnippet>331</a>    /// # }
+<a href=#332 id=332 data-nosnippet>332</a>    /// ```
+<a href=#333 id=333 data-nosnippet>333</a>    ///
+<a href=#334 id=334 data-nosnippet>334</a>    /// # See Also
+<a href=#335 id=335 data-nosnippet>335</a>    ///
+<a href=#336 id=336 data-nosnippet>336</a>    /// * [`detect`] - Method to scan for conflicts between local and remote sessions
+<a href=#337 id=337 data-nosnippet>337</a>    /// * [`has_conflicts`] - Check if any conflicts have been detected
+<a href=#338 id=338 data-nosnippet>338</a>    /// * [`conflict_count`] - Get the number of detected conflicts
+<a href=#339 id=339 data-nosnippet>339</a>    ///
+<a href=#340 id=340 data-nosnippet>340</a>    /// [`detect`]: ConflictDetector::detect
+<a href=#341 id=341 data-nosnippet>341</a>    /// [`has_conflicts`]: ConflictDetector::has_conflicts
+<a href=#342 id=342 data-nosnippet>342</a>    /// [`conflict_count`]: ConflictDetector::conflict_count
+<a href=#343 id=343 data-nosnippet>343</a>    </span><span class="kw">pub fn </span>new() -&gt; <span class="self">Self </span>{
+<a href=#344 id=344 data-nosnippet>344</a>        ConflictDetector {
+<a href=#345 id=345 data-nosnippet>345</a>            conflicts: Vec::new(),
+<a href=#346 id=346 data-nosnippet>346</a>        }
+<a href=#347 id=347 data-nosnippet>347</a>    }
+<a href=#348 id=348 data-nosnippet>348</a>
+<a href=#349 id=349 data-nosnippet>349</a>    <span class="doccomment">/// Compare local and remote sessions and detect conflicts
+<a href=#350 id=350 data-nosnippet>350</a>    </span><span class="kw">pub fn </span>detect(
+<a href=#351 id=351 data-nosnippet>351</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#352 id=352 data-nosnippet>352</a>        local_sessions: <span class="kw-2">&amp;</span>[ConversationSession],
+<a href=#353 id=353 data-nosnippet>353</a>        remote_sessions: <span class="kw-2">&amp;</span>[ConversationSession],
+<a href=#354 id=354 data-nosnippet>354</a>    ) {
+<a href=#355 id=355 data-nosnippet>355</a>        <span class="comment">// Build a map of session_id -&gt; local session
+<a href=#356 id=356 data-nosnippet>356</a>        </span><span class="kw">let </span>local_map: std::collections::HashMap&lt;<span class="kw">_</span>, <span class="kw">_</span>&gt; = local_sessions
+<a href=#357 id=357 data-nosnippet>357</a>            .iter()
+<a href=#358 id=358 data-nosnippet>358</a>            .map(|s| (s.session_id.clone(), s))
+<a href=#359 id=359 data-nosnippet>359</a>            .collect();
+<a href=#360 id=360 data-nosnippet>360</a>
+<a href=#361 id=361 data-nosnippet>361</a>        <span class="comment">// Check each remote session against local
+<a href=#362 id=362 data-nosnippet>362</a>        </span><span class="kw">for </span>remote <span class="kw">in </span>remote_sessions {
+<a href=#363 id=363 data-nosnippet>363</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(local) = local_map.get(<span class="kw-2">&amp;</span>remote.session_id) {
+<a href=#364 id=364 data-nosnippet>364</a>                <span class="comment">// Session exists in both - check for conflicts
+<a href=#365 id=365 data-nosnippet>365</a>                </span><span class="kw">if </span>local.content_hash() != remote.content_hash() {
+<a href=#366 id=366 data-nosnippet>366</a>                    <span class="kw">let </span>conflict = Conflict::new(local, remote);
+<a href=#367 id=367 data-nosnippet>367</a>                    <span class="kw">if </span>conflict.is_real_conflict() {
+<a href=#368 id=368 data-nosnippet>368</a>                        <span class="self">self</span>.conflicts.push(conflict);
+<a href=#369 id=369 data-nosnippet>369</a>                    }
+<a href=#370 id=370 data-nosnippet>370</a>                }
+<a href=#371 id=371 data-nosnippet>371</a>            }
+<a href=#372 id=372 data-nosnippet>372</a>        }
+<a href=#373 id=373 data-nosnippet>373</a>    }
+<a href=#374 id=374 data-nosnippet>374</a>
+<a href=#375 id=375 data-nosnippet>375</a>    <span class="doccomment">/// Resolve all conflicts using the "keep both" strategy
+<a href=#376 id=376 data-nosnippet>376</a>    </span><span class="attr">#[allow(dead_code)]
+<a href=#377 id=377 data-nosnippet>377</a>    </span><span class="kw">pub fn </span>resolve_all_keep_both(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;(PathBuf, PathBuf)&gt;&gt; {
+<a href=#378 id=378 data-nosnippet>378</a>        <span class="kw">let </span><span class="kw-2">mut </span>renames = Vec::new();
+<a href=#379 id=379 data-nosnippet>379</a>
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="kw">for </span>conflict <span class="kw">in </span><span class="kw-2">&amp;mut </span><span class="self">self</span>.conflicts {
+<a href=#381 id=381 data-nosnippet>381</a>            <span class="kw">let </span>timestamp = chrono::Utc::now().format(<span class="string">"%Y%m%d-%H%M%S"</span>);
+<a href=#382 id=382 data-nosnippet>382</a>            <span class="kw">let </span>conflict_suffix = <span class="macro">format!</span>(<span class="string">"conflict-{timestamp}"</span>);
+<a href=#383 id=383 data-nosnippet>383</a>
+<a href=#384 id=384 data-nosnippet>384</a>            <span class="kw">let </span>renamed_path = conflict.resolve_keep_both(<span class="kw-2">&amp;</span>conflict_suffix)<span class="question-mark">?</span>;
+<a href=#385 id=385 data-nosnippet>385</a>            renames.push((conflict.remote_file.clone(), renamed_path));
+<a href=#386 id=386 data-nosnippet>386</a>        }
+<a href=#387 id=387 data-nosnippet>387</a>
+<a href=#388 id=388 data-nosnippet>388</a>        <span class="prelude-val">Ok</span>(renames)
+<a href=#389 id=389 data-nosnippet>389</a>    }
+<a href=#390 id=390 data-nosnippet>390</a>
+<a href=#391 id=391 data-nosnippet>391</a>    <span class="doccomment">/// Get all detected conflicts
+<a href=#392 id=392 data-nosnippet>392</a>    </span><span class="kw">pub fn </span>conflicts(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[Conflict] {
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.conflicts
+<a href=#394 id=394 data-nosnippet>394</a>    }
+<a href=#395 id=395 data-nosnippet>395</a>
+<a href=#396 id=396 data-nosnippet>396</a>    <span class="doccomment">/// Get mutable reference to all detected conflicts
+<a href=#397 id=397 data-nosnippet>397</a>    </span><span class="kw">pub fn </span>conflicts_mut(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;mut </span>[Conflict] {
+<a href=#398 id=398 data-nosnippet>398</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>.conflicts
+<a href=#399 id=399 data-nosnippet>399</a>    }
+<a href=#400 id=400 data-nosnippet>400</a>
+<a href=#401 id=401 data-nosnippet>401</a>    <span class="doccomment">/// Check if any conflicts were detected
+<a href=#402 id=402 data-nosnippet>402</a>    </span><span class="kw">pub fn </span>has_conflicts(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#403 id=403 data-nosnippet>403</a>        !<span class="self">self</span>.conflicts.is_empty()
+<a href=#404 id=404 data-nosnippet>404</a>    }
+<a href=#405 id=405 data-nosnippet>405</a>
+<a href=#406 id=406 data-nosnippet>406</a>    <span class="doccomment">/// Get count of conflicts
+<a href=#407 id=407 data-nosnippet>407</a>    </span><span class="kw">pub fn </span>conflict_count(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
+<a href=#408 id=408 data-nosnippet>408</a>        <span class="self">self</span>.conflicts.len()
+<a href=#409 id=409 data-nosnippet>409</a>    }
+<a href=#410 id=410 data-nosnippet>410</a>}
+<a href=#411 id=411 data-nosnippet>411</a>
+<a href=#412 id=412 data-nosnippet>412</a><span class="kw">impl </span>Default <span class="kw">for </span>ConflictDetector {
+<a href=#413 id=413 data-nosnippet>413</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#414 id=414 data-nosnippet>414</a>        <span class="self">Self</span>::new()
+<a href=#415 id=415 data-nosnippet>415</a>    }
+<a href=#416 id=416 data-nosnippet>416</a>}
+<a href=#417 id=417 data-nosnippet>417</a>
+<a href=#418 id=418 data-nosnippet>418</a><span class="attr">#[cfg(test)]
+<a href=#419 id=419 data-nosnippet>419</a></span><span class="kw">mod </span>tests {
+<a href=#420 id=420 data-nosnippet>420</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#421 id=421 data-nosnippet>421</a>    <span class="kw">use </span><span class="kw">crate</span>::parser::ConversationEntry;
+<a href=#422 id=422 data-nosnippet>422</a>
+<a href=#423 id=423 data-nosnippet>423</a>    <span class="kw">fn </span>create_test_session(session_id: <span class="kw-2">&amp;</span>str, message_count: usize) -&gt; ConversationSession {
+<a href=#424 id=424 data-nosnippet>424</a>        <span class="kw">let </span><span class="kw-2">mut </span>entries = Vec::new();
+<a href=#425 id=425 data-nosnippet>425</a>
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..message_count {
+<a href=#427 id=427 data-nosnippet>427</a>            entries.push(ConversationEntry {
+<a href=#428 id=428 data-nosnippet>428</a>                entry_type: <span class="kw">if </span>i % <span class="number">2 </span>== <span class="number">0 </span>{ <span class="string">"user" </span>} <span class="kw">else </span>{ <span class="string">"assistant" </span>}.to_string(),
+<a href=#429 id=429 data-nosnippet>429</a>                uuid: <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"uuid-{i}"</span>)),
+<a href=#430 id=430 data-nosnippet>430</a>                parent_uuid: <span class="kw">if </span>i &gt; <span class="number">0 </span>{
+<a href=#431 id=431 data-nosnippet>431</a>                    <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"uuid-{}"</span>, i - <span class="number">1</span>))
+<a href=#432 id=432 data-nosnippet>432</a>                } <span class="kw">else </span>{
+<a href=#433 id=433 data-nosnippet>433</a>                    <span class="prelude-val">None
+<a href=#434 id=434 data-nosnippet>434</a>                </span>},
+<a href=#435 id=435 data-nosnippet>435</a>                session_id: <span class="prelude-val">Some</span>(session_id.to_string()),
+<a href=#436 id=436 data-nosnippet>436</a>                timestamp: <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"2025-01-01T{i:02}:00:00Z"</span>)),
+<a href=#437 id=437 data-nosnippet>437</a>                message: <span class="prelude-val">None</span>,
+<a href=#438 id=438 data-nosnippet>438</a>                cwd: <span class="prelude-val">None</span>,
+<a href=#439 id=439 data-nosnippet>439</a>                version: <span class="prelude-val">None</span>,
+<a href=#440 id=440 data-nosnippet>440</a>                git_branch: <span class="prelude-val">None</span>,
+<a href=#441 id=441 data-nosnippet>441</a>                extra: serde_json::Value::Null,
+<a href=#442 id=442 data-nosnippet>442</a>            });
+<a href=#443 id=443 data-nosnippet>443</a>        }
+<a href=#444 id=444 data-nosnippet>444</a>
+<a href=#445 id=445 data-nosnippet>445</a>        ConversationSession {
+<a href=#446 id=446 data-nosnippet>446</a>            session_id: session_id.to_string(),
+<a href=#447 id=447 data-nosnippet>447</a>            entries,
+<a href=#448 id=448 data-nosnippet>448</a>            file_path: <span class="macro">format!</span>(<span class="string">"/test/{session_id}.jsonl"</span>),
+<a href=#449 id=449 data-nosnippet>449</a>        }
+<a href=#450 id=450 data-nosnippet>450</a>    }
+<a href=#451 id=451 data-nosnippet>451</a>
+<a href=#452 id=452 data-nosnippet>452</a>    <span class="attr">#[test]
+<a href=#453 id=453 data-nosnippet>453</a>    </span><span class="kw">fn </span>test_conflict_detection() {
+<a href=#454 id=454 data-nosnippet>454</a>        <span class="kw">let </span>local_session = create_test_session(<span class="string">"session-1"</span>, <span class="number">5</span>);
+<a href=#455 id=455 data-nosnippet>455</a>        <span class="kw">let </span>remote_session = create_test_session(<span class="string">"session-1"</span>, <span class="number">6</span>);
+<a href=#456 id=456 data-nosnippet>456</a>
+<a href=#457 id=457 data-nosnippet>457</a>        <span class="kw">let </span><span class="kw-2">mut </span>detector = ConflictDetector::new();
+<a href=#458 id=458 data-nosnippet>458</a>        detector.detect(<span class="kw-2">&amp;</span>[local_session], <span class="kw-2">&amp;</span>[remote_session]);
+<a href=#459 id=459 data-nosnippet>459</a>
+<a href=#460 id=460 data-nosnippet>460</a>        <span class="macro">assert!</span>(detector.has_conflicts());
+<a href=#461 id=461 data-nosnippet>461</a>        <span class="macro">assert_eq!</span>(detector.conflict_count(), <span class="number">1</span>);
+<a href=#462 id=462 data-nosnippet>462</a>
+<a href=#463 id=463 data-nosnippet>463</a>        <span class="kw">let </span>conflict = <span class="kw-2">&amp;</span>detector.conflicts()[<span class="number">0</span>];
+<a href=#464 id=464 data-nosnippet>464</a>        <span class="macro">assert_eq!</span>(conflict.session_id, <span class="string">"session-1"</span>);
+<a href=#465 id=465 data-nosnippet>465</a>        <span class="macro">assert_eq!</span>(conflict.local_message_count, <span class="number">5</span>);
+<a href=#466 id=466 data-nosnippet>466</a>        <span class="macro">assert_eq!</span>(conflict.remote_message_count, <span class="number">6</span>);
+<a href=#467 id=467 data-nosnippet>467</a>    }
+<a href=#468 id=468 data-nosnippet>468</a>
+<a href=#469 id=469 data-nosnippet>469</a>    <span class="attr">#[test]
+<a href=#470 id=470 data-nosnippet>470</a>    </span><span class="kw">fn </span>test_no_conflict_same_content() {
+<a href=#471 id=471 data-nosnippet>471</a>        <span class="kw">let </span>local_session = create_test_session(<span class="string">"session-1"</span>, <span class="number">5</span>);
+<a href=#472 id=472 data-nosnippet>472</a>        <span class="kw">let </span>remote_session = create_test_session(<span class="string">"session-1"</span>, <span class="number">5</span>);
+<a href=#473 id=473 data-nosnippet>473</a>
+<a href=#474 id=474 data-nosnippet>474</a>        <span class="kw">let </span><span class="kw-2">mut </span>detector = ConflictDetector::new();
+<a href=#475 id=475 data-nosnippet>475</a>        detector.detect(<span class="kw-2">&amp;</span>[local_session], <span class="kw-2">&amp;</span>[remote_session]);
+<a href=#476 id=476 data-nosnippet>476</a>
+<a href=#477 id=477 data-nosnippet>477</a>        <span class="macro">assert!</span>(!detector.has_conflicts());
+<a href=#478 id=478 data-nosnippet>478</a>    }
+<a href=#479 id=479 data-nosnippet>479</a>}
+</code></pre></div></section></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["init_from_onboarding","init_sync_repo","pull_history","push_history","remove_remote","set_remote","show_remote","show_status","sync_bidirectional"],"struct":["MultiRepoState","RepoConfig","SyncState"]};
