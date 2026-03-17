@@ -9,9 +9,11 @@ use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::config::ConfigManager;
 use crate::filter::FilterConfig;
+use crate::onboarding::InitConfig;
 use crate::scm;
-use crate::sync::{MultiRepoState, RepoConfig};
+use crate::sync::{MultiRepoState, RepoConfig, SyncState};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Handle interactive configuration menu
 ///
@@ -592,6 +594,51 @@ pub fn handle_repo_selector() -> Result<()> {
     } else {
         return Err(anyhow::anyhow!("Repository '{}' not found", repo_name));
     }
+
+    Ok(())
+}
+
+/// Export current config as a claude-code-sync-init.toml in the current directory.
+///
+/// Reads the active sync state and filter config, builds an InitConfig, and writes
+/// it to `./claude-code-sync-init.toml`.
+pub fn handle_config_export() -> Result<()> {
+    let filter = FilterConfig::load().context("Failed to load filter configuration")?;
+
+    let repo_path = match SyncState::load() {
+        Ok(state) => state.sync_repo_path.to_string_lossy().to_string(),
+        Err(_) => "~/claude-code-sync-repo".to_string(),
+    };
+
+    let remote_url = MultiRepoState::load()
+        .ok()
+        .and_then(|ms| ms.repos.get(&ms.active_repo).cloned())
+        .and_then(|r| r.remote_url);
+
+    let init_config = InitConfig {
+        repo_path,
+        remote_url: remote_url.clone(),
+        clone: remote_url.is_some(),
+        exclude_attachments: filter.exclude_attachments,
+        exclude_older_than_days: filter.exclude_older_than_days,
+        enable_lfs: filter.enable_lfs,
+        scm_backend: filter.scm_backend,
+        sync_subdirectory: filter.sync_subdirectory,
+        use_project_name_only: filter.use_project_name_only,
+    };
+
+    let content = toml::to_string_pretty(&init_config)
+        .context("Failed to serialize init config")?;
+
+    let output_path = PathBuf::from("claude-code-sync-init.toml");
+    std::fs::write(&output_path, content)
+        .with_context(|| format!("Failed to write {}", output_path.display()))?;
+
+    println!(
+        "{} Exported to {}",
+        "✓".green().bold(),
+        output_path.display()
+    );
 
     Ok(())
 }
