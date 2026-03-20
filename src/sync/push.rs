@@ -16,6 +16,35 @@ use super::discovery::{claude_projects_dir, discover_sessions, find_colliding_pr
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
+/// Push ~/.claude/settings.json to <repo>/settings/settings.json
+fn push_settings(sync_repo_path: &Path, verbosity: crate::VerbosityLevel) -> Result<()> {
+    use crate::VerbosityLevel;
+
+    let home = dirs::home_dir().context("Failed to get home directory")?;
+    let local_settings = home.join(".claude").join("settings.json");
+
+    if !local_settings.exists() {
+        if verbosity != VerbosityLevel::Quiet {
+            println!("  {} No local settings.json found, skipping", "ℹ".cyan());
+        }
+        return Ok(());
+    }
+
+    let settings_dir = sync_repo_path.join("settings");
+    fs::create_dir_all(&settings_dir)
+        .context("Failed to create settings directory in sync repo")?;
+
+    let dest = settings_dir.join("settings.json");
+    fs::copy(&local_settings, &dest)
+        .context("Failed to copy settings.json to sync repo")?;
+
+    if verbosity != VerbosityLevel::Quiet {
+        println!("  {} Synced settings.json → settings/settings.json", "✓".green());
+    }
+
+    Ok(())
+}
+
 /// Push local Claude Code history to sync repository
 pub fn push_history(
     commit_message: Option<&str>,
@@ -240,6 +269,16 @@ pub fn push_history(
             println!("\n{}", "Push cancelled.".yellow());
             return Ok(());
         }
+    }
+
+    // ============================================================================
+    // SYNC SETTINGS
+    // ============================================================================
+    if filter.sync_settings {
+        if verbosity != VerbosityLevel::Quiet {
+            println!("  {} settings.json...", "Syncing".cyan());
+        }
+        push_settings(&state.sync_repo_path, verbosity)?;
     }
 
     // ============================================================================

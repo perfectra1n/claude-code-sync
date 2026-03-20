@@ -54,6 +54,11 @@ pub struct FilterConfig {
     /// when usernames or paths differ across machines.
     #[serde(default)]
     pub use_project_name_only: bool,
+
+    /// Sync ~/.claude/settings.json to/from the sync repo under settings/
+    /// When enabled, settings.json is pushed to and pulled from <repo>/settings/settings.json
+    #[serde(default = "default_sync_settings")]
+    pub sync_settings: bool,
 }
 
 fn default_lfs_patterns() -> Vec<String> {
@@ -72,6 +77,10 @@ fn default_sync_subdirectory() -> String {
     "projects".to_string()
 }
 
+fn default_sync_settings() -> bool {
+    true
+}
+
 impl Default for FilterConfig {
     fn default() -> Self {
         FilterConfig {
@@ -85,6 +94,7 @@ impl Default for FilterConfig {
             scm_backend: default_scm_backend(),
             sync_subdirectory: default_sync_subdirectory(),
             use_project_name_only: false,
+            sync_settings: true,
         }
     }
 }
@@ -446,6 +456,15 @@ pub fn show_config() -> Result<()> {
             "Yes (multi-device mode)".green()
         } else {
             "No (full path mode)".yellow()
+        }
+    );
+    println!(
+        "  {}: {}",
+        "Sync settings.json".cyan(),
+        if config.sync_settings {
+            "Yes".green()
+        } else {
+            "No".yellow()
         }
     );
 
