@@ -16,7 +16,13 @@ use super::discovery::{claude_projects_dir, discover_sessions, find_colliding_pr
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
-/// Push ~/.claude/settings.json to <repo>/settings/settings.json
+/// Push ~/.claude/settings.json to <repo>/settings/settings.json.
+///
+/// If the local file does not yet contain a `"lastModifiedTimestamp"` key, one is added
+/// as a Unix millisecond integer before writing to the sync repo. This timestamp is used by
+/// [`pull_settings`] on other machines to perform timestamp-based conflict resolution —
+/// a key whose remote value is newer (per this timestamp) than the local file's mtime
+/// will take precedence over the local value during a subsequent pull.
 fn push_settings(sync_repo_path: &Path, verbosity: crate::VerbosityLevel) -> Result<()> {
     use crate::VerbosityLevel;
 
@@ -34,9 +40,28 @@ fn push_settings(sync_repo_path: &Path, verbosity: crate::VerbosityLevel) -> Res
     fs::create_dir_all(&settings_dir)
         .context("Failed to create settings directory in sync repo")?;
 
+    // Read local settings and ensure a lastModifiedTimestamp is present so that
+    // other machines can resolve conflicts against this push.
+    let content = fs::read_to_string(&local_settings)
+        .context("Failed to read local settings.json")?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)
+        .context("Failed to parse local settings.json")?;
+
+    if let Some(obj) = json.as_object_mut() {
+        obj.entry("lastModifiedTimestamp").or_insert_with(|| {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            serde_json::Value::Number(now_ms.into())
+        });
+    }
+
     let dest = settings_dir.join("settings.json");
-    fs::copy(&local_settings, &dest)
-        .context("Failed to copy settings.json to sync repo")?;
+    let out = serde_json::to_string_pretty(&json)
+        .context("Failed to serialize settings.json")?;
+    fs::write(&dest, out)
+        .context("Failed to write settings.json to sync repo")?;
 
     if verbosity != VerbosityLevel::Quiet {
         println!("  {} Synced settings.json → settings/settings.json", "✓".green());

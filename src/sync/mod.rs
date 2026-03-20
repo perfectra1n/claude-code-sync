@@ -10,6 +10,7 @@ mod status;
 // Re-export public types and functions
 pub use init::{init_from_onboarding, init_sync_repo};
 pub use pull::pull_history;
+pub use pull::merge_settings_json;
 pub use push::push_history;
 pub use remote::{remove_remote, set_remote, show_remote};
 pub use state::{MultiRepoState, RepoConfig, SyncState};

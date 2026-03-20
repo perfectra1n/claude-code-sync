@@ -19,10 +19,121 @@ use super::discovery::{claude_projects_dir, discover_sessions, find_local_projec
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
-/// Pull <repo>/settings/settings.json to ~/.claude/settings.json
+/// Merge two settings.json objects using a superset + timestamp-based conflict resolution strategy.
 ///
-/// If both files exist and differ, the local file is backed up to
-/// ~/.claude/settings.json.backup before being overwritten.
+/// ## Merge rules
+///
+/// 1. **Superset**: The merged result contains all keys from both `local` and `remote`.
+///    - A key that exists only in `local` is kept in the merged output (never discarded).
+///    - A key that exists only in `remote` is kept in the merged output.
+/// 2. **Conflict resolution**: When a key exists in both maps but with different values,
+///    the winner is decided by comparing timestamps:
+///    - The remote side embeds a `"lastModifiedTimestamp"` Unix millisecond integer in its JSON.
+///    - If that timestamp is **strictly newer** than `local_mtime`, the remote value wins.
+///    - Otherwise (local file is newer, timestamps are equal, or the remote has no
+///      `"lastModifiedTimestamp"` / it cannot be parsed as an integer) the **local value wins**.
+/// 3. **Timestamp key**: `"lastModifiedTimestamp"` itself is not subject to the rules above.
+///    It is always set to the current Unix millisecond time in the merged output so that the
+///    next sync can use it as a reference point.
+///
+/// ## Return value
+///
+/// Returns `(merged_map, changed_vs_remote)` where `changed_vs_remote` is `true` when the
+/// merged result differs from `remote` — indicating that the sync repo copy should be updated.
+pub fn merge_settings_json(
+    local: &serde_json::Map<String, serde_json::Value>,
+    remote: &serde_json::Map<String, serde_json::Value>,
+    local_mtime: std::time::SystemTime,
+) -> (serde_json::Map<String, serde_json::Value>, bool) {
+    use std::collections::BTreeSet;
+
+    const TS_KEY: &str = "lastModifiedTimestamp";
+
+    // Parse the remote's embedded timestamp as Unix milliseconds (if present and valid).
+    let remote_ts_ms: Option<i64> = remote
+        .get(TS_KEY)
+        .and_then(|v| v.as_i64());
+
+    // Convert local file mtime to Unix milliseconds for comparison.
+    let local_ms: i64 = local_mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    // Collect all keys from both sides (excluding the timestamp meta-key).
+    let all_keys: BTreeSet<&String> = local
+        .keys()
+        .chain(remote.keys())
+        .filter(|k| k.as_str() != TS_KEY)
+        .collect();
+
+    let mut merged = serde_json::Map::new();
+    let mut changed = false;
+
+    for key in all_keys {
+        let in_local = local.get(key);
+        let in_remote = remote.get(key);
+
+        let chosen = match (in_local, in_remote) {
+            // Key only in local — add it (superset rule); this is new vs remote.
+            (Some(lv), None) => {
+                changed = true;
+                lv.clone()
+            }
+            // Key only in remote — carry it forward unchanged.
+            (None, Some(rv)) => rv.clone(),
+            // Same value on both sides — no conflict.
+            (Some(lv), Some(rv)) if lv == rv => lv.clone(),
+            // Conflict: values differ — resolve by timestamp.
+            (Some(lv), Some(rv)) => {
+                let use_remote = remote_ts_ms
+                    .map(|rts| rts > local_ms)
+                    .unwrap_or(false); // no remote timestamp → local wins
+
+                if use_remote {
+                    rv.clone()
+                } else {
+                    changed = true;
+                    lv.clone()
+                }
+            }
+            (None, None) => unreachable!(),
+        };
+
+        merged.insert(key.clone(), chosen);
+    }
+
+    // Always stamp the merged result with the current Unix millisecond time so future
+    // syncs can compare against it.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    merged.insert(TS_KEY.to_string(), serde_json::Value::Number(now_ms.into()));
+
+    // If the remote was missing the timestamp key, that alone counts as a change.
+    if !remote.contains_key(TS_KEY) {
+        changed = true;
+    }
+
+    (merged, changed)
+}
+
+/// Pull and merge <repo>/settings/settings.json into ~/.claude/settings.json.
+///
+/// ## Merge strategy
+///
+/// Rather than overwriting the local file, this function merges remote and local settings
+/// using [`merge_settings_json`]:
+/// - Keys present only locally are preserved (the merged result is a superset).
+/// - Conflicting keys are resolved by comparing the local file's mtime against the
+///   `"lastModifiedTimestamp"` embedded in the remote JSON; the newer value wins.
+///   If the remote carries no timestamp, the local value wins.
+/// - The merged result always includes an updated `"lastModifiedTimestamp"`.
+///
+/// If the merge produced a result that differs from the remote copy (e.g. local-only keys
+/// were added), the remote file in the sync repo is also updated so that the subsequent
+/// git commit captures the reconciled state.
 fn pull_settings(sync_repo_path: &Path, verbosity: crate::VerbosityLevel) -> Result<()> {
     use crate::VerbosityLevel;
     use std::fs;
@@ -38,36 +149,56 @@ fn pull_settings(sync_repo_path: &Path, verbosity: crate::VerbosityLevel) -> Res
     let home = dirs::home_dir().context("Failed to get home directory")?;
     let local_settings = home.join(".claude").join("settings.json");
 
-    // If local exists and differs, back it up first
-    if local_settings.exists() {
-        let local_content = fs::read(&local_settings)
+    // Load remote JSON.
+    let remote_content = fs::read_to_string(&remote_settings)
+        .context("Failed to read remote settings.json")?;
+    let remote_json: serde_json::Value = serde_json::from_str(&remote_content)
+        .context("Failed to parse remote settings.json")?;
+    let remote_map = remote_json
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+
+    // Load local JSON (or use an empty map if local doesn't exist yet).
+    let (local_map, local_mtime) = if local_settings.exists() {
+        let content = fs::read_to_string(&local_settings)
             .context("Failed to read local settings.json")?;
-        let remote_content = fs::read(&remote_settings)
-            .context("Failed to read remote settings.json")?;
+        let json: serde_json::Value = serde_json::from_str(&content)
+            .context("Failed to parse local settings.json")?;
+        let mtime = fs::metadata(&local_settings)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        (json.as_object().cloned().unwrap_or_default(), mtime)
+    } else {
+        (serde_json::Map::new(), std::time::SystemTime::UNIX_EPOCH)
+    };
 
-        if local_content == remote_content {
-            if verbosity != VerbosityLevel::Quiet {
-                println!("  {} settings.json unchanged", "✓".green());
-            }
-            return Ok(());
-        }
+    // Merge: superset + timestamp-based conflict resolution.
+    let (merged_map, changed_vs_remote) = merge_settings_json(&local_map, &remote_map, local_mtime);
+    let merged_value = serde_json::Value::Object(merged_map);
+    let merged_text = serde_json::to_string_pretty(&merged_value)
+        .context("Failed to serialize merged settings.json")?;
 
-        let backup = home.join(".claude").join("settings.json.backup");
-        fs::copy(&local_settings, &backup)
-            .context("Failed to backup local settings.json")?;
+    // Write merged result to local file.
+    if let Some(parent) = local_settings.parent() {
+        fs::create_dir_all(parent).context("Failed to create ~/.claude directory")?;
+    }
+    fs::write(&local_settings, &merged_text)
+        .context("Failed to write merged settings.json")?;
+
+    // If the merge changed something relative to the remote, update the sync repo copy too
+    // so that the subsequent git commit captures the reconciled state.
+    if changed_vs_remote {
+        fs::write(&remote_settings, &merged_text)
+            .context("Failed to update remote settings.json with merged result")?;
         if verbosity != VerbosityLevel::Quiet {
             println!(
-                "  {} Local settings.json backed up to settings.json.backup",
-                "ℹ".cyan()
+                "  {} settings.json merged (local keys preserved, remote updated)",
+                "✓".green()
             );
         }
-    }
-
-    fs::copy(&remote_settings, &local_settings)
-        .context("Failed to copy settings.json from sync repo")?;
-
-    if verbosity != VerbosityLevel::Quiet {
-        println!("  {} settings/settings.json → ~/.claude/settings.json", "✓".green());
+    } else if verbosity != VerbosityLevel::Quiet {
+        println!("  {} settings.json unchanged", "✓".green());
     }
 
     Ok(())
