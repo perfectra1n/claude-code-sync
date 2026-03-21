@@ -19,6 +19,60 @@ use super::discovery::{claude_projects_dir, discover_sessions, find_local_projec
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
+/// Pull <repo>/settings/settings.json to ~/.claude/settings.json
+///
+/// If both files exist and differ, the local file is backed up to
+/// ~/.claude/settings.json.backup before being overwritten.
+fn pull_settings(sync_repo_path: &Path, verbosity: crate::VerbosityLevel) -> Result<()> {
+    use crate::VerbosityLevel;
+    use std::fs;
+
+    let remote_settings = sync_repo_path.join("settings").join("settings.json");
+    if !remote_settings.exists() {
+        if verbosity != VerbosityLevel::Quiet {
+            println!("  {} No settings.json in sync repo, skipping", "ℹ".cyan());
+        }
+        return Ok(());
+    }
+
+    let home = dirs::home_dir().context("Failed to get home directory")?;
+    let local_settings = home.join(".claude").join("settings.json");
+
+    // If local exists and differs, back it up first
+    if local_settings.exists() {
+        let local_content = fs::read(&local_settings)
+            .context("Failed to read local settings.json")?;
+        let remote_content = fs::read(&remote_settings)
+            .context("Failed to read remote settings.json")?;
+
+        if local_content == remote_content {
+            if verbosity != VerbosityLevel::Quiet {
+                println!("  {} settings.json unchanged", "✓".green());
+            }
+            return Ok(());
+        }
+
+        let backup = home.join(".claude").join("settings.json.backup");
+        fs::copy(&local_settings, &backup)
+            .context("Failed to backup local settings.json")?;
+        if verbosity != VerbosityLevel::Quiet {
+            println!(
+                "  {} Local settings.json backed up to settings.json.backup",
+                "ℹ".cyan()
+            );
+        }
+    }
+
+    fs::copy(&remote_settings, &local_settings)
+        .context("Failed to copy settings.json from sync repo")?;
+
+    if verbosity != VerbosityLevel::Quiet {
+        println!("  {} settings/settings.json → ~/.claude/settings.json", "✓".green());
+    }
+
+    Ok(())
+}
+
 /// Pull and merge history from sync repository
 pub fn pull_history(
     fetch_remote: bool,
@@ -500,6 +554,16 @@ pub fn pull_history(
     }
 
     println!("  {} Merged {} sessions", "✓".green(), merged_count);
+
+    // ============================================================================
+    // SYNC SETTINGS
+    // ============================================================================
+    if filter.sync_settings {
+        if verbosity != VerbosityLevel::Quiet {
+            println!("  {} settings.json...", "Syncing".cyan());
+        }
+        pull_settings(&state.sync_repo_path, verbosity)?;
+    }
 
     // ============================================================================
     // CREATE AND SAVE OPERATION RECORD
