@@ -607,13 +607,53 @@ pub fn handle_config_export() -> Result<()> {
 
     let repo_path = match SyncState::load() {
         Ok(state) => state.sync_repo_path.to_string_lossy().to_string(),
-        Err(_) => "~/claude-code-sync-repo".to_string(),
+        Err(e) => {
+            eprintln!(
+                "{} Could not load sync state ({}), using default repo_path",
+                "!".yellow(),
+                e
+            );
+            "~/claude-code-sync-repo".to_string()
+        }
     };
 
-    let remote_url = MultiRepoState::load()
-        .ok()
-        .and_then(|ms| ms.repos.get(&ms.active_repo).cloned())
-        .and_then(|r| r.remote_url);
+    let remote_url = match MultiRepoState::load() {
+        Ok(ms) => {
+            match ms.repos.get(&ms.active_repo) {
+                Some(repo) => repo.remote_url.clone(),
+                None => {
+                    eprintln!(
+                        "{} Active repo '{}' not found in multi-repo state, remote_url will be unset",
+                        "!".yellow(),
+                        ms.active_repo
+                    );
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "{} Could not load multi-repo state ({}), remote_url will be unset",
+                "!".yellow(),
+                e
+            );
+            None
+        }
+    };
+
+    // Warn about filter settings that are not captured in InitConfig
+    if !filter.include_patterns.is_empty() {
+        eprintln!(
+            "{} include_patterns are not included in the export and will need to be reconfigured",
+            "!".yellow()
+        );
+    }
+    if !filter.exclude_patterns.is_empty() {
+        eprintln!(
+            "{} exclude_patterns are not included in the export and will need to be reconfigured",
+            "!".yellow()
+        );
+    }
 
     let init_config = InitConfig {
         repo_path,
