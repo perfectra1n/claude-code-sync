@@ -195,6 +195,10 @@ enum Commands {
         /// Step-by-step configuration wizard
         #[arg(short, long)]
         wizard: bool,
+
+        /// Export current config as claude-code-sync-init.toml in the current directory
+        #[arg(long)]
+        export: bool,
     },
 
     /// View conflict reports
@@ -546,6 +550,7 @@ fn main() -> Result<()> {
             show,
             interactive,
             wizard,
+            export,
         } => {
             // Check if ANY flag was provided
             let has_any_flag = exclude_older_than.is_some()
@@ -558,11 +563,14 @@ fn main() -> Result<()> {
                 || sync_subdirectory.is_some()
                 || show
                 || interactive
-                || wizard;
+                || wizard
+                || export;
 
             if !has_any_flag {
                 // No args provided - show repo selector menu
                 handle_repo_selector()?;
+            } else if export {
+                handle_config_export()?;
             } else if interactive {
                 handle_config_interactive()?;
             } else if wizard {
