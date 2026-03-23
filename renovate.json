@@ -21,5 +21,13 @@
     "automergeType": "pr"
   },
   "prConcurrentLimit": 20,
-  "prCreation": "immediate"
+  "prCreation": "immediate",
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "minimumReleaseAge": "3 days"
+    }
+  ]
 }
