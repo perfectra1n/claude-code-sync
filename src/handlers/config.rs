@@ -682,3 +682,251 @@ pub fn handle_config_export() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::collections::HashMap;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    /// Set up an isolated config environment by pointing XDG_CONFIG_HOME to a temp dir.
+    /// Returns (config_temp_dir, working_temp_dir) — the working dir is where the
+    /// exported TOML will be written.
+    fn setup_export_env() -> (TempDir, TempDir, String) {
+        let config_dir = TempDir::new().unwrap();
+        let work_dir = TempDir::new().unwrap();
+        let old_dir = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        std::env::set_var("XDG_CONFIG_HOME", config_dir.path());
+        std::env::set_current_dir(work_dir.path()).unwrap();
+        (config_dir, work_dir, old_dir)
+    }
+
+    fn teardown(old_dir: &str) {
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    /// Write a v2 MultiRepoState to the config dir's state.json
+    fn write_multi_repo_state(config_dir: &Path, state: &MultiRepoState) {
+        let claude_dir = config_dir.join("claude-code-sync");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let content = serde_json::to_string_pretty(state).unwrap();
+        std::fs::write(claude_dir.join("state.json"), content).unwrap();
+    }
+
+    /// Write a FilterConfig to the config dir's config.toml
+    fn write_filter_config(config_dir: &Path, filter: &FilterConfig) {
+        let claude_dir = config_dir.join("claude-code-sync");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let content = toml::to_string_pretty(filter).unwrap();
+        std::fs::write(claude_dir.join("config.toml"), content).unwrap();
+    }
+
+    fn make_multi_repo_state(
+        repo_path: &str,
+        remote_url: Option<String>,
+    ) -> MultiRepoState {
+        let mut repos = HashMap::new();
+        repos.insert(
+            "default".to_string(),
+            RepoConfig {
+                name: "default".to_string(),
+                sync_repo_path: PathBuf::from(repo_path),
+                has_remote: remote_url.is_some(),
+                is_cloned_repo: false,
+                remote_url,
+                description: None,
+            },
+        );
+        MultiRepoState {
+            version: 2,
+            active_repo: "default".to_string(),
+            repos,
+        }
+    }
+
+    /// Read back the exported TOML from the working directory
+    fn read_exported_config(work_dir: &Path) -> InitConfig {
+        let path = work_dir.join("claude-code-sync-init.toml");
+        assert!(path.exists(), "Exported file should exist");
+        let content = std::fs::read_to_string(&path).unwrap();
+        toml::from_str(&content).unwrap()
+    }
+
+    #[test]
+    #[serial]
+    fn test_export_with_full_state() {
+        let (config_dir, work_dir, old_dir) = setup_export_env();
+
+        let state = make_multi_repo_state(
+            "/tmp/test-repo",
+            Some("https://github.com/user/repo.git".to_string()),
+        );
+        write_multi_repo_state(config_dir.path(), &state);
+
+        let filter = FilterConfig {
+            exclude_attachments: true,
+            exclude_older_than_days: Some(30),
+            enable_lfs: true,
+            scm_backend: "git".to_string(),
+            sync_subdirectory: "my-projects".to_string(),
+            use_project_name_only: true,
+            ..Default::default()
+        };
+        write_filter_config(config_dir.path(), &filter);
+
+        let result = handle_config_export();
+        teardown(&old_dir);
+
+        assert!(result.is_ok(), "export should succeed: {:?}", result.err());
+
+        let exported = read_exported_config(work_dir.path());
+        assert_eq!(exported.repo_path, "/tmp/test-repo");
+        assert_eq!(
+            exported.remote_url.as_deref(),
+            Some("https://github.com/user/repo.git")
+        );
+        assert!(exported.clone, "clone should be true when remote_url is set");
+        assert!(exported.exclude_attachments);
+        assert_eq!(exported.exclude_older_than_days, Some(30));
+        assert!(exported.enable_lfs);
+        assert_eq!(exported.scm_backend, "git");
+        assert_eq!(exported.sync_subdirectory, "my-projects");
+        assert!(exported.use_project_name_only);
+    }
+
+    #[test]
+    #[serial]
+    fn test_export_without_remote_url() {
+        let (config_dir, work_dir, old_dir) = setup_export_env();
+
+        let state = make_multi_repo_state("/tmp/local-repo", None);
+        write_multi_repo_state(config_dir.path(), &state);
+        write_filter_config(config_dir.path(), &FilterConfig::default());
+
+        let result = handle_config_export();
+        teardown(&old_dir);
+
+        assert!(result.is_ok());
+
+        let exported = read_exported_config(work_dir.path());
+        assert_eq!(exported.repo_path, "/tmp/local-repo");
+        assert!(exported.remote_url.is_none());
+        assert!(!exported.clone, "clone should be false without remote_url");
+    }
+
+    #[test]
+    #[serial]
+    fn test_export_falls_back_when_no_state() {
+        // No state.json written — SyncState::load() and MultiRepoState::load() will fail
+        let (config_dir, work_dir, old_dir) = setup_export_env();
+        write_filter_config(config_dir.path(), &FilterConfig::default());
+
+        let result = handle_config_export();
+        teardown(&old_dir);
+
+        assert!(result.is_ok(), "export should still succeed with fallback");
+
+        let exported = read_exported_config(work_dir.path());
+        assert_eq!(exported.repo_path, "~/claude-code-sync-repo");
+        assert!(exported.remote_url.is_none());
+        assert!(!exported.clone);
+    }
+
+    #[test]
+    #[serial]
+    fn test_export_defaults_from_empty_filter() {
+        let (config_dir, work_dir, old_dir) = setup_export_env();
+
+        let state = make_multi_repo_state("/tmp/test-repo", None);
+        write_multi_repo_state(config_dir.path(), &state);
+        // No filter config written — FilterConfig::load() returns default
+
+        let result = handle_config_export();
+        teardown(&old_dir);
+
+        assert!(result.is_ok());
+
+        let exported = read_exported_config(work_dir.path());
+        assert!(!exported.exclude_attachments);
+        assert!(exported.exclude_older_than_days.is_none());
+        assert!(!exported.enable_lfs);
+        assert_eq!(exported.scm_backend, "git");
+        assert_eq!(exported.sync_subdirectory, "projects");
+        assert!(!exported.use_project_name_only);
+    }
+
+    #[test]
+    #[serial]
+    fn test_export_roundtrip_with_init_config() {
+        // Verify the exported TOML can be parsed back identically
+        let (config_dir, work_dir, old_dir) = setup_export_env();
+
+        let state = make_multi_repo_state(
+            "/home/user/sync-repo",
+            Some("git@github.com:user/history.git".to_string()),
+        );
+        write_multi_repo_state(config_dir.path(), &state);
+
+        let filter = FilterConfig {
+            exclude_attachments: true,
+            exclude_older_than_days: Some(90),
+            enable_lfs: false,
+            scm_backend: "mercurial".to_string(),
+            sync_subdirectory: "conversations".to_string(),
+            use_project_name_only: true,
+            ..Default::default()
+        };
+        write_filter_config(config_dir.path(), &filter);
+
+        let result = handle_config_export();
+        teardown(&old_dir);
+
+        assert!(result.is_ok());
+
+        // Re-read and parse — should survive serialization roundtrip
+        let path = work_dir.path().join("claude-code-sync-init.toml");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: InitConfig = toml::from_str(&raw).unwrap();
+
+        assert_eq!(parsed.repo_path, "/home/user/sync-repo");
+        assert_eq!(
+            parsed.remote_url.as_deref(),
+            Some("git@github.com:user/history.git")
+        );
+        assert!(parsed.clone);
+        assert!(parsed.exclude_attachments);
+        assert_eq!(parsed.exclude_older_than_days, Some(90));
+        assert!(!parsed.enable_lfs);
+        assert_eq!(parsed.scm_backend, "mercurial");
+        assert_eq!(parsed.sync_subdirectory, "conversations");
+        assert!(parsed.use_project_name_only);
+    }
+
+    #[test]
+    #[serial]
+    fn test_export_output_file_is_valid_toml() {
+        let (config_dir, work_dir, old_dir) = setup_export_env();
+
+        let state = make_multi_repo_state("/tmp/repo", None);
+        write_multi_repo_state(config_dir.path(), &state);
+        write_filter_config(config_dir.path(), &FilterConfig::default());
+
+        handle_config_export().unwrap();
+        teardown(&old_dir);
+
+        let path = work_dir.path().join("claude-code-sync-init.toml");
+        let raw = std::fs::read_to_string(&path).unwrap();
+
+        // Should parse as a generic TOML table
+        let table: toml::Table = toml::from_str(&raw).unwrap();
+        assert!(table.contains_key("repo_path"));
+        assert!(table.contains_key("scm_backend"));
+        assert!(table.contains_key("sync_subdirectory"));
+    }
+}
