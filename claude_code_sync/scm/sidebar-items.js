@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Backend"],"fn":["clone","detect_backend","init","init_with_backend","is_repo","open"],"mod":["lfs"],"struct":["GitScm","HgScm"],"trait":["Scm"]};
