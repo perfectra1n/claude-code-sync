@@ -31,20 +31,27 @@ impl MessageNode {
         self.children.push(child);
     }
 
-    /// Recursively collects all entries in this subtree in depth-first order
+    /// Collects all entries in this subtree in depth-first order (iterative)
     fn collect_entries(&self) -> Vec<ConversationEntry> {
-        let mut entries = vec![self.entry.clone()];
+        let mut entries = Vec::new();
+        // Use an explicit stack instead of recursion to avoid stack overflow
+        // on deep conversation chains (300+ messages).
+        let mut stack: Vec<&MessageNode> = vec![self];
 
-        // Sort children by timestamp to maintain chronological order
-        let mut sorted_children = self.children.clone();
-        sorted_children.sort_by(|a, b| {
-            let a_ts = a.entry.timestamp.as_ref();
-            let b_ts = b.entry.timestamp.as_ref();
-            a_ts.cmp(&b_ts)
-        });
+        while let Some(node) = stack.pop() {
+            entries.push(node.entry.clone());
 
-        for child in &sorted_children {
-            entries.extend(child.collect_entries());
+            // Sort children by timestamp (reversed because stack is LIFO)
+            let mut sorted_children: Vec<&MessageNode> = node.children.iter().collect();
+            sorted_children.sort_by(|a, b| {
+                let a_ts = a.entry.timestamp.as_ref();
+                let b_ts = b.entry.timestamp.as_ref();
+                b_ts.cmp(&a_ts)
+            });
+
+            for child in sorted_children {
+                stack.push(child);
+            }
         }
 
         entries
@@ -255,24 +262,52 @@ impl<'a> SmartMerger<'a> {
                 .push(uuid.clone());
         }
 
-        // Build tree recursively
-        fn build_subtree(
-            uuid: &str,
+        // Build tree iteratively to avoid stack overflow on deep conversation
+        // chains (300+ messages with large JSON payloads per entry).
+        //
+        // Strategy: collect all reachable UUIDs from each root in top-down
+        // order, then assemble nodes bottom-up so each parent can own its
+        // children without recursion.
+        fn build_subtree_iterative(
+            root_uuid: &str,
             uuid_to_entry: &HashMap<String, ConversationEntry>,
             parent_to_children: &HashMap<Option<String>, Vec<String>>,
         ) -> MessageNode {
-            let entry = uuid_to_entry.get(uuid).unwrap().clone();
-            let mut node = MessageNode::new(entry);
+            // Phase 1: BFS to collect all UUIDs reachable from this root
+            let mut processing_order: Vec<String> = Vec::new();
+            let mut queue: std::collections::VecDeque<String> =
+                std::collections::VecDeque::new();
+            queue.push_back(root_uuid.to_string());
 
-            // Get children for this UUID
-            if let Some(child_uuids) = parent_to_children.get(&Some(uuid.to_string())) {
-                for child_uuid in child_uuids {
-                    let child_node = build_subtree(child_uuid, uuid_to_entry, parent_to_children);
-                    node.add_child(child_node);
+            while let Some(uuid) = queue.pop_front() {
+                processing_order.push(uuid.clone());
+                if let Some(child_uuids) = parent_to_children.get(&Some(uuid)) {
+                    for child_uuid in child_uuids {
+                        queue.push_back(child_uuid.clone());
+                    }
                 }
             }
 
-            node
+            // Phase 2: build nodes bottom-up (reverse BFS order ensures
+            // children are built before their parents)
+            let mut node_map: HashMap<String, MessageNode> = HashMap::new();
+
+            for uuid in processing_order.iter().rev() {
+                let entry = uuid_to_entry.get(uuid).unwrap().clone();
+                let mut node = MessageNode::new(entry);
+
+                if let Some(child_uuids) = parent_to_children.get(&Some(uuid.clone())) {
+                    for child_uuid in child_uuids {
+                        if let Some(child_node) = node_map.remove(child_uuid) {
+                            node.add_child(child_node);
+                        }
+                    }
+                }
+
+                node_map.insert(uuid.clone(), node);
+            }
+
+            node_map.remove(root_uuid).unwrap()
         }
 
         // Find root UUIDs (entries with no parent)
@@ -281,7 +316,8 @@ impl<'a> SmartMerger<'a> {
         // Build trees from each root
         let mut roots = Vec::new();
         for root_uuid in root_uuids {
-            let root_node = build_subtree(&root_uuid, &uuid_to_entry, &parent_to_children);
+            let root_node =
+                build_subtree_iterative(&root_uuid, &uuid_to_entry, &parent_to_children);
             roots.push(root_node);
         }
 
