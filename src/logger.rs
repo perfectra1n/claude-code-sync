@@ -136,7 +136,7 @@ mod tests {
     fn test_log_to_file() -> Result<()> {
         // Set up isolated test environment
         let temp_dir = tempfile::TempDir::new()?;
-        std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+        std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", temp_dir.path());
 
         // Ensure config directory exists
         ConfigManager::ensure_config_dir()?;
@@ -150,7 +150,7 @@ mod tests {
         assert!(contents.contains("Test log message"));
 
         // Clean up env var
-        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("CLAUDE_CODE_SYNC_CONFIG_DIR");
 
         Ok(())
     }
@@ -160,7 +160,7 @@ mod tests {
     fn test_rotate_log_creates_backup() -> Result<()> {
         // Set up isolated test environment
         let temp_dir = tempfile::TempDir::new()?;
-        std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+        std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", temp_dir.path());
 
         // Create a large log file
         let log_path = ConfigManager::log_file_path()?;
@@ -186,7 +186,7 @@ mod tests {
         }
 
         // Clean up env var
-        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("CLAUDE_CODE_SYNC_CONFIG_DIR");
 
         Ok(())
     }

@@ -9,7 +9,20 @@ impl ConfigManager {
     /// - Linux: $XDG_CONFIG_HOME/claude-code-sync or ~/.config/claude-code-sync
     /// - macOS: ~/Library/Application Support/claude-code-sync
     /// - Windows: %APPDATA%\claude-code-sync
+    ///
+    /// The `CLAUDE_CODE_SYNC_CONFIG_DIR` environment variable overrides the
+    /// platform default on every OS. This is primarily what keeps the test suite
+    /// isolated from a real user's config: on macOS `dirs`/the platform default
+    /// ignores `XDG_CONFIG_HOME`, so without an explicit, cross-platform override a
+    /// `cargo test` run would read and clobber the user's real config directory.
     pub fn config_dir() -> Result<PathBuf> {
+        // Explicit override, honored on all platforms, checked before any default.
+        if let Ok(override_dir) = std::env::var("CLAUDE_CODE_SYNC_CONFIG_DIR") {
+            if !override_dir.is_empty() {
+                return Ok(PathBuf::from(override_dir).join("claude-code-sync"));
+            }
+        }
+
         #[cfg(target_os = "linux")]
         {
             // Follow XDG Base Directory Specification
@@ -160,9 +173,27 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_macos_library_path() {
+        // Guard: only asserts the default when no override is in effect.
+        if std::env::var("CLAUDE_CODE_SYNC_CONFIG_DIR").is_err() {
+            let config_dir = ConfigManager::config_dir().unwrap();
+            assert!(config_dir
+                .to_string_lossy()
+                .contains("Library/Application Support/claude-code-sync"));
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_config_dir_override_env_all_platforms() {
+        // The dedicated override must win on every platform, so the test suite can
+        // isolate itself from a real user's config (notably on macOS, where the
+        // platform default ignores XDG_CONFIG_HOME).
+        std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", "/tmp/ccs-override-test");
         let config_dir = ConfigManager::config_dir().unwrap();
-        assert!(config_dir
-            .to_string_lossy()
-            .contains("Library/Application Support/claude-code-sync"));
+        std::env::remove_var("CLAUDE_CODE_SYNC_CONFIG_DIR");
+        assert_eq!(
+            config_dir,
+            PathBuf::from("/tmp/ccs-override-test/claude-code-sync")
+        );
     }
 }

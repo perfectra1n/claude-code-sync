@@ -691,7 +691,8 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    /// Set up an isolated config environment by pointing XDG_CONFIG_HOME to a temp dir.
+    /// Set up an isolated config environment via CLAUDE_CODE_SYNC_CONFIG_DIR (honored
+    /// on every platform, unlike XDG_CONFIG_HOME which macOS ignores).
     /// Returns (config_temp_dir, working_temp_dir) — the working dir is where the
     /// exported TOML will be written.
     fn setup_export_env() -> (TempDir, TempDir, String) {
@@ -701,13 +702,13 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .to_string();
-        std::env::set_var("XDG_CONFIG_HOME", config_dir.path());
+        std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", config_dir.path());
         std::env::set_current_dir(work_dir.path()).unwrap();
         (config_dir, work_dir, old_dir)
     }
 
     fn teardown(old_dir: &str) {
-        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("CLAUDE_CODE_SYNC_CONFIG_DIR");
         std::env::set_current_dir(old_dir).unwrap();
     }
 

@@ -67,12 +67,20 @@ mod tests {
     use super::*;
     use crate::filter::FilterConfig;
     use crate::scm;
+    use serial_test::serial;
     use std::path::Path;
     use tempfile::TempDir;
 
     #[test]
+    #[serial]
     fn test_url_validation() {
         let temp_dir = TempDir::new().unwrap();
+        // Isolate the config dir: this test writes and then deletes state.json at the
+        // resolved default location, so without an override it would clobber the real
+        // ~/Library/Application Support/claude-code-sync/state.json on macOS.
+        // #[serial] keeps the process-global override from racing other tests.
+        let prev = std::env::var("CLAUDE_CODE_SYNC_CONFIG_DIR").ok();
+        std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", temp_dir.path());
         let repo_path = temp_dir.path().join("test-repo");
 
         // Initialize a test repo
@@ -112,6 +120,10 @@ mod tests {
 
         // Cleanup
         std::fs::remove_file(&state_file).ok();
+        match prev {
+            Some(v) => std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CODE_SYNC_CONFIG_DIR"),
+        }
     }
 
     #[test]
