@@ -131,20 +131,49 @@ history only ever grows.
 
 ## Installation
 
+### Prebuilt Binaries (Recommended)
+
+Download the latest release binary for your platform directly from GitHub:
+
+```bash
+# Linux (x86_64)
+curl -fsSL https://github.com/perfectra1n/claude-code-sync/releases/latest/download/claude-code-sync-linux-x86_64.tar.gz | tar xz
+sudo mv claude-code-sync /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/perfectra1n/claude-code-sync/releases/latest/download/claude-code-sync-macos-aarch64.tar.gz | tar xz
+sudo mv claude-code-sync /usr/local/bin/
+
+# macOS (Intel)
+curl -fsSL https://github.com/perfectra1n/claude-code-sync/releases/latest/download/claude-code-sync-macos-x86_64.tar.gz | tar xz
+sudo mv claude-code-sync /usr/local/bin/
+```
+
+Each release asset ships with a `.sha256` checksum file alongside it — see the
+[releases page](https://github.com/perfectra1n/claude-code-sync/releases) for
+all assets and versions.
+
+**To update:** re-run the same command; it always fetches the latest release.
+
+### Using Cargo (Build from GitHub)
+
+If you have a Rust toolchain installed, you can build and install straight from
+this repository without cloning it:
+
+```bash
+cargo install --locked --git https://github.com/perfectra1n/claude-code-sync
+```
+
+**To update:** re-run the same command. Cargo tracks the commit it built from,
+so it rebuilds and reinstalls whenever new commits land on the default branch.
+
 ### From Source
 
 ```bash
 git clone https://github.com/perfectra1n/claude-code-sync
 cd claude-code-sync
-cargo build --release
-cargo install --path .
+cargo install --locked --path .
 claude-code-sync --help
-```
-
-### Using Cargo
-
-```bash
-cargo install --path .
 ```
 
 ## Quick Start
