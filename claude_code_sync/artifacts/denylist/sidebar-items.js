@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_denied","is_unsafe_rel_path"]};

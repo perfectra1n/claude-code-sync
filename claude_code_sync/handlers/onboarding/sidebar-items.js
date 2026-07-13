@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_initialized","run_init_from_config","run_onboarding_flow","try_init_from_config"]};

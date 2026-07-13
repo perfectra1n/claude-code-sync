@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["handle_history_clear","handle_history_last","handle_history_list","handle_history_review"]};

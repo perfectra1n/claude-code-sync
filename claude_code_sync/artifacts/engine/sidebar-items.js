@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["apply_pull","ensure_ignore_files","is_category_enabled","plan_pull","push_artifacts"],"struct":["ArtifactReport","CategoryCounts","PlannedWrite","PullPlan"]};

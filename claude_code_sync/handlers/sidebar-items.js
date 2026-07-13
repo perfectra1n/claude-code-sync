@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["cleanup","config","history","onboarding","undo"]};
