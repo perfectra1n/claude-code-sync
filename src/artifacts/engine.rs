@@ -523,10 +523,9 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         counts.merged_entries += new_lines;
     }
 
-    let mut report = ArtifactReport::default();
-    report.counts = by_category.into_values().collect();
-    report.counts.sort_by_key(|c| c.category as usize);
-    Ok(report)
+    let mut counts: Vec<CategoryCounts> = by_category.into_values().collect();
+    counts.sort_by_key(|c| c.category as usize);
+    Ok(ArtifactReport { counts })
 }
 
 /// Globs for the managed ignore block: defense-in-depth behind the code-level
