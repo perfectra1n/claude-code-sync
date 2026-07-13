@@ -68,8 +68,8 @@ description = "Security audit of dependencies"
 run = "cargo audit"
 
 [tasks.coverage]
-description = "Coverage report (cobertura.xml) via tarpaulin"
-run = "cargo tarpaulin --out xml --verbose --timeout 300"
+description = "Coverage report (cobertura.xml) via tarpaulin; single-threaded like every test run here"
+run = "cargo tarpaulin --out xml --verbose --timeout 300 -- --test-threads=1"
 
 [tasks.doc]
 description = "Build rustdoc with redirect index (published by docs.yml)"
