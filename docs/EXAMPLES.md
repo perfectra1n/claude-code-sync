@@ -577,6 +577,76 @@ jobs:
           claude-code-sync sync --message "CI sync $(date +%Y-%m-%d)"
 ```
 
+## Syncing Settings, Skills, and Other Artifacts
+
+Carry your whole Claude Code environment — not just conversation history —
+across machines.
+
+### Enable categories
+
+```bash
+# Everything (settings, memory, skills, agents, commands, plugins manifests,
+# plans, todos, prompt history)
+claude-code-sync config --enable-artifacts all
+
+# A curated set
+claude-code-sync config --enable-artifacts settings,skills,agents,commands,plugins,prompt-history
+
+# See per-category drift against the sync repo
+claude-code-sync status
+```
+
+### New machine bootstrap
+
+```bash
+# On the new machine, after init pointing at the same repo:
+claude-code-sync config --enable-artifacts all
+claude-code-sync pull
+# Settings, skills, agents, commands, plugin manifests, and prompt history
+# are restored into ~/.claude — ready to work.
+```
+
+### Prompt history across two machines
+
+`~/.claude/history.jsonl` is union-merged in BOTH directions, so prompts typed
+on either machine end up everywhere and nothing is ever overwritten:
+
+```bash
+# Machine A                          # Machine B
+claude-code-sync sync                claude-code-sync sync
+# After each machine syncs once more, both history.jsonl files are identical
+# supersets, ordered chronologically.
+```
+
+### Undo an artifact pull
+
+```bash
+claude-code-sync pull          # overwrote local settings.json with remote
+claude-code-sync undo pull     # restores your previous settings.json bytes
+                               # and deletes any files the pull created
+```
+
+### Headless init with artifacts (CI/CD)
+
+```toml
+# claude-code-sync-init.toml
+repo_path = "~/claude-history-sync"
+remote_url = "git@github.com:user/claude-history.git"
+clone = true
+
+[sync_artifacts]
+settings = true
+skills = true
+agents = true
+commands = true
+plugins = true
+prompt_history = true
+```
+
+Secrets never travel: `.credentials.json`, `settings.local.json`, `.env*`,
+key material, and machine-local caches are refused by a hardcoded denylist in
+both directions, regardless of configuration.
+
 ## Custom Sync Subdirectory
 
 Store projects in a custom subdirectory within the sync repository:

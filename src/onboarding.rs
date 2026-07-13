@@ -43,6 +43,12 @@ use crate::config::ConfigManager;
 ///
 /// # Optional: Use only project name for multi-device sync (default: false)
 /// use_project_name_only = true
+///
+/// # Optional: Artifact categories to sync (all default to false)
+/// [sync_artifacts]
+/// settings = true
+/// skills = true
+/// prompt_history = true
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitConfig {

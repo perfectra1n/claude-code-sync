@@ -53,14 +53,14 @@ jobs:
             ubuntu-cargo-build-
 
       - name: Run unit tests
-        run: cargo test --lib --verbose
+        run: cargo test --lib --verbose -- --test-threads=1
 
       - name: Run doc tests
         run: cargo test --doc --verbose
 
       - name: Run SCM backend tests and verify Mercurial tests executed
         run: |
-          cargo test --test scm_backend_tests --verbose 2>&1 | tee test_output.txt
+          cargo test --test scm_backend_tests --verbose -- --test-threads=1 2>&1 | tee test_output.txt
           # Verify mercurial tests ran (not skipped)
           if grep -q "case_2_mercurial" test_output.txt; then
             echo "✓ Mercurial tests executed successfully"

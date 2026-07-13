@@ -52,10 +52,10 @@ jobs:
           git config --global user.name "GitHub Actions CI"
 
       - name: Run integration tests
-        run: cargo test --test '*' --verbose
+        run: cargo test --test '*' --verbose -- --test-threads=1
 
       - name: Run all tests with integration flag
-        run: cargo test --verbose --all-features
+        run: cargo test --verbose --all-features -- --test-threads=1
 
   end-to-end-tests:
     name: End-to-End Tests
