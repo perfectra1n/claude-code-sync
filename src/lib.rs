@@ -43,6 +43,7 @@ pub enum VerbosityLevel {
 /// Provides utilities for locating and managing configuration files and directories
 /// following platform conventions (XDG on Linux, Application Support on macOS,
 /// AppData on Windows).
+pub mod artifacts;
 pub mod config;
 
 /// Conflict detection and resolution for conversation synchronization.
