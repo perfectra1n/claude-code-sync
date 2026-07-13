@@ -552,6 +552,7 @@ pub fn pull_history(
 
     // Attach the snapshot path to the operation record (only if we created one)
     operation_record.snapshot_path = snapshot_path;
+    operation_record.artifact_counts = artifact_report.counts.clone();
 
     // Load operation history and add this operation
     let mut history = match OperationHistory::load() {

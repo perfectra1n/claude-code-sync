@@ -387,6 +387,7 @@ pub fn push_history(
         // Store commit hash for undo (no file snapshot needed - git has history)
         // On first push (no prior commits), this will be None
         operation_record.commit_hash = commit_before_push;
+        operation_record.artifact_counts = artifact_report.counts.clone();
 
         // Load operation history and add this operation
         let mut history = match OperationHistory::load() {

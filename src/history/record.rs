@@ -35,6 +35,12 @@ pub struct OperationRecord {
     /// This is much more efficient than storing file contents.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_hash: Option<String>,
+
+    /// Per-category artifact sync outcomes for this operation. Empty (and
+    /// omitted from JSON) when no artifact category was enabled, so history
+    /// files stay readable by older versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_counts: Vec<crate::artifacts::engine::CategoryCounts>,
 }
 
 impl OperationRecord {
@@ -51,6 +57,7 @@ impl OperationRecord {
             affected_conversations,
             snapshot_path: None,
             commit_hash: None,
+            artifact_counts: Vec::new(),
         }
     }
 
@@ -86,6 +93,44 @@ impl OperationRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_old_record_json_without_artifact_counts_deserializes() {
+        // operation-history.json files written before artifact sync have no
+        // artifact_counts key; they must keep loading.
+        let old_json = r#"{
+            "operation_type": "push",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "affected_conversations": []
+        }"#;
+        let record: OperationRecord = serde_json::from_str(old_json).unwrap();
+        assert!(record.artifact_counts.is_empty());
+    }
+
+    #[test]
+    fn test_artifact_counts_round_trip_and_stay_absent_when_empty() {
+        use crate::artifacts::engine::CategoryCounts;
+        use crate::artifacts::registry::CategoryId;
+
+        let mut record = OperationRecord::new(OperationType::Push, None, vec![]);
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(
+            !json.contains("artifact_counts"),
+            "empty counts are skipped so old versions can still parse the file"
+        );
+
+        record.artifact_counts = vec![CategoryCounts {
+            category: CategoryId::Skills,
+            added: 2,
+            modified: 1,
+            unchanged: 0,
+            skipped: 0,
+            merged_entries: 0,
+        }];
+        let json = serde_json::to_string(&record).unwrap();
+        let back: OperationRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.artifact_counts, record.artifact_counts);
+    }
 
     #[test]
     fn test_operation_record_creation() {
