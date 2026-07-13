@@ -1,5 +1,6 @@
-# Build stage
-FROM rust:1.96-slim AS builder
+# Build stage — keep the builder and runtime stages on the same Debian
+# release, or the binary links against a newer glibc than the runtime has
+FROM rust:1.96-slim-trixie AS builder
 
 WORKDIR /app
 
@@ -14,7 +15,7 @@ RUN touch src/main.rs src/lib.rs
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 

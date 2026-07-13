@@ -36,6 +36,15 @@ jobs:
             echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          TAG="${{ steps.get_version.outputs.VERSION }}"
+          CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)
+          if [ "${TAG#v}" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag $TAG does not match Cargo.toml version $CARGO_VERSION. Bump the version in Cargo.toml (and commit the updated Cargo.lock) before tagging."
+            exit 1
+          fi
+
       - name: Generate changelog
         id: changelog
         run: |
@@ -261,7 +270,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v7
