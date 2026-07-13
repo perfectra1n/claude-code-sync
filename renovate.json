@@ -13,6 +13,8 @@
   ],
   "rangeStrategy": "bump",
   "semanticCommits": "enabled",
+  "semanticCommitType": "deps",
+  "semanticCommitScope": null,
   "vulnerabilityAlerts": {
     "labels": [
       "security"
