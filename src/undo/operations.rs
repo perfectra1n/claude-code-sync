@@ -210,3 +210,316 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
 
     Ok(summary)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::undo::test_support::{
+        create_test_file, metadata_only_snapshot, operation_count, operation_types,
+        setup_test_repo, HistoryBuilder,
+    };
+    use chrono::Duration;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_undo_pull_no_history() {
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+
+        let result = undo_pull(Some(history_path), Some(temp_dir.path()));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No pull operation found"));
+    }
+
+    #[test]
+    fn test_undo_pull_success() {
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+        let snapshots_dir = temp_dir.path().join("snapshots");
+
+        let file1 = create_test_file(temp_dir.path(), "conversation.jsonl", "original");
+
+        let snapshot = Snapshot::create(OperationType::Pull, vec![&file1], None).unwrap();
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        HistoryBuilder::new(&history_path)
+            .push(OperationType::Pull, "main", Some(&snapshot_path))
+            .save();
+
+        fs::write(&file1, "modified by pull").unwrap();
+
+        let result = undo_pull(Some(history_path), Some(temp_dir.path())).unwrap();
+        assert!(result.contains("Successfully undone"));
+
+        assert_eq!(fs::read_to_string(&file1).unwrap(), "original");
+        assert!(!snapshot_path.exists(), "snapshot should be cleaned up");
+    }
+
+    #[test]
+    fn test_undo_pull_missing_snapshot() {
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+
+        HistoryBuilder::new(&history_path)
+            .push(
+                OperationType::Pull,
+                "main",
+                Some(Path::new("/nonexistent/snapshot.json")),
+            )
+            .save();
+
+        let result = undo_pull(Some(history_path), Some(temp_dir.path()));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Snapshot file not found"));
+    }
+
+    #[test]
+    fn test_undo_push_success() {
+        let (temp_dir, repo) = setup_test_repo();
+        let history_path = temp_dir.path().join("history.json");
+        let snapshots_dir = temp_dir.path().join("snapshots");
+
+        let initial_hash = repo.current_commit_hash().unwrap();
+
+        // Commit something on top, simulating the push we're about to undo.
+        let new_file = temp_dir.path().join("new.txt");
+        fs::write(&new_file, "new content").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Second commit").unwrap();
+
+        let mut snapshot =
+            Snapshot::create(OperationType::Push, vec![&new_file], Some(&initial_hash)).unwrap();
+        snapshot.git_commit_hash = Some(initial_hash.clone());
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        HistoryBuilder::new(&history_path)
+            .push(OperationType::Push, "master", Some(&snapshot_path))
+            .save();
+
+        let result = undo_push(temp_dir.path(), Some(history_path)).unwrap();
+        assert!(result.contains("Successfully undone"));
+        assert!(result.contains(&initial_hash[..8]));
+
+        let repo_check = scm::open(temp_dir.path()).unwrap();
+        assert_eq!(repo_check.current_commit_hash().unwrap(), initial_hash);
+    }
+
+    #[test]
+    fn test_undo_push_no_history() {
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+
+        let result = undo_push(temp_dir.path(), Some(history_path));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No push operation found"));
+    }
+
+    #[test]
+    fn test_undo_push_missing_commit_hash() {
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+        let snapshots_dir = temp_dir.path().join("snapshots");
+
+        // A push snapshot with no commit hash: there is nothing to reset to.
+        let mut snapshot = metadata_only_snapshot(
+            &Uuid::new_v4().to_string(),
+            OperationType::Push,
+            Duration::zero(),
+        );
+        snapshot.branch = Some("main".to_string());
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        HistoryBuilder::new(&history_path)
+            .push(OperationType::Push, "main", Some(&snapshot_path))
+            .save();
+
+        let repo = scm::init(temp_dir.path()).unwrap();
+        let test_file = temp_dir.path().join("test.txt");
+        fs::write(&test_file, "test").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Initial commit").unwrap();
+
+        let result = undo_push(temp_dir.path(), Some(history_path));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No commit hash found"));
+    }
+
+    #[test]
+    fn test_undo_pull_preserves_other_operations() {
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+        let snapshots_dir = temp_dir.path().join("snapshots");
+
+        let file1 = create_test_file(temp_dir.path(), "conversation.jsonl", "original");
+
+        let snapshot1 = Snapshot::create(OperationType::Pull, vec![&file1], None).unwrap();
+        let snapshot_path1 = snapshot1.save_to_disk(Some(&snapshots_dir)).unwrap();
+        let snapshot2 = Snapshot::create(OperationType::Pull, vec![&file1], None).unwrap();
+        let snapshot_path2 = snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Pull, then push, then pull. Undoing should take only the last pull.
+        HistoryBuilder::new(&history_path)
+            .push(OperationType::Pull, "main", Some(&snapshot_path1))
+            .push(OperationType::Push, "main", None)
+            .push(OperationType::Pull, "main", Some(&snapshot_path2))
+            .save();
+
+        assert_eq!(operation_count(&history_path), 3);
+
+        let result = undo_pull(Some(history_path.clone()), Some(temp_dir.path())).unwrap();
+        assert!(result.contains("Successfully undone"));
+
+        // Most recent first: the push, then the earlier pull. Only the newest
+        // pull was consumed.
+        assert_eq!(
+            operation_types(&history_path),
+            vec![OperationType::Push, OperationType::Pull],
+            "the earlier pull and the push must survive"
+        );
+    }
+
+    #[test]
+    fn test_undo_push_preserves_other_operations() {
+        let (temp_dir, repo) = setup_test_repo();
+        let history_path = temp_dir.path().join("history.json");
+        let snapshots_dir = temp_dir.path().join("snapshots");
+
+        let initial_hash = repo.current_commit_hash().unwrap();
+
+        let new_file = temp_dir.path().join("new.txt");
+        fs::write(&new_file, "new content").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Second commit").unwrap();
+
+        let mut snapshot =
+            Snapshot::create(OperationType::Push, vec![&new_file], Some(&initial_hash)).unwrap();
+        snapshot.git_commit_hash = Some(initial_hash.clone());
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        HistoryBuilder::new(&history_path)
+            .push(OperationType::Pull, "master", None)
+            .push(OperationType::Push, "master", Some(&snapshot_path))
+            .save();
+
+        assert_eq!(operation_count(&history_path), 2);
+
+        let result = undo_push(temp_dir.path(), Some(history_path.clone())).unwrap();
+        assert!(result.contains("Successfully undone"));
+
+        assert_eq!(
+            operation_types(&history_path),
+            vec![OperationType::Pull],
+            "the pull must survive"
+        );
+    }
+
+    #[test]
+    fn test_undo_pull_transaction_safety() {
+        // History is updated BEFORE files are restored, so that a failure to
+        // restore can't leave a consumed snapshot still listed as undoable.
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+        let snapshots_dir = temp_dir.path().join("snapshots");
+
+        let file1 = create_test_file(temp_dir.path(), "conversation.jsonl", "original");
+
+        let snapshot = Snapshot::create(OperationType::Pull, vec![&file1], None).unwrap();
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        HistoryBuilder::new(&history_path)
+            .push(OperationType::Pull, "main", Some(&snapshot_path))
+            .save();
+        assert_eq!(operation_count(&history_path), 1);
+
+        fs::write(&file1, "modified by pull").unwrap();
+
+        // Make restoration as likely to fail as we portably can.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&file1).unwrap().permissions();
+            perms.set_mode(0o444); // read-only
+            fs::set_permissions(&file1, perms).unwrap();
+        }
+
+        let result = undo_pull(Some(history_path.clone()), Some(temp_dir.path()));
+
+        // Whether or not restoration succeeded, history must already be updated.
+        assert_eq!(
+            operation_count(&history_path),
+            0,
+            "History should be updated even if file restoration fails"
+        );
+
+        if result.is_ok() {
+            assert!(
+                !snapshot_path.exists(),
+                "Snapshot should be cleaned up on success"
+            );
+        }
+
+        // Restore write permission so the TempDir can be removed.
+        #[cfg(unix)]
+        if file1.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&file1).unwrap().permissions();
+            perms.set_mode(0o644);
+            let _ = fs::set_permissions(&file1, perms);
+        }
+    }
+
+    #[test]
+    fn test_undo_push_transaction_safety() {
+        // Same ordering guarantee as the pull case: history first, reset second.
+        let (temp_dir, repo) = setup_test_repo();
+        let history_path = temp_dir.path().join("history.json");
+        let snapshots_dir = temp_dir.path().join("snapshots");
+
+        let initial_hash = repo.current_commit_hash().unwrap();
+
+        let new_file = temp_dir.path().join("new.txt");
+        fs::write(&new_file, "new content").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("Second commit").unwrap();
+
+        let mut snapshot =
+            Snapshot::create(OperationType::Push, vec![&new_file], Some(&initial_hash)).unwrap();
+        snapshot.git_commit_hash = Some(initial_hash.clone());
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        HistoryBuilder::new(&history_path)
+            .push(OperationType::Push, "master", Some(&snapshot_path))
+            .save();
+        assert_eq!(operation_count(&history_path), 1);
+
+        let result = undo_push(temp_dir.path(), Some(history_path.clone()));
+
+        assert_eq!(
+            operation_count(&history_path),
+            0,
+            "History should be updated even if git reset fails"
+        );
+
+        if result.is_ok() {
+            let repo_check = scm::open(temp_dir.path()).unwrap();
+            assert_eq!(repo_check.current_commit_hash().unwrap(), initial_hash);
+            assert!(
+                !snapshot_path.exists(),
+                "Snapshot should be cleaned up on success"
+            );
+        }
+    }
+}

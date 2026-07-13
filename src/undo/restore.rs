@@ -106,8 +106,133 @@ impl Snapshot {
     /// Restore files from this snapshot
     ///
     /// This is a convenience wrapper that uses the home directory as the allowed base.
-    #[allow(dead_code)]
     pub fn restore(&self) -> Result<()> {
         self.restore_with_base(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::OperationType;
+    use crate::undo::test_support::{create_test_file, metadata_only_snapshot};
+    use chrono::Duration;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_snapshot_restore() {
+        let temp_dir = tempdir().unwrap();
+        let file1 = create_test_file(temp_dir.path(), "file1.txt", "original content");
+
+        let snapshot = Snapshot::create(OperationType::Pull, vec![&file1], None).unwrap();
+
+        fs::write(&file1, "modified content").unwrap();
+        assert_eq!(fs::read_to_string(&file1).unwrap(), "modified content");
+
+        snapshot.restore_with_base(Some(temp_dir.path())).unwrap();
+
+        assert_eq!(fs::read_to_string(&file1).unwrap(), "original content");
+    }
+
+    #[test]
+    fn test_snapshot_restores_file_hierarchy() {
+        let temp_dir = tempdir().unwrap();
+
+        let nested_dir = temp_dir.path().join("dir1").join("dir2");
+        fs::create_dir_all(&nested_dir).unwrap();
+        let nested_file = nested_dir.join("deep.txt");
+        fs::write(&nested_file, "deep content").unwrap();
+
+        let snapshot = Snapshot::create(OperationType::Pull, vec![&nested_file], None).unwrap();
+
+        // Blow away the whole tree, not just the file: restore has to recreate
+        // the intermediate directories, not merely rewrite the leaf.
+        fs::remove_dir_all(temp_dir.path().join("dir1")).unwrap();
+        assert!(!nested_file.exists());
+
+        snapshot.restore_with_base(Some(temp_dir.path())).unwrap();
+
+        assert!(nested_file.exists());
+        assert_eq!(fs::read_to_string(&nested_file).unwrap(), "deep content");
+    }
+
+    #[test]
+    fn test_snapshot_path_traversal_protection() {
+        // Note: this deliberately exercises the *real* home directory, because
+        // that is the boundary `restore()` defends when no base dir is given.
+        let mut malicious_snapshot = metadata_only_snapshot(
+            &Uuid::new_v4().to_string(),
+            OperationType::Pull,
+            Duration::zero(),
+        );
+
+        // A path that escapes home via `..`; canonicalization should catch it.
+        let home = dirs::home_dir().unwrap();
+        let evil_path = home.join("..").join("..").join("etc").join("passwd");
+
+        malicious_snapshot.files.insert(
+            evil_path.to_string_lossy().to_string(),
+            b"malicious content".to_vec(),
+        );
+
+        let result = malicious_snapshot.restore();
+
+        if let Err(err) = result {
+            let err_msg = err.to_string();
+            assert!(
+                err_msg.contains("Security") || err_msg.contains("outside home"),
+                "Error message should indicate security issue: {err_msg}"
+            );
+        } else {
+            // If it didn't error, at least verify nothing was written outside home.
+            assert!(
+                !PathBuf::from("/etc/passwd").exists()
+                    || !fs::read_to_string("/etc/passwd")
+                        .unwrap_or_default()
+                        .contains("malicious")
+            );
+        }
+    }
+
+    #[test]
+    fn test_differential_snapshot_restore_with_deletions() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let file1 = temp_dir.path().join("file1.txt");
+        let file2 = temp_dir.path().join("file2.txt");
+
+        fs::write(&file1, b"content1").unwrap();
+        fs::write(&file2, b"content2").unwrap();
+
+        let snapshot1 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1, &file2],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot1.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        fs::remove_file(&file2).unwrap();
+
+        let snapshot2 = Snapshot::create_differential_with_dir(
+            OperationType::Pull,
+            vec![&file1],
+            None,
+            Some(&snapshots_dir),
+        )
+        .unwrap();
+        snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        // Recreate file2 so the restore has something to delete.
+        fs::write(&file2, b"should_be_deleted").unwrap();
+
+        snapshot2
+            .restore_with_base_and_snapshots(Some(temp_dir.path()), Some(&snapshots_dir))
+            .unwrap();
+
+        assert!(file1.exists(), "file1 should exist after restore");
+        assert!(!file2.exists(), "file2 should be deleted after restore");
     }
 }
