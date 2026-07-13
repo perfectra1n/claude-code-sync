@@ -13,8 +13,7 @@ use crate::scm::Backend;
 
 use super::denylist::{is_denied, is_unsafe_rel_path};
 use super::registry::{
-    CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR,
-    REGISTRY,
+    CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR, REGISTRY,
 };
 use super::union_jsonl::merge_history_lines;
 
@@ -28,12 +27,18 @@ pub fn is_category_enabled(desc: &CategoryDescriptor, filter: &FilterConfig) -> 
 }
 
 /// All registry rows active under this configuration.
-fn active_categories(filter: &FilterConfig) -> impl Iterator<Item = &'static CategoryDescriptor> + '_ {
+fn active_categories(
+    filter: &FilterConfig,
+) -> impl Iterator<Item = &'static CategoryDescriptor> + '_ {
     REGISTRY.iter().filter(|d| is_category_enabled(d, filter))
 }
 
 /// The sync-repo root directory for one category.
-fn category_repo_root(desc: &CategoryDescriptor, repo_root: &Path, filter: &FilterConfig) -> PathBuf {
+fn category_repo_root(
+    desc: &CategoryDescriptor,
+    repo_root: &Path,
+    filter: &FilterConfig,
+) -> PathBuf {
     match desc.dest {
         DestRoot::Artifacts => repo_root.join(ARTIFACTS_SUBDIR).join(desc.repo_subdir),
         DestRoot::SessionTree => repo_root.join(&filter.sync_subdirectory),
@@ -156,10 +161,7 @@ fn collect(
                     continue;
                 }
                 if entry.metadata().map(|m| m.len()).unwrap_or(0) > max_file_size {
-                    log::warn!(
-                        "Skipping {} (exceeds max_file_size_bytes)",
-                        abs.display()
-                    );
+                    log::warn!("Skipping {} (exceeds max_file_size_bytes)", abs.display());
                     *skipped += 1;
                     continue;
                 }
@@ -393,10 +395,8 @@ fn local_destination(
                 let mut parts = rel.components();
                 let name = parts.next()?.as_os_str().to_str()?.to_string();
                 let projects_dir = claude_dir.join(dir);
-                let local_project = crate::sync::discovery::find_local_project_by_name(
-                    &projects_dir,
-                    &name,
-                )?;
+                let local_project =
+                    crate::sync::discovery::find_local_project_by_name(&projects_dir, &name)?;
                 return Some(local_project.join(parts.as_path()));
             }
             Some(claude_dir.join(dir).join(rel))
@@ -406,11 +406,7 @@ fn local_destination(
 
 /// Classify what a pull would write, without writing. Remote (repo) bytes win
 /// for raw categories; union targets are compared against local ∪ remote.
-pub fn plan_pull(
-    claude_dir: &Path,
-    repo_root: &Path,
-    filter: &FilterConfig,
-) -> Result<PullPlan> {
+pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> Result<PullPlan> {
     let mut plan = PullPlan::default();
 
     for desc in active_categories(filter) {
@@ -597,12 +593,20 @@ pub fn ensure_ignore_files(repo_root: &Path, backend: Backend) -> Result<bool> {
         // Replace the existing block in place.
         let end = end + IGNORE_BLOCK_END.len();
         // Include the trailing newline of the old block if present.
-        let end = if existing[end..].starts_with('\n') { end + 1 } else { end };
+        let end = if existing[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
         format!("{}{}{}", &existing[..start], block, &existing[end..])
     } else if existing.is_empty() {
         block
     } else {
-        let sep = if existing.ends_with('\n') { "\n" } else { "\n\n" };
+        let sep = if existing.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
         format!("{existing}{sep}{block}")
     };
 

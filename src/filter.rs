@@ -205,7 +205,10 @@ impl FilterConfig {
         match self.scm_backend.to_lowercase().as_str() {
             "git" => Ok(Backend::Git),
             "mercurial" | "hg" => Ok(Backend::Mercurial),
-            other => bail!("Unknown SCM backend: '{}'. Use 'git' or 'mercurial'.", other),
+            other => bail!(
+                "Unknown SCM backend: '{}'. Use 'git' or 'mercurial'.",
+                other
+            ),
         }
     }
 
@@ -316,10 +319,7 @@ pub fn update_config(
 
     if let Some(exclude_att) = exclude_attachments {
         config.exclude_attachments = exclude_att;
-        println!(
-            "{}",
-            format!("Exclude attachments: {exclude_att}").green()
-        );
+        println!("{}", format!("Exclude attachments: {exclude_att}").green());
     }
 
     if let Some(lfs) = enable_lfs {
@@ -345,7 +345,10 @@ pub fn update_config(
     if let Some(backend) = scm_backend {
         let backend_lower = backend.to_lowercase();
         if backend_lower != "git" && backend_lower != "mercurial" && backend_lower != "hg" {
-            bail!("Invalid SCM backend: '{}'. Use 'git' or 'mercurial'.", backend);
+            bail!(
+                "Invalid SCM backend: '{}'. Use 'git' or 'mercurial'.",
+                backend
+            );
         }
         config.scm_backend = backend_lower;
         println!(
@@ -417,9 +420,7 @@ fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -
             continue;
         }
         if name == "attachments" {
-            bail!(
-                "Attachments are controlled by --exclude-attachments, not an artifact toggle"
-            );
+            bail!("Attachments are controlled by --exclude-attachments, not an artifact toggle");
         }
         let Some(desc) = find_by_name(name) else {
             let valid: Vec<&str> = crate::artifacts::registry::toggleable()
@@ -493,11 +494,7 @@ pub fn show_config() -> Result<()> {
             "Disabled".yellow()
         }
     );
-    println!(
-        "  {}: {}",
-        "SCM backend".cyan(),
-        config.scm_backend.green()
-    );
+    println!("  {}: {}", "SCM backend".cyan(), config.scm_backend.green());
     println!(
         "  {}: {}",
         "Sync subdirectory".cyan(),
@@ -520,7 +517,12 @@ pub fn show_config() -> Result<()> {
         } else {
             "disabled".yellow()
         };
-        println!("    {}: {} — {}", desc.name, state, desc.description.dimmed());
+        println!(
+            "    {}: {} — {}",
+            desc.name,
+            state,
+            desc.description.dimmed()
+        );
     }
 
     Ok(())

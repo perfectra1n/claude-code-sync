@@ -275,8 +275,7 @@ impl<'a> SmartMerger<'a> {
         ) -> MessageNode {
             // Phase 1: BFS to collect all UUIDs reachable from this root
             let mut processing_order: Vec<String> = Vec::new();
-            let mut queue: std::collections::VecDeque<String> =
-                std::collections::VecDeque::new();
+            let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
             queue.push_back(root_uuid.to_string());
 
             while let Some(uuid) = queue.pop_front() {

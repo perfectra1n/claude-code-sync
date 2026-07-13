@@ -3,8 +3,8 @@ use log::warn;
 use std::fs;
 use std::path::Path;
 
-use crate::history::OperationType;
 use super::snapshot::Snapshot;
+use crate::history::OperationType;
 
 /// Configuration for snapshot cleanup
 pub struct SnapshotCleanupConfig {

@@ -262,9 +262,7 @@ impl Conflict {
 
         let parent = self.remote_file.parent().unwrap_or_else(|| Path::new("."));
 
-        let new_name = format!(
-            "{remote_file_name}-{conflict_suffix}.{remote_file_ext}"
-        );
+        let new_name = format!("{remote_file_name}-{conflict_suffix}.{remote_file_ext}");
         let renamed_path = parent.join(new_name);
 
         self.resolution = ConflictResolution::KeepBoth {

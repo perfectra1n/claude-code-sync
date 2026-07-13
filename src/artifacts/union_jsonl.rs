@@ -16,7 +16,9 @@ fn line_key(line: &str) -> String {
         if map.contains_key("timestamp") || map.contains_key("display") {
             return format!(
                 "{}\u{1f}{}\u{1f}{}",
-                map.get("timestamp").map(Value::to_string).unwrap_or_default(),
+                map.get("timestamp")
+                    .map(Value::to_string)
+                    .unwrap_or_default(),
                 map.get("project").map(Value::to_string).unwrap_or_default(),
                 map.get("display").map(Value::to_string).unwrap_or_default(),
             );
@@ -99,8 +101,16 @@ mod tests {
 
     #[test]
     fn test_union_dedups_shared_lines() {
-        let a = format!("{}\n{}\n", line(1000, "/p1", "first"), line(2000, "/p1", "second"));
-        let b = format!("{}\n{}\n", line(2000, "/p1", "second"), line(3000, "/p2", "third"));
+        let a = format!(
+            "{}\n{}\n",
+            line(1000, "/p1", "first"),
+            line(2000, "/p1", "second")
+        );
+        let b = format!(
+            "{}\n{}\n",
+            line(2000, "/p1", "second"),
+            line(3000, "/p2", "third")
+        );
 
         let (merged, added) = merge_history_lines(&a, &b);
         assert_eq!(added, 1, "only the genuinely new line counts");
@@ -111,14 +121,22 @@ mod tests {
     #[test]
     fn test_union_orders_chronologically() {
         // Machine A has 1000 and 3000; machine B has 2000.
-        let a = format!("{}\n{}\n", line(1000, "/p", "one"), line(3000, "/p", "three"));
+        let a = format!(
+            "{}\n{}\n",
+            line(1000, "/p", "one"),
+            line(3000, "/p", "three")
+        );
         let b = format!("{}\n", line(2000, "/p", "two"));
 
         let (merged, added) = merge_history_lines(&a, &b);
         assert_eq!(added, 1);
         let order: Vec<_> = merged
             .lines()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap()["timestamp"].as_u64().unwrap())
+            .map(|l| {
+                serde_json::from_str::<Value>(l).unwrap()["timestamp"]
+                    .as_u64()
+                    .unwrap()
+            })
             .collect();
         assert_eq!(order, vec![1000, 2000, 3000]);
     }
@@ -179,6 +197,9 @@ mod tests {
         let a = line(1000, "/p", "one");
         // no trailing newline on input
         let (merged, _) = merge_history_lines(&a, "");
-        assert!(merged.ends_with('\n'), "JSONL output must be newline-terminated");
+        assert!(
+            merged.ends_with('\n'),
+            "JSONL output must be newline-terminated"
+        );
     }
 }

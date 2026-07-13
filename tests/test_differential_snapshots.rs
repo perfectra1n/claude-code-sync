@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use claude_code_sync::scm;
 use claude_code_sync::history::OperationType;
 use claude_code_sync::parser::ConversationEntry;
+use claude_code_sync::scm;
 use claude_code_sync::undo::Snapshot;
 
 // ============================================================================
@@ -106,7 +106,9 @@ fn modify_conversation(conv_path: &Path, additional_message: &str) -> Result<()>
     // Parse existing content to get session_id
     let first_line = content.lines().next().unwrap_or("{}");
     let first_entry: ConversationEntry = serde_json::from_str(first_line)?;
-    let session_id = first_entry.session_id.unwrap_or_else(|| "session-unknown".to_string());
+    let session_id = first_entry
+        .session_id
+        .unwrap_or_else(|| "session-unknown".to_string());
 
     // Count existing entries to generate unique UUID
     let entry_count = content.lines().filter(|l| !l.trim().is_empty()).count();
@@ -187,11 +189,8 @@ fn test_differential_snapshots_minimize_disk_usage() {
     // First Push: Creates full snapshot
     // ========================================================================
     println!("\nFirst push: Creating full snapshot...");
-    let (snapshot1, snapshot1_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        &all_files,
-        None,
-    ).unwrap();
+    let (snapshot1, snapshot1_path) =
+        push_and_get_snapshot(&snapshots_dir, &all_files, None).unwrap();
 
     assert!(
         snapshot1.base_snapshot_id.is_none(),
@@ -199,7 +198,11 @@ fn test_differential_snapshots_minimize_disk_usage() {
     );
 
     let size1 = calculate_snapshot_size(&snapshot1_path).unwrap();
-    println!("  Snapshot 1 size: {} bytes ({:.2} MB)", size1, size1 as f64 / 1_000_000.0);
+    println!(
+        "  Snapshot 1 size: {} bytes ({:.2} MB)",
+        size1,
+        size1 as f64 / 1_000_000.0
+    );
     println!("  Files in snapshot: {}", snapshot1.files.len());
 
     // Full snapshot should contain all files
@@ -220,11 +223,8 @@ fn test_differential_snapshots_minimize_disk_usage() {
     // Second Push: No changes, should create tiny differential
     // ========================================================================
     println!("\nSecond push: No changes, creating differential snapshot...");
-    let (snapshot2, snapshot2_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        &all_files,
-        None,
-    ).unwrap();
+    let (snapshot2, snapshot2_path) =
+        push_and_get_snapshot(&snapshots_dir, &all_files, None).unwrap();
 
     assert!(
         snapshot2.base_snapshot_id.is_some(),
@@ -237,7 +237,11 @@ fn test_differential_snapshots_minimize_disk_usage() {
     );
 
     let size2 = calculate_snapshot_size(&snapshot2_path).unwrap();
-    println!("  Snapshot 2 size: {} bytes ({:.2} KB)", size2, size2 as f64 / 1_000.0);
+    println!(
+        "  Snapshot 2 size: {} bytes ({:.2} KB)",
+        size2,
+        size2 as f64 / 1_000.0
+    );
     println!("  Files in snapshot: {}", snapshot2.files.len());
     println!("  Deleted files: {}", snapshot2.deleted_files.len());
 
@@ -257,8 +261,10 @@ fn test_differential_snapshots_minimize_disk_usage() {
         size2
     );
 
-    println!("  ✓ Space saved: {:.2}% compared to full snapshot",
-        (1.0 - size2 as f64 / size1 as f64) * 100.0);
+    println!(
+        "  ✓ Space saved: {:.2}% compared to full snapshot",
+        (1.0 - size2 as f64 / size1 as f64) * 100.0
+    );
 
     // ========================================================================
     // Third Push: Small change to one file
@@ -266,11 +272,8 @@ fn test_differential_snapshots_minimize_disk_usage() {
     println!("\nThird push: Modifying one conversation...");
     modify_conversation(&conv1, "This is a small additional message").unwrap();
 
-    let (snapshot3, snapshot3_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        &all_files,
-        None,
-    ).unwrap();
+    let (snapshot3, snapshot3_path) =
+        push_and_get_snapshot(&snapshots_dir, &all_files, None).unwrap();
 
     assert!(
         snapshot3.base_snapshot_id.is_some(),
@@ -283,7 +286,11 @@ fn test_differential_snapshots_minimize_disk_usage() {
     );
 
     let size3 = calculate_snapshot_size(&snapshot3_path).unwrap();
-    println!("  Snapshot 3 size: {} bytes ({:.2} KB)", size3, size3 as f64 / 1_000.0);
+    println!(
+        "  Snapshot 3 size: {} bytes ({:.2} KB)",
+        size3,
+        size3 as f64 / 1_000.0
+    );
     println!("  Files in snapshot: {}", snapshot3.files.len());
 
     // KEY ASSERTION: Only one file should be in differential
@@ -309,8 +316,10 @@ fn test_differential_snapshots_minimize_disk_usage() {
         size1
     );
 
-    println!("  ✓ Space saved: {:.2}% compared to full snapshot",
-        (1.0 - size3 as f64 / size1 as f64) * 100.0);
+    println!(
+        "  ✓ Space saved: {:.2}% compared to full snapshot",
+        (1.0 - size3 as f64 / size1 as f64) * 100.0
+    );
 
     // ========================================================================
     // Fourth Push: Add a new file
@@ -319,14 +328,15 @@ fn test_differential_snapshots_minimize_disk_usage() {
     let conv4 = create_large_conversation(&conversations_dir, "conv4", 1_000_000).unwrap();
     let all_files_with_new = vec![conv1.clone(), conv2.clone(), conv3.clone(), conv4.clone()];
 
-    let (snapshot4, snapshot4_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        &all_files_with_new,
-        None,
-    ).unwrap();
+    let (snapshot4, snapshot4_path) =
+        push_and_get_snapshot(&snapshots_dir, &all_files_with_new, None).unwrap();
 
     let size4 = calculate_snapshot_size(&snapshot4_path).unwrap();
-    println!("  Snapshot 4 size: {} bytes ({:.2} KB)", size4, size4 as f64 / 1_000.0);
+    println!(
+        "  Snapshot 4 size: {} bytes ({:.2} KB)",
+        size4,
+        size4 as f64 / 1_000.0
+    );
     println!("  Files in snapshot: {}", snapshot4.files.len());
 
     // Should contain only the new file
@@ -351,8 +361,14 @@ fn test_differential_snapshots_minimize_disk_usage() {
 
     println!("\n=== Summary ===");
     println!("Full snapshot size: {:.2} MB", size1 as f64 / 1_000_000.0);
-    println!("Total differential size: {:.2} MB", total_differential_size as f64 / 1_000_000.0);
-    println!("Would-be full size: {:.2} MB", would_be_full_size as f64 / 1_000_000.0);
+    println!(
+        "Total differential size: {:.2} MB",
+        total_differential_size as f64 / 1_000_000.0
+    );
+    println!(
+        "Would-be full size: {:.2} MB",
+        would_be_full_size as f64 / 1_000_000.0
+    );
     println!("Space savings: {:.1}%", savings_ratio * 100.0);
 
     assert!(
@@ -387,11 +403,8 @@ fn test_snapshot_chain_reconstruction() {
     println!("Creating snapshot chain...");
 
     // Snapshot 1: Initial state (file1, file2)
-    let (snapshot1, _) = push_and_get_snapshot(
-        &snapshots_dir,
-        &[file1.clone(), file2.clone()],
-        None,
-    ).unwrap();
+    let (snapshot1, _) =
+        push_and_get_snapshot(&snapshots_dir, &[file1.clone(), file2.clone()], None).unwrap();
     println!("  Snapshot 1: 2 files");
 
     // Snapshot 2: Modify file1, add file3
@@ -402,8 +415,12 @@ fn test_snapshot_chain_reconstruction() {
         &snapshots_dir,
         &[file1.clone(), file2.clone(), file3.clone()],
         None,
-    ).unwrap();
-    println!("  Snapshot 2: {} files (differential)", snapshot2.files.len());
+    )
+    .unwrap();
+    println!(
+        "  Snapshot 2: {} files (differential)",
+        snapshot2.files.len()
+    );
 
     // Snapshot 3: Modify file2
     fs::write(&file2, b"version_3").unwrap();
@@ -412,8 +429,12 @@ fn test_snapshot_chain_reconstruction() {
         &snapshots_dir,
         &[file1.clone(), file2.clone(), file3.clone()],
         None,
-    ).unwrap();
-    println!("  Snapshot 3: {} files (differential)", snapshot3.files.len());
+    )
+    .unwrap();
+    println!(
+        "  Snapshot 3: {} files (differential)",
+        snapshot3.files.len()
+    );
 
     // Snapshot 4: Modify file3
     fs::write(&file3, b"version_4").unwrap();
@@ -422,11 +443,18 @@ fn test_snapshot_chain_reconstruction() {
         &snapshots_dir,
         &[file1.clone(), file2.clone(), file3.clone()],
         None,
-    ).unwrap();
-    println!("  Snapshot 4: {} files (differential)", snapshot4.files.len());
+    )
+    .unwrap();
+    println!(
+        "  Snapshot 4: {} files (differential)",
+        snapshot4.files.len()
+    );
 
     // Verify chain structure
-    assert!(snapshot1.base_snapshot_id.is_none(), "First snapshot should have no base");
+    assert!(
+        snapshot1.base_snapshot_id.is_none(),
+        "First snapshot should have no base"
+    );
     assert_eq!(
         snapshot2.base_snapshot_id.as_ref().unwrap(),
         &snapshot1.snapshot_id,
@@ -445,7 +473,9 @@ fn test_snapshot_chain_reconstruction() {
 
     // Reconstruct full state from snapshot 4
     println!("\nReconstructing full state from snapshot 4...");
-    let full_state = snapshot4.reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
+    let full_state = snapshot4
+        .reconstruct_full_state_with_dir(Some(&snapshots_dir))
+        .unwrap();
 
     println!("  Reconstructed {} files", full_state.len());
 
@@ -500,7 +530,8 @@ fn test_deleted_files_tracking() {
         &snapshots_dir,
         &[file1.clone(), file2.clone(), file3.clone()],
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_eq!(snapshot1.files.len(), 3);
     assert!(snapshot1.deleted_files.is_empty());
@@ -509,11 +540,8 @@ fn test_deleted_files_tracking() {
     println!("Deleting file2...");
     fs::remove_file(&file2).unwrap();
 
-    let (snapshot2, _) = push_and_get_snapshot(
-        &snapshots_dir,
-        &[file1.clone(), file3.clone()],
-        None,
-    ).unwrap();
+    let (snapshot2, _) =
+        push_and_get_snapshot(&snapshots_dir, &[file1.clone(), file3.clone()], None).unwrap();
 
     println!("  Snapshot 2 deleted files: {:?}", snapshot2.deleted_files);
 
@@ -531,19 +559,25 @@ fn test_deleted_files_tracking() {
     );
 
     // Reconstruct and verify file2 is not in the state
-    let full_state = snapshot2.reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
-    assert_eq!(full_state.len(), 2, "Should only have 2 files after deletion");
-    assert!(!full_state.contains_key(&file2_key), "file2 should not be in reconstructed state");
+    let full_state = snapshot2
+        .reconstruct_full_state_with_dir(Some(&snapshots_dir))
+        .unwrap();
+    assert_eq!(
+        full_state.len(),
+        2,
+        "Should only have 2 files after deletion"
+    );
+    assert!(
+        !full_state.contains_key(&file2_key),
+        "file2 should not be in reconstructed state"
+    );
 
     // Delete another file
     println!("Deleting file3...");
     fs::remove_file(&file3).unwrap();
 
-    let (snapshot3, _) = push_and_get_snapshot(
-        &snapshots_dir,
-        std::slice::from_ref(&file1),
-        None,
-    ).unwrap();
+    let (snapshot3, _) =
+        push_and_get_snapshot(&snapshots_dir, std::slice::from_ref(&file1), None).unwrap();
 
     println!("  Snapshot 3 deleted files: {:?}", snapshot3.deleted_files);
 
@@ -555,7 +589,9 @@ fn test_deleted_files_tracking() {
     );
 
     // Reconstruct final state
-    let final_state = snapshot3.reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
+    let final_state = snapshot3
+        .reconstruct_full_state_with_dir(Some(&snapshots_dir))
+        .unwrap();
     assert_eq!(final_state.len(), 1, "Should only have 1 file remaining");
 
     let file1_key = file1.to_string_lossy().to_string();
@@ -579,27 +615,18 @@ fn test_broken_snapshot_chain() {
     fs::write(&file1, b"content1").unwrap();
 
     // Create snapshot 1
-    let (snapshot1, _snapshot1_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        std::slice::from_ref(&file1),
-        None,
-    ).unwrap();
+    let (snapshot1, _snapshot1_path) =
+        push_and_get_snapshot(&snapshots_dir, std::slice::from_ref(&file1), None).unwrap();
 
     // Modify and create snapshot 2
     fs::write(&file1, b"content2").unwrap();
-    let (_snapshot2, snapshot2_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        std::slice::from_ref(&file1),
-        None,
-    ).unwrap();
+    let (_snapshot2, snapshot2_path) =
+        push_and_get_snapshot(&snapshots_dir, std::slice::from_ref(&file1), None).unwrap();
 
     // Modify and create snapshot 3
     fs::write(&file1, b"content3").unwrap();
-    let (snapshot3, _snapshot3_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        std::slice::from_ref(&file1),
-        None,
-    ).unwrap();
+    let (snapshot3, _snapshot3_path) =
+        push_and_get_snapshot(&snapshots_dir, std::slice::from_ref(&file1), None).unwrap();
 
     println!("Created chain: snapshot1 <- snapshot2 <- snapshot3");
 
@@ -615,13 +642,16 @@ fn test_broken_snapshot_chain() {
     let error_msg = result.unwrap_err().to_string();
     println!("  Error: {}", error_msg);
     assert!(
-        error_msg.contains("Base snapshot not found") || error_msg.contains("snapshot chain is broken"),
+        error_msg.contains("Base snapshot not found")
+            || error_msg.contains("snapshot chain is broken"),
         "Error should mention missing base snapshot"
     );
 
     // Verify snapshot1 can still be reconstructed (it's a full snapshot)
     println!("Verifying snapshot1 can still be reconstructed...");
-    let state1 = snapshot1.reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
+    let state1 = snapshot1
+        .reconstruct_full_state_with_dir(Some(&snapshots_dir))
+        .unwrap();
     assert_eq!(state1.len(), 1, "Should successfully reconstruct snapshot1");
 
     println!("\n✓ Test passed! Broken chain detection works correctly.\n");
@@ -656,9 +686,13 @@ fn test_differential_snapshot_with_scm() {
         &snapshots_dir,
         std::slice::from_ref(&file1),
         Some(&initial_commit),
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert!(snapshot1.git_commit_hash.is_some(), "Snapshot should capture commit hash");
+    assert!(
+        snapshot1.git_commit_hash.is_some(),
+        "Snapshot should capture commit hash"
+    );
     assert_eq!(
         snapshot1.git_commit_hash.as_ref().unwrap(),
         &initial_commit,
@@ -678,9 +712,13 @@ fn test_differential_snapshot_with_scm() {
         &snapshots_dir,
         std::slice::from_ref(&file1),
         Some(&second_commit),
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert!(snapshot2.base_snapshot_id.is_some(), "Should be differential");
+    assert!(
+        snapshot2.base_snapshot_id.is_some(),
+        "Should be differential"
+    );
     assert_eq!(
         snapshot2.git_commit_hash.as_ref().unwrap(),
         &second_commit,
@@ -705,23 +743,22 @@ fn test_performance_differential_vs_full() {
     println!("Creating 5 large conversation files...");
     let mut files = Vec::new();
     for i in 0..5 {
-        let file = create_large_conversation(&conversations_dir, &format!("perf_test_{}", i), 500_000).unwrap();
+        let file =
+            create_large_conversation(&conversations_dir, &format!("perf_test_{}", i), 500_000)
+                .unwrap();
         files.push(file);
     }
 
     // Measure full snapshot creation time
     println!("\nMeasuring full snapshot creation...");
     let start = std::time::Instant::now();
-    let snapshot = Snapshot::create(
-        OperationType::Push,
-        files.iter(),
-        None,
-    ).unwrap();
+    let snapshot = Snapshot::create(OperationType::Push, files.iter(), None).unwrap();
     let full_duration = start.elapsed();
     let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
     let full_size = calculate_snapshot_size(&snapshot_path).unwrap();
 
-    println!("  Full snapshot: {:.2}ms, {:.2} MB",
+    println!(
+        "  Full snapshot: {:.2}ms, {:.2} MB",
         full_duration.as_secs_f64() * 1000.0,
         full_size as f64 / 1_000_000.0
     );
@@ -737,12 +774,14 @@ fn test_performance_differential_vs_full() {
         files.iter(),
         None,
         Some(&snapshots_dir),
-    ).unwrap();
+    )
+    .unwrap();
     let diff_duration = start.elapsed();
     let diff_snapshot_path = diff_snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
     let diff_size = calculate_snapshot_size(&diff_snapshot_path).unwrap();
 
-    println!("  Differential snapshot: {:.2}ms, {:.2} KB",
+    println!(
+        "  Differential snapshot: {:.2}ms, {:.2} KB",
         diff_duration.as_secs_f64() * 1000.0,
         diff_size as f64 / 1_000.0
     );
@@ -782,31 +821,30 @@ fn test_empty_differential_snapshot() {
 
     // Create first snapshot
     println!("Creating initial snapshot...");
-    let (_snapshot1, snapshot1_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        std::slice::from_ref(&file1),
-        None,
-    ).unwrap();
+    let (_snapshot1, snapshot1_path) =
+        push_and_get_snapshot(&snapshots_dir, std::slice::from_ref(&file1), None).unwrap();
     let size1 = calculate_snapshot_size(&snapshot1_path).unwrap();
     println!("  Initial snapshot: {} bytes", size1);
 
     // Create second snapshot with NO changes
     println!("Creating differential snapshot with no changes...");
-    let (snapshot2, snapshot2_path) = push_and_get_snapshot(
-        &snapshots_dir,
-        std::slice::from_ref(&file1),
-        None,
-    ).unwrap();
+    let (snapshot2, snapshot2_path) =
+        push_and_get_snapshot(&snapshots_dir, std::slice::from_ref(&file1), None).unwrap();
     let size2 = calculate_snapshot_size(&snapshot2_path).unwrap();
     println!("  Differential snapshot: {} bytes", size2);
 
     // Should be nearly empty
     assert!(snapshot2.files.is_empty(), "No files should have changed");
-    assert!(snapshot2.deleted_files.is_empty(), "No files should be deleted");
+    assert!(
+        snapshot2.deleted_files.is_empty(),
+        "No files should be deleted"
+    );
     assert!(size2 < 1_000, "Should be < 1KB (got {} bytes)", size2);
 
     // Verify reconstruction still works
-    let reconstructed = snapshot2.reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
+    let reconstructed = snapshot2
+        .reconstruct_full_state_with_dir(Some(&snapshots_dir))
+        .unwrap();
     assert_eq!(reconstructed.len(), 1, "Should reconstruct 1 file");
 
     let file1_key = file1.to_string_lossy().to_string();

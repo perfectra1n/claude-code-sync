@@ -78,7 +78,10 @@ fn test_second_push_plan_is_all_unchanged_despite_shared_session_id() {
     let sessions2 = discover_sessions(claude.path(), &filter).unwrap();
     let plan2 = plan_push(&sessions2, claude.path(), repo_projects.path(), &filter).unwrap();
     assert_eq!(plan2.added, 0, "second push must add nothing");
-    assert_eq!(plan2.modified, 0, "second push must modify nothing (issue #68)");
+    assert_eq!(
+        plan2.modified, 0,
+        "second push must modify nothing (issue #68)"
+    );
     assert_eq!(plan2.unchanged, 3, "all three files are unchanged");
 }
 
@@ -116,6 +119,9 @@ fn test_push_plan_detects_real_modification() {
     let sessions2 = discover_sessions(claude.path(), &filter).unwrap();
     let plan2 = plan_push(&sessions2, claude.path(), repo_projects.path(), &filter).unwrap();
     assert_eq!(plan2.added, 0);
-    assert_eq!(plan2.modified, 1, "only the appended transcript is modified");
+    assert_eq!(
+        plan2.modified, 1,
+        "only the appended transcript is modified"
+    );
     assert_eq!(plan2.unchanged, 2);
 }

@@ -118,7 +118,10 @@ pub fn extract_project_name(encoded_path: &str) -> &str {
 /// # Returns
 /// - `Some(PathBuf)` if exactly one matching project directory is found
 /// - `None` if no match found or multiple matches (ambiguous)
-pub fn find_local_project_by_name(claude_projects_dir: &Path, project_name: &str) -> Option<PathBuf> {
+pub fn find_local_project_by_name(
+    claude_projects_dir: &Path,
+    project_name: &str,
+) -> Option<PathBuf> {
     let entries = std::fs::read_dir(claude_projects_dir).ok()?;
 
     let matches: Vec<PathBuf> = entries

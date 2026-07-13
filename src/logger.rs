@@ -61,9 +61,7 @@ pub fn init_logger() -> Result<()> {
         .ok(); // Ignore error if logger is already initialized
 
     // Also log initialization to file
-    log_to_file(&format!(
-        "Logger initialized with level: {default_level:?}"
-    ))?;
+    log_to_file(&format!("Logger initialized with level: {default_level:?}"))?;
 
     Ok(())
 }

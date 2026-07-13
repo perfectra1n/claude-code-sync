@@ -310,7 +310,10 @@ mod tests {
 
     #[test]
     fn test_plugins_category_is_exact_file_allowlist() {
-        let plugins = REGISTRY.iter().find(|d| d.id == CategoryId::Plugins).unwrap();
+        let plugins = REGISTRY
+            .iter()
+            .find(|d| d.id == CategoryId::Plugins)
+            .unwrap();
         match plugins.source {
             SourceSpec::Files(files) => {
                 assert_eq!(
@@ -334,14 +337,20 @@ mod tests {
         assert_eq!(ph.merge, MergeStrategy::UnionJsonl);
         assert_eq!(ph.source, SourceSpec::Files(&["history.jsonl"]));
         // Everything else raw-overwrites
-        for d in REGISTRY.iter().filter(|d| d.id != CategoryId::PromptHistory) {
+        for d in REGISTRY
+            .iter()
+            .filter(|d| d.id != CategoryId::PromptHistory)
+        {
             assert_eq!(d.merge, MergeStrategy::RawOverwrite, "{}", d.name);
         }
     }
 
     #[test]
     fn test_settings_never_includes_local_overrides() {
-        let settings = REGISTRY.iter().find(|d| d.id == CategoryId::Settings).unwrap();
+        let settings = REGISTRY
+            .iter()
+            .find(|d| d.id == CategoryId::Settings)
+            .unwrap();
         match settings.source {
             SourceSpec::Files(files) => {
                 assert!(files.contains(&"settings.json"));

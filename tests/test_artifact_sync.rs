@@ -147,7 +147,11 @@ fn test_modified_detection_on_changed_settings() {
     let filter = all_on_filter();
 
     push_artifacts(claude.path(), repo.path(), &filter).unwrap();
-    fs::write(claude.path().join("settings.json"), b"{\"model\":\"sonnet\"}").unwrap();
+    fs::write(
+        claude.path().join("settings.json"),
+        b"{\"model\":\"sonnet\"}",
+    )
+    .unwrap();
     let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
 
     let settings = report
@@ -246,14 +250,21 @@ fn test_push_unions_prompt_history() {
     fs::create_dir_all(repo_history.parent().unwrap()).unwrap();
     fs::write(
         &repo_history,
-        format!("{}{}", history_line(500, "other-machine"), history_line(1000, "one")),
+        format!(
+            "{}{}",
+            history_line(500, "other-machine"),
+            history_line(1000, "one")
+        ),
     )
     .unwrap();
 
     let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
 
     let merged = fs::read_to_string(&repo_history).unwrap();
-    assert!(merged.contains("other-machine"), "repo-only line survives push");
+    assert!(
+        merged.contains("other-machine"),
+        "repo-only line survives push"
+    );
     assert!(merged.contains("one"));
     assert_eq!(merged.lines().count(), 2, "shared line dedups");
 
@@ -301,7 +312,10 @@ fn test_ignore_file_managed_block_is_idempotent_and_preserving() {
     assert!(changed_first, "first run writes the block");
     assert!(!changed_second, "second run is a no-op");
     assert_eq!(after_first, after_second);
-    assert!(after_first.starts_with("user-stuff/\n"), "user content preserved");
+    assert!(
+        after_first.starts_with("user-stuff/\n"),
+        "user content preserved"
+    );
     assert!(after_first.contains(".credentials.json"));
     assert!(after_first.contains("settings.local.json"));
     assert!(after_first.contains("*.pem"));
@@ -339,7 +353,10 @@ fn test_pull_restores_artifacts_to_fresh_machine() {
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert!(!plan.is_empty());
-    assert!(plan.overwrites.is_empty(), "fresh machine has nothing to overwrite");
+    assert!(
+        plan.overwrites.is_empty(),
+        "fresh machine has nothing to overwrite"
+    );
     let report = apply_pull(&plan, false).unwrap();
 
     assert_eq!(
@@ -351,7 +368,10 @@ fn test_pull_restores_artifacts_to_fresh_machine() {
         b"# skill\n"
     );
     assert!(machine_b.path().join("CLAUDE.md").is_file());
-    assert!(machine_b.path().join("plugins/installed_plugins.json").is_file());
+    assert!(machine_b
+        .path()
+        .join("plugins/installed_plugins.json")
+        .is_file());
     assert!(machine_b.path().join("history.jsonl").is_file());
     assert!(report.total_added() >= 12);
     assert_eq!(report.total_modified(), 0);
@@ -367,7 +387,11 @@ fn test_pull_remote_wins_when_bytes_differ() {
     push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
 
     // Machine B has its own, different settings.
-    fs::write(machine_b.path().join("settings.json"), b"{\"model\":\"local\"}").unwrap();
+    fs::write(
+        machine_b.path().join("settings.json"),
+        b"{\"model\":\"local\"}",
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     let overwrite_targets: Vec<_> = plan
@@ -395,7 +419,10 @@ fn test_pull_does_not_rewrite_identical_files() {
 
     // Pulling straight back into the same machine: everything identical.
     let plan = plan_pull(machine_a.path(), repo.path(), &filter).unwrap();
-    assert!(plan.is_empty(), "no writes planned when bytes match: {plan:?}");
+    assert!(
+        plan.is_empty(),
+        "no writes planned when bytes match: {plan:?}"
+    );
     assert!(plan.unchanged >= 12);
 }
 
@@ -407,8 +434,20 @@ fn test_pull_unions_prompt_history_with_local() {
 
     let repo_history = repo.path().join("artifacts/prompt-history/history.jsonl");
     fs::create_dir_all(repo_history.parent().unwrap()).unwrap();
-    fs::write(&repo_history, format!("{}{}", history_line(500, "remote-old"), history_line(2000, "remote-new"))).unwrap();
-    fs::write(machine_b.path().join("history.jsonl"), history_line(1000, "local-only")).unwrap();
+    fs::write(
+        &repo_history,
+        format!(
+            "{}{}",
+            history_line(500, "remote-old"),
+            history_line(2000, "remote-new")
+        ),
+    )
+    .unwrap();
+    fs::write(
+        machine_b.path().join("history.jsonl"),
+        history_line(1000, "local-only"),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     let report = apply_pull(&plan, false).unwrap();
@@ -416,10 +455,23 @@ fn test_pull_unions_prompt_history_with_local() {
     let merged = fs::read_to_string(machine_b.path().join("history.jsonl")).unwrap();
     let displays: Vec<_> = merged
         .lines()
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["display"].as_str().unwrap().to_string())
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["display"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
         .collect();
-    assert_eq!(displays, vec!["remote-old", "local-only", "remote-new"], "union, chronological");
-    let ph = report.counts.iter().find(|c| c.category == CategoryId::PromptHistory).unwrap();
+    assert_eq!(
+        displays,
+        vec!["remote-old", "local-only", "remote-new"],
+        "union, chronological"
+    );
+    let ph = report
+        .counts
+        .iter()
+        .find(|c| c.category == CategoryId::PromptHistory)
+        .unwrap();
     assert_eq!(ph.merged_entries, 2, "two remote lines were new locally");
 }
 
@@ -432,7 +484,11 @@ fn test_pull_refuses_denied_files_planted_in_repo() {
     // A poisoned sync repo tries to deliver credentials and key material.
     fs::create_dir_all(repo.path().join("artifacts/settings")).unwrap();
     fs::write(repo.path().join("artifacts/settings/settings.json"), b"{}").unwrap();
-    fs::write(repo.path().join("artifacts/settings/.credentials.json"), b"{\"t\":1}").unwrap();
+    fs::write(
+        repo.path().join("artifacts/settings/.credentials.json"),
+        b"{\"t\":1}",
+    )
+    .unwrap();
     fs::create_dir_all(repo.path().join("artifacts/skills/s")).unwrap();
     fs::write(repo.path().join("artifacts/skills/s/evil.pem"), b"PEM").unwrap();
     fs::write(repo.path().join("artifacts/skills/s/ok.md"), b"fine").unwrap();
@@ -444,7 +500,10 @@ fn test_pull_refuses_denied_files_planted_in_repo() {
     assert!(machine_b.path().join("skills/s/ok.md").is_file());
     assert!(!machine_b.path().join(".credentials.json").exists());
     assert!(!machine_b.path().join("skills/s/evil.pem").exists());
-    assert!(plan.skipped >= 2, "denied repo files are counted as skipped");
+    assert!(
+        plan.skipped >= 2,
+        "denied repo files are counted as skipped"
+    );
 }
 
 #[test]
@@ -462,16 +521,16 @@ fn test_pull_plan_snapshot_paths_enable_exact_undo() {
     push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
 
     // Machine B: one file that will be overwritten, everything else created.
-    fs::write(machine_b.path().join("settings.json"), b"{\"model\":\"mine\"}").unwrap();
+    fs::write(
+        machine_b.path().join("settings.json"),
+        b"{\"model\":\"mine\"}",
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
 
-    let mut snapshot = Snapshot::create(
-        OperationType::Pull,
-        plan.paths_to_snapshot().iter(),
-        None,
-    )
-    .unwrap();
+    let mut snapshot =
+        Snapshot::create(OperationType::Pull, plan.paths_to_snapshot().iter(), None).unwrap();
     snapshot.deleted_files = plan.created_paths();
 
     apply_pull(&plan, false).unwrap();
@@ -525,7 +584,10 @@ fn test_attachments_push_copies_non_jsonl_into_session_tree() {
     let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
 
     let proj = repo.path().join("projects/-home-user-myproj");
-    assert!(proj.join("diagram.png").is_file(), "attachment lands in session tree");
+    assert!(
+        proj.join("diagram.png").is_file(),
+        "attachment lands in session tree"
+    );
     assert!(
         proj.join("memory/MEMORY.md").is_file(),
         "project memory syncs as attachment"
@@ -534,7 +596,10 @@ fn test_attachments_push_copies_non_jsonl_into_session_tree() {
         !proj.join("abc-123.jsonl").exists(),
         "session transcripts belong to the session pipeline, not the engine"
     );
-    assert!(!repo.path().join("artifacts").exists(), "no artifacts dir needed");
+    assert!(
+        !repo.path().join("artifacts").exists(),
+        "no artifacts dir needed"
+    );
 
     let att = report
         .counts
@@ -655,7 +720,11 @@ fn test_pull_refuses_unlisted_files_in_allowlist_categories() {
     )
     .unwrap();
     fs::create_dir_all(repo.path().join("artifacts/plugins")).unwrap();
-    fs::write(repo.path().join("artifacts/plugins/rogue-manifest.json"), b"{}").unwrap();
+    fs::write(
+        repo.path().join("artifacts/plugins/rogue-manifest.json"),
+        b"{}",
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     apply_pull(&plan, false).unwrap();
@@ -663,8 +732,14 @@ fn test_pull_refuses_unlisted_files_in_allowlist_categories() {
     assert!(machine_b.path().join("settings.json").is_file());
     for entry in walkdir::WalkDir::new(machine_b.path()) {
         let name = entry.unwrap().file_name().to_string_lossy().to_string();
-        assert_ne!(name, "unexpected.json", "unlisted file must not be restored");
+        assert_ne!(
+            name, "unexpected.json",
+            "unlisted file must not be restored"
+        );
         assert_ne!(name, "rogue-manifest.json");
     }
-    assert!(plan.skipped >= 2, "unlisted allowlist files count as skipped");
+    assert!(
+        plan.skipped >= 2,
+        "unlisted allowlist files count as skipped"
+    );
 }

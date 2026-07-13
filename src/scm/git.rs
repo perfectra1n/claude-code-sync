@@ -60,8 +60,9 @@ impl GitScm {
     /// Clone a remote repository.
     pub fn clone(url: &str, path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create parent directory for '{}'", path.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create parent directory for '{}'", path.display())
+            })?;
         }
 
         let output = Command::new("git")
@@ -184,7 +185,8 @@ impl Scm for GitScm {
                 4. Remote branch protection rules\n\n\
                 For HTTPS: Run 'git config --global credential.helper store' and try again\n\
                 For SSH: Ensure SSH keys are set up with 'ssh -T git@github.com'",
-                remote, stderr
+                remote,
+                stderr
             ));
         }
 
@@ -202,7 +204,8 @@ impl Scm for GitScm {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!(
                 "Failed to pull from remote '{}': {}",
-                remote, stderr
+                remote,
+                stderr
             ));
         }
 
@@ -275,7 +278,8 @@ mod tests {
 
         assert!(!scm.has_remote("origin"));
 
-        scm.add_remote("origin", "https://github.com/test/repo.git").unwrap();
+        scm.add_remote("origin", "https://github.com/test/repo.git")
+            .unwrap();
         assert!(scm.has_remote("origin"));
         assert!(!scm.has_remote("upstream"));
     }

@@ -51,7 +51,10 @@ pub fn handle_config_interactive() -> Result<()> {
     .context("Failed to get user selections")?;
 
     if selections.is_empty() {
-        println!("{}", "No settings selected. Configuration unchanged.".yellow());
+        println!(
+            "{}",
+            "No settings selected. Configuration unchanged.".yellow()
+        );
         return Ok(());
     }
 
@@ -71,17 +74,26 @@ pub fn handle_config_interactive() -> Result<()> {
                     .unwrap_or_else(|| "Not set".to_string());
 
                 let input = Text::new("Exclude older than (days):")
-                    .with_help_message(&format!("Current: {}. Enter a number or leave empty to unset", current))
+                    .with_help_message(&format!(
+                        "Current: {}. Enter a number or leave empty to unset",
+                        current
+                    ))
                     .prompt()?;
 
                 if input.trim().is_empty() {
                     modified_config.exclude_older_than_days = None;
                     println!("  {} Unset exclude_older_than_days", "✓".green());
                 } else {
-                    let days: u32 = input.trim().parse()
+                    let days: u32 = input
+                        .trim()
+                        .parse()
                         .context("Invalid number. Must be a positive integer.")?;
                     modified_config.exclude_older_than_days = Some(days);
-                    println!("  {} Set exclude_older_than_days to {} days", "✓".green(), days);
+                    println!(
+                        "  {} Set exclude_older_than_days to {} days",
+                        "✓".green(),
+                        days
+                    );
                 }
             }
 
@@ -93,7 +105,10 @@ pub fn handle_config_interactive() -> Result<()> {
                 };
 
                 let input = Text::new("Include patterns (comma-separated):")
-                    .with_help_message(&format!("Current: {}. Glob patterns like '*work*' or '/path/to/project'", current))
+                    .with_help_message(&format!(
+                        "Current: {}. Glob patterns like '*work*' or '/path/to/project'",
+                        current
+                    ))
                     .prompt()?;
 
                 if input.trim().is_empty() {
@@ -105,7 +120,11 @@ pub fn handle_config_interactive() -> Result<()> {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
-                    println!("  {} Set include patterns: {:?}", "✓".green(), modified_config.include_patterns);
+                    println!(
+                        "  {} Set include patterns: {:?}",
+                        "✓".green(),
+                        modified_config.include_patterns
+                    );
                 }
             }
 
@@ -117,7 +136,10 @@ pub fn handle_config_interactive() -> Result<()> {
                 };
 
                 let input = Text::new("Exclude patterns (comma-separated):")
-                    .with_help_message(&format!("Current: {}. Glob patterns like '*test*' or '/tmp/*'", current))
+                    .with_help_message(&format!(
+                        "Current: {}. Glob patterns like '*test*' or '/tmp/*'",
+                        current
+                    ))
                     .prompt()?;
 
                 if input.trim().is_empty() {
@@ -129,7 +151,11 @@ pub fn handle_config_interactive() -> Result<()> {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
-                    println!("  {} Set exclude patterns: {:?}", "✓".green(), modified_config.exclude_patterns);
+                    println!(
+                        "  {} Set exclude patterns: {:?}",
+                        "✓".green(),
+                        modified_config.exclude_patterns
+                    );
                 }
             }
 
@@ -138,7 +164,10 @@ pub fn handle_config_interactive() -> Result<()> {
 
                 let exclude = Confirm::new("Exclude attachments (images, PDFs, etc.)?")
                     .with_default(current)
-                    .with_help_message(&format!("Current: {}. If yes, only .jsonl files will be synced", current))
+                    .with_help_message(&format!(
+                        "Current: {}. If yes, only .jsonl files will be synced",
+                        current
+                    ))
                     .prompt()?;
 
                 modified_config.exclude_attachments = exclude;
@@ -158,7 +187,9 @@ pub fn handle_config_interactive() -> Result<()> {
                     .with_help_message("Maximum size for individual files (e.g., 10 for 10MB)")
                     .prompt()?;
 
-                let size_mb: f64 = input.trim().parse()
+                let size_mb: f64 = input
+                    .trim()
+                    .parse()
                     .context("Invalid number. Must be a positive number.")?;
 
                 modified_config.max_file_size_bytes = (size_mb * 1024.0 * 1024.0) as u64;
@@ -180,7 +211,9 @@ pub fn handle_config_interactive() -> Result<()> {
         .prompt()?;
 
     if confirm {
-        modified_config.save().context("Failed to save configuration")?;
+        modified_config
+            .save()
+            .context("Failed to save configuration")?;
         println!("\n{} Configuration saved successfully!", "✓".green().bold());
     } else {
         println!("\n{}", "Configuration not saved.".yellow());
@@ -196,8 +229,14 @@ pub fn handle_config_wizard() -> Result<()> {
     println!("{}", "Configuration Wizard".cyan().bold());
     println!("{}", "=".repeat(80).cyan());
     println!();
-    println!("{}", "This wizard will walk you through all configuration options.".dimmed());
-    println!("{}", "Press Enter to keep current value or enter a new value.".dimmed());
+    println!(
+        "{}",
+        "This wizard will walk you through all configuration options.".dimmed()
+    );
+    println!(
+        "{}",
+        "Press Enter to keep current value or enter a new value.".dimmed()
+    );
     println!();
 
     // Load current configuration
@@ -212,20 +251,30 @@ pub fn handle_config_wizard() -> Result<()> {
         .unwrap_or_else(|| "Not set".to_string());
     println!("   Current: {}", current_age.yellow());
 
-    let exclude_old = Confirm::new("Do you want to exclude projects older than a certain number of days?")
-        .with_default(modified_config.exclude_older_than_days.is_some())
-        .prompt()?;
+    let exclude_old =
+        Confirm::new("Do you want to exclude projects older than a certain number of days?")
+            .with_default(modified_config.exclude_older_than_days.is_some())
+            .prompt()?;
 
     if exclude_old {
-        let default_days = modified_config.exclude_older_than_days.unwrap_or(30).to_string();
+        let default_days = modified_config
+            .exclude_older_than_days
+            .unwrap_or(30)
+            .to_string();
         let input = Text::new("How many days?")
             .with_default(&default_days)
             .prompt()?;
 
-        let days: u32 = input.trim().parse()
+        let days: u32 = input
+            .trim()
+            .parse()
             .context("Invalid number. Must be a positive integer.")?;
         modified_config.exclude_older_than_days = Some(days);
-        println!("  {} Will exclude projects older than {} days\n", "✓".green(), days);
+        println!(
+            "  {} Will exclude projects older than {} days\n",
+            "✓".green(),
+            days
+        );
     } else {
         modified_config.exclude_older_than_days = None;
         println!("  {} Age filter disabled\n", "✓".green());
@@ -257,7 +306,11 @@ pub fn handle_config_wizard() -> Result<()> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        println!("  {} Include patterns set: {:?}\n", "✓".green(), modified_config.include_patterns);
+        println!(
+            "  {} Include patterns set: {:?}\n",
+            "✓".green(),
+            modified_config.include_patterns
+        );
     } else {
         modified_config.include_patterns = Vec::new();
         println!("  {} All projects will be included\n", "✓".green());
@@ -289,7 +342,11 @@ pub fn handle_config_wizard() -> Result<()> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        println!("  {} Exclude patterns set: {:?}\n", "✓".green(), modified_config.exclude_patterns);
+        println!(
+            "  {} Exclude patterns set: {:?}\n",
+            "✓".green(),
+            modified_config.exclude_patterns
+        );
     } else {
         modified_config.exclude_patterns = Vec::new();
         println!("  {} No exclusion patterns\n", "✓".green());
@@ -297,9 +354,13 @@ pub fn handle_config_wizard() -> Result<()> {
 
     // 4. Exclude attachments
     println!("{}", "4. File Type Filter".bold().cyan());
-    println!("   Current: {}",
-        if modified_config.exclude_attachments { "Exclude attachments".yellow() }
-        else { "Include all files".yellow() }
+    println!(
+        "   Current: {}",
+        if modified_config.exclude_attachments {
+            "Exclude attachments".yellow()
+        } else {
+            "Include all files".yellow()
+        }
     );
 
     let exclude_attachments = Confirm::new("Exclude attachments (images, PDFs, etc.)?")
@@ -308,9 +369,14 @@ pub fn handle_config_wizard() -> Result<()> {
         .prompt()?;
 
     modified_config.exclude_attachments = exclude_attachments;
-    println!("  {} Attachments will be {}\n",
+    println!(
+        "  {} Attachments will be {}\n",
         "✓".green(),
-        if exclude_attachments { "excluded" } else { "included" }
+        if exclude_attachments {
+            "excluded"
+        } else {
+            "included"
+        }
     );
 
     // 5. Max file size
@@ -327,7 +393,9 @@ pub fn handle_config_wizard() -> Result<()> {
             .with_default(&format!("{:.1}", current_mb))
             .prompt()?;
 
-        let size_mb: f64 = input.trim().parse()
+        let size_mb: f64 = input
+            .trim()
+            .parse()
             .context("Invalid number. Must be a positive number.")?;
 
         modified_config.max_file_size_bytes = (size_mb * 1024.0 * 1024.0) as u64;
@@ -337,9 +405,10 @@ pub fn handle_config_wizard() -> Result<()> {
     }
 
     // Artifact sync categories
-    let change_artifacts = Confirm::new("Configure artifact sync categories (settings, skills, agents, ...)?")
-        .with_default(false)
-        .prompt()?;
+    let change_artifacts =
+        Confirm::new("Configure artifact sync categories (settings, skills, agents, ...)?")
+            .with_default(false)
+            .prompt()?;
     if change_artifacts {
         modified_config.sync_artifacts =
             prompt_artifact_toggle_selection(&modified_config.sync_artifacts)?;
@@ -357,7 +426,9 @@ pub fn handle_config_wizard() -> Result<()> {
         .prompt()?;
 
     if confirm {
-        modified_config.save().context("Failed to save configuration")?;
+        modified_config
+            .save()
+            .context("Failed to save configuration")?;
         println!("\n{} Configuration saved successfully!", "✓".green().bold());
     } else {
         println!("\n{}", "Configuration not saved.".yellow());
@@ -368,14 +439,17 @@ pub fn handle_config_wizard() -> Result<()> {
 
 /// Display a compact configuration summary
 fn display_config_summary(config: &FilterConfig) {
-    println!("  {} {}",
+    println!(
+        "  {} {}",
         "Exclude older than:".cyan(),
-        config.exclude_older_than_days
+        config
+            .exclude_older_than_days
             .map(|d| format!("{} days", d))
             .unwrap_or_else(|| "Not set".dimmed().to_string())
     );
 
-    println!("  {} {}",
+    println!(
+        "  {} {}",
         "Include patterns:".cyan(),
         if config.include_patterns.is_empty() {
             "None (all included)".dimmed().to_string()
@@ -384,7 +458,8 @@ fn display_config_summary(config: &FilterConfig) {
         }
     );
 
-    println!("  {} {}",
+    println!(
+        "  {} {}",
         "Exclude patterns:".cyan(),
         if config.exclude_patterns.is_empty() {
             "None".dimmed().to_string()
@@ -399,7 +474,8 @@ fn display_config_summary(config: &FilterConfig) {
         config.max_file_size_bytes as f64 / (1024.0 * 1024.0)
     );
 
-    println!("  {} {}",
+    println!(
+        "  {} {}",
         "Exclude attachments:".cyan(),
         if config.exclude_attachments {
             "Yes (only .jsonl files)".green().to_string()
@@ -412,7 +488,8 @@ fn display_config_summary(config: &FilterConfig) {
         .filter(|d| config.sync_artifacts.is_enabled(d.id))
         .map(|d| d.name)
         .collect();
-    println!("  {} {}",
+    println!(
+        "  {} {}",
         "Artifact sync:".cyan(),
         if enabled.is_empty() {
             "All disabled".dimmed().to_string()
@@ -501,16 +578,24 @@ pub fn handle_repo_selector() -> Result<()> {
         Ok(s) => s,
         Err(e) => {
             let err_msg = e.to_string();
-            if err_msg.contains("not initialized") || err_msg.contains("Run 'claude-code-sync init'") {
+            if err_msg.contains("not initialized")
+                || err_msg.contains("Run 'claude-code-sync init'")
+            {
                 // Check if there's an existing repo in the default location that we can recover
                 if let Some(recovered) = try_recover_existing_repo()? {
-                    println!("{}", "Found existing repository - recovered configuration!".green());
+                    println!(
+                        "{}",
+                        "Found existing repository - recovered configuration!".green()
+                    );
                     println!();
                     recovered
                 } else {
                     println!("{}", "No repositories configured.".yellow());
                     println!();
-                    println!("Run '{}' to set up your first repository.", "claude-code-sync init".cyan());
+                    println!(
+                        "Run '{}' to set up your first repository.",
+                        "claude-code-sync init".cyan()
+                    );
                     return Ok(());
                 }
             } else {
@@ -522,7 +607,10 @@ pub fn handle_repo_selector() -> Result<()> {
     if state.repos.is_empty() {
         println!("{}", "No repositories configured.".yellow());
         println!();
-        println!("Run '{}' to set up your first repository.", "claude-code-sync init".cyan());
+        println!(
+            "Run '{}' to set up your first repository.",
+            "claude-code-sync init".cyan()
+        );
         return Ok(());
     }
 
@@ -556,7 +644,10 @@ pub fn handle_repo_selector() -> Result<()> {
                 .map(|u| format!(" ({})", u.dimmed()))
                 .unwrap_or_default();
 
-            format!("{}{} - {}{}", repo.name, active_marker, path_str, remote_info)
+            format!(
+                "{}{} - {}{}",
+                repo.name, active_marker, path_str, remote_info
+            )
         })
         .collect();
 
@@ -647,19 +738,17 @@ pub fn handle_config_export() -> Result<()> {
     };
 
     let remote_url = match MultiRepoState::load() {
-        Ok(ms) => {
-            match ms.repos.get(&ms.active_repo) {
-                Some(repo) => repo.remote_url.clone(),
-                None => {
-                    eprintln!(
-                        "{} Active repo '{}' not found in multi-repo state, remote_url will be unset",
-                        "!".yellow(),
-                        ms.active_repo
-                    );
-                    None
-                }
+        Ok(ms) => match ms.repos.get(&ms.active_repo) {
+            Some(repo) => repo.remote_url.clone(),
+            None => {
+                eprintln!(
+                    "{} Active repo '{}' not found in multi-repo state, remote_url will be unset",
+                    "!".yellow(),
+                    ms.active_repo
+                );
+                None
             }
-        }
+        },
         Err(e) => {
             eprintln!(
                 "{} Could not load multi-repo state ({}), remote_url will be unset",
@@ -697,8 +786,8 @@ pub fn handle_config_export() -> Result<()> {
         sync_artifacts: filter.sync_artifacts.clone(),
     };
 
-    let content = toml::to_string_pretty(&init_config)
-        .context("Failed to serialize init config")?;
+    let content =
+        toml::to_string_pretty(&init_config).context("Failed to serialize init config")?;
 
     let output_path = PathBuf::from("claude-code-sync-init.toml");
     std::fs::write(&output_path, content)
@@ -796,10 +885,7 @@ mod tests {
         std::fs::write(claude_dir.join("config.toml"), content).unwrap();
     }
 
-    fn make_multi_repo_state(
-        repo_path: &str,
-        remote_url: Option<String>,
-    ) -> MultiRepoState {
+    fn make_multi_repo_state(repo_path: &str, remote_url: Option<String>) -> MultiRepoState {
         let mut repos = HashMap::new();
         repos.insert(
             "default".to_string(),
@@ -860,7 +946,10 @@ mod tests {
             exported.remote_url.as_deref(),
             Some("https://github.com/user/repo.git")
         );
-        assert!(exported.clone, "clone should be true when remote_url is set");
+        assert!(
+            exported.clone,
+            "clone should be true when remote_url is set"
+        );
         assert!(exported.exclude_attachments);
         assert_eq!(exported.exclude_older_than_days, Some(30));
         assert!(exported.enable_lfs);

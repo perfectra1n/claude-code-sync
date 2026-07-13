@@ -4,11 +4,11 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 // Import the necessary modules from claude_code_sync
-use claude_code_sync::scm;
 use claude_code_sync::history::{
     ConversationSummary, OperationHistory, OperationType, SyncOperation,
 };
 use claude_code_sync::parser::ConversationSession;
+use claude_code_sync::scm;
 use claude_code_sync::sync::SyncState;
 use claude_code_sync::undo::{undo_pull, undo_push, Snapshot};
 
@@ -514,7 +514,9 @@ fn test_conflict_handling() {
     fs::write(&m1_file, &m1_modified).unwrap();
 
     let m1_session = ConversationSession::from_file(&m1_file).unwrap();
-    let sync_file = sync_projects.join("test").join(format!("{session_id}.jsonl"));
+    let sync_file = sync_projects
+        .join("test")
+        .join(format!("{session_id}.jsonl"));
     fs::create_dir_all(sync_file.parent().unwrap()).unwrap();
     m1_session.write_to_file(&sync_file).unwrap();
 
@@ -876,11 +878,8 @@ fn test_operation_record_with_no_commit_hash() {
     )
     .unwrap();
 
-    let mut record = OperationRecord::new(
-        OperationType::Push,
-        Some("main".to_string()),
-        vec![conv],
-    );
+    let mut record =
+        OperationRecord::new(OperationType::Push, Some("main".to_string()), vec![conv]);
 
     // commit_hash should be None by default
     assert!(record.commit_hash.is_none());

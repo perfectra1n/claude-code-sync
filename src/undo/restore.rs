@@ -51,9 +51,8 @@ impl Snapshot {
             // Validate the path is within allowed directory
             if let Ok(canonical) = path.canonicalize() {
                 if canonical.starts_with(&allowed_base) && path.exists() {
-                    fs::remove_file(&path).with_context(|| {
-                        format!("Failed to delete file: {}", path.display())
-                    })?;
+                    fs::remove_file(&path)
+                        .with_context(|| format!("Failed to delete file: {}", path.display()))?;
                 }
             }
         }

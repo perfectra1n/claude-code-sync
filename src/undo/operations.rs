@@ -2,9 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::snapshot::Snapshot;
 use crate::history::{OperationHistory, OperationType};
 use crate::scm;
-use super::snapshot::Snapshot;
 
 /// Undo the last pull operation
 ///
@@ -140,9 +140,9 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
             ));
         }
         let snapshot = Snapshot::load_from_disk(snapshot_path)?;
-        snapshot.git_commit_hash.ok_or_else(|| {
-            anyhow!("No commit hash found in snapshot")
-        })?
+        snapshot
+            .git_commit_hash
+            .ok_or_else(|| anyhow!("No commit hash found in snapshot"))?
     } else {
         return Err(anyhow!(
             "No commit hash found for last push operation. Cannot undo."

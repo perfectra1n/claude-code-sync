@@ -403,7 +403,12 @@ fn main() -> Result<()> {
     }
 
     match command {
-        Commands::Init { local, remote, clone, config } => {
+        Commands::Init {
+            local,
+            remote,
+            clone,
+            config,
+        } => {
             // If config file is provided, use non-interactive init
             if config.is_some() {
                 run_init_from_config(config)?;
@@ -434,10 +439,7 @@ fn main() -> Result<()> {
                     filter::FilterConfig::default().save()?;
                 }
 
-                println!(
-                    "{}",
-                    "Clone and initialization complete!".green().bold()
-                );
+                println!("{}", "Clone and initialization complete!".green().bold());
             } else if let Some(local_path) = local {
                 // Use CLI args for init (local path)
                 sync::init_sync_repo(&local_path, remote.as_deref())?;
@@ -447,7 +449,12 @@ fn main() -> Result<()> {
 
                 println!(
                     "{}",
-                    format!("Cloning from {} to {}...", remote_url, default_path.display()).cyan()
+                    format!(
+                        "Cloning from {} to {}...",
+                        remote_url,
+                        default_path.display()
+                    )
+                    .cyan()
                 );
 
                 scm::clone(&remote_url, &default_path)?;
@@ -459,10 +466,7 @@ fn main() -> Result<()> {
                     filter::FilterConfig::default().save()?;
                 }
 
-                println!(
-                    "{}",
-                    "Clone and initialization complete!".green().bold()
-                );
+                println!("{}", "Clone and initialization complete!".green().bold());
             } else {
                 // No args provided, try config file first, then fall back to interactive onboarding
                 if !try_init_from_config()? {
@@ -622,7 +626,11 @@ fn main() -> Result<()> {
                 sync::remove_remote(&name)?;
             }
         },
-        Commands::Undo { operation, verbose, quiet } => {
+        Commands::Undo {
+            operation,
+            verbose,
+            quiet,
+        } => {
             // Determine verbosity level
             let verbosity = if verbose {
                 VerbosityLevel::Verbose
@@ -640,7 +648,7 @@ fn main() -> Result<()> {
                     handle_undo_push(preview, verbosity)?;
                 }
             }
-        },
+        }
         Commands::History { action } => match action {
             HistoryAction::List { limit } => {
                 handle_history_list(limit)?;
