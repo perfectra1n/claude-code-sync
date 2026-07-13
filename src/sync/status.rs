@@ -64,12 +64,12 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     // Artifact categories: enabled state and local-vs-repo drift
     println!();
     println!("{}", "Artifacts:".bold());
-    if filter.sync_artifacts.any_enabled() {
+    if filter.sync_artifacts.any_enabled() || !filter.exclude_attachments {
         let claude_home = super::discovery::claude_home_dir()?;
         let plan =
             crate::artifacts::engine::plan_pull(&claude_home, &state.sync_repo_path, &filter)?;
         for desc in crate::artifacts::registry::REGISTRY {
-            if !filter.sync_artifacts.is_enabled(desc.id) {
+            if !crate::artifacts::engine::is_category_enabled(desc, &filter) {
                 println!("  {}: {}", desc.name, "disabled".dimmed());
                 continue;
             }

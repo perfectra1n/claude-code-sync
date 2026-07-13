@@ -13,10 +13,44 @@ use crate::scm::Backend;
 
 use super::denylist::{is_denied, is_unsafe_rel_path};
 use super::registry::{
-    enabled_categories, CategoryDescriptor, CategoryId, MergeStrategy, SourceSpec,
-    ARTIFACTS_SUBDIR,
+    CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR,
+    REGISTRY,
 };
 use super::union_jsonl::merge_history_lines;
+
+/// Whether one category participates for this configuration: toggles for the
+/// regular categories, the (inverted) attachments flag for ProjectAttachments.
+pub fn is_category_enabled(desc: &CategoryDescriptor, filter: &FilterConfig) -> bool {
+    match desc.id {
+        CategoryId::ProjectAttachments => !filter.exclude_attachments,
+        _ => filter.sync_artifacts.is_enabled(desc.id),
+    }
+}
+
+/// All registry rows active under this configuration.
+fn active_categories(filter: &FilterConfig) -> impl Iterator<Item = &'static CategoryDescriptor> + '_ {
+    REGISTRY.iter().filter(|d| is_category_enabled(d, filter))
+}
+
+/// The sync-repo root directory for one category.
+fn category_repo_root(desc: &CategoryDescriptor, repo_root: &Path, filter: &FilterConfig) -> PathBuf {
+    match desc.dest {
+        DestRoot::Artifacts => repo_root.join(ARTIFACTS_SUBDIR).join(desc.repo_subdir),
+        DestRoot::SessionTree => repo_root.join(&filter.sync_subdirectory),
+    }
+}
+
+/// True when a file extension is excluded for this category.
+fn extension_excluded(desc: &CategoryDescriptor, path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| {
+            desc.exclude_extensions
+                .iter()
+                .any(|x| ext.eq_ignore_ascii_case(x))
+        })
+        .unwrap_or(false)
+}
 
 /// Per-category outcome counts for one push or pull.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,9 +108,10 @@ struct CollectedFile {
 fn collect(
     desc: &CategoryDescriptor,
     claude_dir: &Path,
-    max_file_size: u64,
+    filter: &FilterConfig,
     skipped: &mut usize,
 ) -> Result<Vec<CollectedFile>> {
+    let max_file_size = filter.max_file_size_bytes;
     let mut files = Vec::new();
 
     match desc.source {
@@ -127,7 +162,21 @@ fn collect(
                     *skipped += 1;
                     continue;
                 }
-                let rel = abs.strip_prefix(&base).unwrap_or(abs).to_path_buf();
+                if extension_excluded(desc, abs) {
+                    continue;
+                }
+                let mut rel = abs.strip_prefix(&base).unwrap_or(abs).to_path_buf();
+                // Attachments in name-only mode collapse the encoded project
+                // dir to the bare project name, mirroring session layout.
+                if desc.dest == DestRoot::SessionTree && filter.use_project_name_only {
+                    let mut parts = rel.components();
+                    let Some(encoded) = parts.next().and_then(|c| c.as_os_str().to_str()) else {
+                        *skipped += 1;
+                        continue;
+                    };
+                    let project = crate::sync::discovery::extract_project_name(encoded);
+                    rel = Path::new(project).join(parts.as_path());
+                }
                 files.push(CollectedFile {
                     abs: abs.to_path_buf(),
                     rel,
@@ -161,10 +210,9 @@ pub fn push_artifacts(
     repo_root: &Path,
     filter: &FilterConfig,
 ) -> Result<ArtifactReport> {
-    let artifacts_root = repo_root.join(ARTIFACTS_SUBDIR);
     let mut report = ArtifactReport::default();
 
-    for desc in enabled_categories(&filter.sync_artifacts) {
+    for desc in active_categories(filter) {
         let mut counts = CategoryCounts {
             category: desc.id,
             added: 0,
@@ -174,8 +222,8 @@ pub fn push_artifacts(
             merged_entries: 0,
         };
 
-        let files = collect(desc, claude_dir, filter.max_file_size_bytes, &mut counts.skipped)?;
-        let category_root = artifacts_root.join(desc.repo_subdir);
+        let files = collect(desc, claude_dir, filter, &mut counts.skipped)?;
+        let category_root = category_repo_root(desc, repo_root, filter);
 
         for file in files {
             let dest = category_root.join(&file.rel);
@@ -281,9 +329,10 @@ impl PullPlan {
 fn collect_repo_files(
     desc: &CategoryDescriptor,
     repo_root: &Path,
+    filter: &FilterConfig,
     skipped: &mut usize,
 ) -> Vec<(PathBuf, PathBuf)> {
-    let category_root = repo_root.join(ARTIFACTS_SUBDIR).join(desc.repo_subdir);
+    let category_root = category_repo_root(desc, repo_root, filter);
     if !category_root.is_dir() {
         return Vec::new();
     }
@@ -302,6 +351,9 @@ fn collect_repo_files(
             .strip_prefix(&category_root)
             .unwrap_or(abs)
             .to_path_buf();
+        if extension_excluded(desc, &rel) {
+            continue;
+        }
         if is_unsafe_rel_path(&rel) || is_denied(&rel) {
             log::warn!(
                 "Refusing denied/unsafe artifact from sync repo: {}",
@@ -316,20 +368,40 @@ fn collect_repo_files(
 }
 
 /// Map a category-relative repo path back to its absolute local destination
-/// under `~/.claude`.
-fn local_destination(desc: &CategoryDescriptor, claude_dir: &Path, rel: &Path) -> PathBuf {
+/// under `~/.claude`. Returns None when no destination can be determined
+/// (name-only attachments whose project has no unambiguous local match).
+fn local_destination(
+    desc: &CategoryDescriptor,
+    claude_dir: &Path,
+    rel: &Path,
+    filter: &FilterConfig,
+) -> Option<PathBuf> {
     match desc.source {
         // File lists are stored flat in the repo; restore to the listed
         // location whose file name matches.
         SourceSpec::Files(list) => {
             for entry in list {
                 if Path::new(entry).file_name() == rel.file_name() {
-                    return claude_dir.join(entry);
+                    return Some(claude_dir.join(entry));
                 }
             }
-            claude_dir.join(rel)
+            Some(claude_dir.join(rel))
         }
-        SourceSpec::Dir(dir) => claude_dir.join(dir).join(rel),
+        SourceSpec::Dir(dir) => {
+            if desc.dest == DestRoot::SessionTree && filter.use_project_name_only {
+                // Repo path is <project-name>/<rest>; find the matching local
+                // encoded project dir the way session pull does.
+                let mut parts = rel.components();
+                let name = parts.next()?.as_os_str().to_str()?.to_string();
+                let projects_dir = claude_dir.join(dir);
+                let local_project = crate::sync::discovery::find_local_project_by_name(
+                    &projects_dir,
+                    &name,
+                )?;
+                return Some(local_project.join(parts.as_path()));
+            }
+            Some(claude_dir.join(dir).join(rel))
+        }
     }
 }
 
@@ -342,9 +414,16 @@ pub fn plan_pull(
 ) -> Result<PullPlan> {
     let mut plan = PullPlan::default();
 
-    for desc in enabled_categories(&filter.sync_artifacts) {
-        for (repo_path, rel) in collect_repo_files(desc, repo_root, &mut plan.skipped) {
-            let local_path = local_destination(desc, claude_dir, &rel);
+    for desc in active_categories(filter) {
+        for (repo_path, rel) in collect_repo_files(desc, repo_root, filter, &mut plan.skipped) {
+            let Some(local_path) = local_destination(desc, claude_dir, &rel, filter) else {
+                log::warn!(
+                    "Skipping {} (no unambiguous local project for name-only mode)",
+                    repo_path.display()
+                );
+                plan.skipped += 1;
+                continue;
+            };
             let write = PlannedWrite {
                 category: desc.id,
                 local_path: local_path.clone(),

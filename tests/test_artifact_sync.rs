@@ -497,3 +497,143 @@ fn test_pull_plan_snapshot_paths_enable_exact_undo() {
         "created skill removed by undo"
     );
 }
+
+// ============================================================================
+// Project attachments (non-JSONL files in the session tree)
+// ============================================================================
+
+fn seed_project_with_attachment(claude: &Path) {
+    let proj = claude.join("projects/-home-user-myproj");
+    fs::create_dir_all(proj.join("memory")).unwrap();
+    fs::write(
+        proj.join("abc-123.jsonl"),
+        r#"{"type":"user","sessionId":"abc-123","uuid":"1","timestamp":"2025-01-01T00:00:00Z"}"#,
+    )
+    .unwrap();
+    fs::write(proj.join("diagram.png"), b"PNGDATA").unwrap();
+    fs::write(proj.join("memory/MEMORY.md"), b"# memory index\n").unwrap();
+}
+
+#[test]
+fn test_attachments_push_copies_non_jsonl_into_session_tree() {
+    let claude = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    seed_project_with_attachment(claude.path());
+
+    // Default config: no artifact toggles, attachments NOT excluded.
+    let filter = FilterConfig::default();
+    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+
+    let proj = repo.path().join("projects/-home-user-myproj");
+    assert!(proj.join("diagram.png").is_file(), "attachment lands in session tree");
+    assert!(
+        proj.join("memory/MEMORY.md").is_file(),
+        "project memory syncs as attachment"
+    );
+    assert!(
+        !proj.join("abc-123.jsonl").exists(),
+        "session transcripts belong to the session pipeline, not the engine"
+    );
+    assert!(!repo.path().join("artifacts").exists(), "no artifacts dir needed");
+
+    let att = report
+        .counts
+        .iter()
+        .find(|c| c.category == CategoryId::ProjectAttachments)
+        .unwrap();
+    assert_eq!(att.added, 2);
+}
+
+#[test]
+fn test_attachments_respect_exclude_attachments_flag() {
+    let claude = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    seed_project_with_attachment(claude.path());
+
+    let filter = FilterConfig {
+        exclude_attachments: true,
+        ..Default::default()
+    };
+    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+
+    assert!(!repo.path().join("projects").exists());
+    assert!(report
+        .counts
+        .iter()
+        .all(|c| c.category != CategoryId::ProjectAttachments));
+}
+
+#[test]
+fn test_attachments_pull_ignores_remote_transcripts() {
+    let machine_b = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+
+    // Sync repo has a session transcript AND an attachment side by side.
+    let proj = repo.path().join("projects/-home-user-myproj");
+    fs::create_dir_all(&proj).unwrap();
+    fs::write(
+        proj.join("abc-123.jsonl"),
+        r#"{"type":"user","sessionId":"abc-123","uuid":"1","timestamp":"2025-01-01T00:00:00Z"}"#,
+    )
+    .unwrap();
+    fs::write(proj.join("diagram.png"), b"PNGDATA").unwrap();
+
+    let filter = FilterConfig::default();
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+
+    assert!(
+        machine_b
+            .path()
+            .join("projects/-home-user-myproj/diagram.png")
+            .is_file(),
+        "attachment restored"
+    );
+    assert!(
+        !machine_b
+            .path()
+            .join("projects/-home-user-myproj/abc-123.jsonl")
+            .exists(),
+        "transcripts are restored by the session pipeline, never the engine"
+    );
+}
+
+#[test]
+fn test_attachments_map_project_names_in_name_only_mode() {
+    let claude = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    seed_project_with_attachment(claude.path());
+
+    let filter = FilterConfig {
+        use_project_name_only: true,
+        ..Default::default()
+    };
+    push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    assert!(
+        repo.path().join("projects/myproj/diagram.png").is_file(),
+        "encoded dir collapses to the bare project name on push"
+    );
+
+    // Pulling into a machine whose encoded path differs but project name matches.
+    let machine_b = TempDir::new().unwrap();
+    fs::create_dir_all(machine_b.path().join("projects/-Users-other-dev-myproj")).unwrap();
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+    assert!(
+        machine_b
+            .path()
+            .join("projects/-Users-other-dev-myproj/diagram.png")
+            .is_file(),
+        "attachment maps back through the local project dir with the same name"
+    );
+
+    // No matching local project: the file is skipped, not misplaced.
+    let machine_c = TempDir::new().unwrap();
+    let plan = plan_pull(machine_c.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+    assert!(
+        !machine_c.path().join("projects").exists(),
+        "ambiguous/no-match attachments are skipped in name-only mode"
+    );
+    assert!(plan.skipped >= 1);
+}

@@ -401,7 +401,7 @@ pub fn update_config(
 /// Resolve a comma-separated list of category names (or `all`) and flip their
 /// toggles. Unknown names abort before anything is persisted.
 fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -> Result<()> {
-    use crate::artifacts::registry::{find_by_name, ArtifactToggles, REGISTRY};
+    use crate::artifacts::registry::{find_by_name, ArtifactToggles};
 
     let verb = if value { "Enabled" } else { "Disabled" };
 
@@ -415,8 +415,15 @@ fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -
             println!("{}", format!("{verb} all artifact categories").green());
             continue;
         }
+        if name == "attachments" {
+            bail!(
+                "Attachments are controlled by --exclude-attachments, not an artifact toggle"
+            );
+        }
         let Some(desc) = find_by_name(name) else {
-            let valid: Vec<&str> = REGISTRY.iter().map(|d| d.name).collect();
+            let valid: Vec<&str> = crate::artifacts::registry::toggleable()
+                .map(|d| d.name)
+                .collect::<Vec<_>>();
             bail!(
                 "Unknown artifact category '{}'. Valid names: {}, all",
                 name,
@@ -506,7 +513,7 @@ pub fn show_config() -> Result<()> {
     );
 
     println!("  {}:", "Artifact sync".cyan());
-    for desc in crate::artifacts::registry::REGISTRY {
+    for desc in crate::artifacts::registry::toggleable() {
         let state = if config.sync_artifacts.is_enabled(desc.id) {
             "enabled".green()
         } else {

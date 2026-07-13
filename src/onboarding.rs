@@ -436,10 +436,9 @@ pub fn run_onboarding() -> Result<OnboardingConfig> {
 /// new setups; help text flags the two with caveats (plans may contain
 /// sensitive prose, todos churn on every session).
 fn prompt_artifact_categories() -> Result<crate::artifacts::registry::ArtifactToggles> {
-    use crate::artifacts::registry::{ArtifactToggles, REGISTRY};
+    use crate::artifacts::registry::{toggleable, ArtifactToggles};
 
-    let options: Vec<String> = REGISTRY
-        .iter()
+    let options: Vec<String> = toggleable()
         .map(|d| format!("{} — {}", d.name, d.description))
         .collect();
     let all_indices: Vec<usize> = (0..options.len()).collect();

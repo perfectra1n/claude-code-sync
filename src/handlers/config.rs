@@ -407,8 +407,7 @@ fn display_config_summary(config: &FilterConfig) {
         }
     );
 
-    let enabled: Vec<&str> = crate::artifacts::registry::REGISTRY
-        .iter()
+    let enabled: Vec<&str> = crate::artifacts::registry::toggleable()
         .filter(|d| config.sync_artifacts.is_enabled(d.id))
         .map(|d| d.name)
         .collect();
@@ -967,13 +966,14 @@ mod tests {
 fn prompt_artifact_toggle_selection(
     current: &crate::artifacts::registry::ArtifactToggles,
 ) -> Result<crate::artifacts::registry::ArtifactToggles> {
-    use crate::artifacts::registry::{find_by_name, ArtifactToggles, REGISTRY};
+    use crate::artifacts::registry::{find_by_name, toggleable, ArtifactToggles};
 
-    let options: Vec<String> = REGISTRY
+    let rows: Vec<_> = toggleable().collect();
+    let options: Vec<String> = rows
         .iter()
         .map(|d| format!("{} — {}", d.name, d.description))
         .collect();
-    let preselected: Vec<usize> = REGISTRY
+    let preselected: Vec<usize> = rows
         .iter()
         .enumerate()
         .filter(|(_, d)| current.is_enabled(d.id))

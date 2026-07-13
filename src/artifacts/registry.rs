@@ -17,6 +17,10 @@ pub enum CategoryId {
     Plans,
     Todos,
     PromptHistory,
+    /// Non-JSONL files inside `~/.claude/projects/` (images, PDFs, per-project
+    /// memory). Gated by `!exclude_attachments` instead of a toggle, honoring
+    /// the long-documented attachments contract.
+    ProjectAttachments,
 }
 
 /// What to copy, relative to `~/.claude`. Missing sources are treated as
@@ -40,16 +44,31 @@ pub enum MergeStrategy {
     UnionJsonl,
 }
 
+/// Where a category's files live inside the sync repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestRoot {
+    /// `<repo>/artifacts/<repo_subdir>/...` — the default for all categories.
+    Artifacts,
+    /// `<repo>/<sync_subdirectory>/...` — shares the session tree (used only
+    /// by project attachments, which live beside their transcripts).
+    SessionTree,
+}
+
 /// One registry row.
 #[derive(Debug)]
 pub struct CategoryDescriptor {
     pub id: CategoryId,
     /// Config key / CLI name (kebab-case).
     pub name: &'static str,
-    /// Subdirectory under the sync repo's `artifacts/` root.
+    /// Subdirectory under the sync repo's `artifacts/` root (unused for
+    /// `DestRoot::SessionTree`).
     pub repo_subdir: &'static str,
     pub source: SourceSpec,
     pub merge: MergeStrategy,
+    pub dest: DestRoot,
+    /// File extensions this category never copies (e.g. attachments skip
+    /// `.jsonl`, which belongs to the session pipeline).
+    pub exclude_extensions: &'static [&'static str],
     /// Short human description for wizard / config --show.
     pub description: &'static str,
 }
@@ -66,6 +85,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         repo_subdir: "settings",
         source: SourceSpec::Files(&["settings.json", "keybindings.json"]),
         merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "User settings and keybindings (never settings.local.json)",
     },
     CategoryDescriptor {
@@ -74,6 +95,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         repo_subdir: "memory",
         source: SourceSpec::Files(&["CLAUDE.md"]),
         merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "Global CLAUDE.md user memory",
     },
     CategoryDescriptor {
@@ -82,6 +105,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         repo_subdir: "skills",
         source: SourceSpec::Dir("skills"),
         merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "Custom skills",
     },
     CategoryDescriptor {
@@ -90,6 +115,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         repo_subdir: "agents",
         source: SourceSpec::Dir("agents"),
         merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "Custom subagent definitions",
     },
     CategoryDescriptor {
@@ -98,6 +125,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         repo_subdir: "commands",
         source: SourceSpec::Dir("commands"),
         merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "Custom slash commands",
     },
     CategoryDescriptor {
@@ -109,6 +138,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
             "plugins/known_marketplaces.json",
         ]),
         merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "Installed-plugin and marketplace manifests (never plugin caches)",
     },
     CategoryDescriptor {
@@ -117,6 +148,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         repo_subdir: "plans",
         source: SourceSpec::Dir("plans"),
         merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "Plan-mode documents (may contain sensitive prose)",
     },
     CategoryDescriptor {
@@ -125,7 +158,19 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         repo_subdir: "todos",
         source: SourceSpec::Dir("todos"),
         merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "Session task lists (changes frequently)",
+    },
+    CategoryDescriptor {
+        id: CategoryId::ProjectAttachments,
+        name: "attachments",
+        repo_subdir: "",
+        source: SourceSpec::Dir("projects"),
+        merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::SessionTree,
+        exclude_extensions: &["jsonl"],
+        description: "Non-transcript files in project dirs (images, PDFs, project memory)",
     },
     CategoryDescriptor {
         id: CategoryId::PromptHistory,
@@ -133,6 +178,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         repo_subdir: "prompt-history",
         source: SourceSpec::Files(&["history.jsonl"]),
         merge: MergeStrategy::UnionJsonl,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
         description: "Cross-project prompt history (union-merged, grow-only)",
     },
 ];
@@ -196,6 +243,9 @@ impl ArtifactToggles {
             CategoryId::Plans => self.plans,
             CategoryId::Todos => self.todos,
             CategoryId::PromptHistory => self.prompt_history,
+            // Attachments are gated by FilterConfig::exclude_attachments, not
+            // by a toggle; as a toggle they always read as off.
+            CategoryId::ProjectAttachments => false,
         }
     }
 
@@ -211,6 +261,7 @@ impl ArtifactToggles {
             CategoryId::Plans => self.plans = value,
             CategoryId::Todos => self.todos = value,
             CategoryId::PromptHistory => self.prompt_history = value,
+            CategoryId::ProjectAttachments => {}
         }
     }
 }
@@ -218,6 +269,14 @@ impl ArtifactToggles {
 /// Look up a descriptor by its CLI/config name (kebab-case).
 pub fn find_by_name(name: &str) -> Option<&'static CategoryDescriptor> {
     REGISTRY.iter().find(|d| d.name == name)
+}
+
+/// Registry rows driven by ArtifactToggles — everything except attachments,
+/// which the long-standing exclude_attachments flag governs.
+pub fn toggleable() -> impl Iterator<Item = &'static CategoryDescriptor> {
+    REGISTRY
+        .iter()
+        .filter(|d| d.id != CategoryId::ProjectAttachments)
 }
 
 /// All registry rows whose toggle is on.
@@ -234,10 +293,10 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn test_registry_has_all_nine_categories() {
-        assert_eq!(REGISTRY.len(), 9);
+    fn test_registry_has_all_ten_categories() {
+        assert_eq!(REGISTRY.len(), 10);
         let ids: HashSet<_> = REGISTRY.iter().map(|d| d.id).collect();
-        assert_eq!(ids.len(), 9, "every category appears exactly once");
+        assert_eq!(ids.len(), 10, "every category appears exactly once");
     }
 
     #[test]
@@ -296,12 +355,16 @@ mod tests {
     fn test_toggles_map_every_category() {
         let mut toggles = ArtifactToggles::default();
         assert!(!toggles.any_enabled());
-        for d in REGISTRY {
+        for d in toggleable() {
             assert!(!toggles.is_enabled(d.id), "{} defaults off", d.name);
             toggles.set_enabled(d.id, true);
             assert!(toggles.is_enabled(d.id), "{} can be enabled", d.name);
         }
         assert_eq!(toggles, ArtifactToggles::all_enabled());
+        // Attachments are flag-governed, not toggleable.
+        assert!(!toggles.is_enabled(CategoryId::ProjectAttachments));
+        toggles.set_enabled(CategoryId::ProjectAttachments, true);
+        assert!(!toggles.is_enabled(CategoryId::ProjectAttachments));
     }
 
     #[test]
