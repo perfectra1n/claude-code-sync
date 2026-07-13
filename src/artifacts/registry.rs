@@ -280,6 +280,7 @@ pub fn toggleable() -> impl Iterator<Item = &'static CategoryDescriptor> {
 }
 
 /// All registry rows whose toggle is on.
+#[allow(dead_code)] // used via the library target; the bin compiles this module separately
 pub fn enabled_categories(toggles: &ArtifactToggles) -> Vec<&'static CategoryDescriptor> {
     REGISTRY
         .iter()

@@ -60,7 +60,7 @@ pub fn cleanup_old_snapshots_with_dir(
         let entry = entry?;
         let path = entry.path();
 
-        if !path.extension().map_or(false, |ext| ext == "json") {
+        if path.extension().is_none_or(|ext| ext != "json") {
             continue;
         }
 
@@ -76,8 +76,8 @@ pub fn cleanup_old_snapshots_with_dir(
     }
 
     // Sort by timestamp descending (newest first)
-    pull_snapshots.sort_by(|a, b| b.1.cmp(&a.1));
-    push_snapshots.sort_by(|a, b| b.1.cmp(&a.1));
+    pull_snapshots.sort_by_key(|s| std::cmp::Reverse(s.1));
+    push_snapshots.sort_by_key(|s| std::cmp::Reverse(s.1));
 
     // Determine which snapshots to keep
     let now = chrono::Utc::now();

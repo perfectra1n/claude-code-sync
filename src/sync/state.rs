@@ -190,6 +190,7 @@ fn default_version() -> u32 {
     2
 }
 
+#[allow(dead_code)] // several methods are used only via the library target; the bin compiles this module separately
 impl MultiRepoState {
     /// Get the active repository configuration
     pub fn active(&self) -> Option<&RepoConfig> {

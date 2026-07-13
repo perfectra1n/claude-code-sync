@@ -14,6 +14,7 @@ pub struct HgScm {
 
 impl HgScm {
     /// Initialize a new Mercurial repository.
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn init(path: &Path) -> Result<Self> {
         fs::create_dir_all(path)?;
 
@@ -46,6 +47,7 @@ impl HgScm {
     }
 
     /// Clone a repository from a URL.
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn clone(url: &str, path: &Path) -> Result<Self> {
         let output = Command::new("hg")
             .args(["clone", url])
@@ -84,15 +86,6 @@ impl HgScm {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// Run an hg command and check if it succeeds.
-    fn hg_succeeds(&self, args: &[&str]) -> bool {
-        Command::new("hg")
-            .args(args)
-            .current_dir(&self.path)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
 
     /// Get path to .hg/hgrc config file.
     fn hgrc_path(&self) -> PathBuf {
@@ -150,9 +143,11 @@ impl HgScm {
 
             if trimmed.starts_with('[') {
                 // If we were in paths section and need to add, do it now
-                if in_paths_section && !path_updated && url.is_some() {
-                    new_content.push_str(&format!("{} = {}\n", name, url.unwrap()));
-                    path_updated = true;
+                if in_paths_section && !path_updated {
+                    if let Some(new_url) = url {
+                        new_content.push_str(&format!("{} = {}\n", name, new_url));
+                        path_updated = true;
+                    }
                 }
                 in_paths_section = trimmed == "[paths]";
                 if in_paths_section {
@@ -182,11 +177,13 @@ impl HgScm {
         }
 
         // If we need to add and haven't yet
-        if url.is_some() && !path_updated {
-            if !paths_section_exists {
-                new_content.push_str("\n[paths]\n");
+        if !path_updated {
+            if let Some(new_url) = url {
+                if !paths_section_exists {
+                    new_content.push_str("\n[paths]\n");
+                }
+                new_content.push_str(&format!("{} = {}\n", name, new_url));
             }
-            new_content.push_str(&format!("{} = {}\n", name, url.unwrap()));
         }
 
         self.write_hgrc(&new_content)

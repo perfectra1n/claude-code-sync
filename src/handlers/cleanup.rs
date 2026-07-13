@@ -105,7 +105,7 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
         let entry = entry?;
         let path = entry.path();
 
-        if !path.extension().map_or(false, |ext| ext == "json") {
+        if path.extension().is_none_or(|ext| ext != "json") {
             continue;
         }
 
@@ -124,8 +124,8 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
     }
 
     // Sort by timestamp descending (newest first)
-    pull_snapshots.sort_by(|a, b| b.1.cmp(&a.1));
-    push_snapshots.sort_by(|a, b| b.1.cmp(&a.1));
+    pull_snapshots.sort_by_key(|s| std::cmp::Reverse(s.1));
+    push_snapshots.sort_by_key(|s| std::cmp::Reverse(s.1));
 
     // Calculate which ones will be kept/deleted
     let now = chrono::Utc::now();

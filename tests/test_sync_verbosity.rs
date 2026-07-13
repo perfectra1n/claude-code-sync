@@ -1,7 +1,7 @@
-/// Integration tests for sync functions with verbosity and interactive modes
-///
-/// Note: These tests verify the logic paths without full git/filesystem setup.
-/// They test that verbosity levels are properly handled and don't cause panics.
+//! Integration tests for sync functions with verbosity and interactive modes
+//!
+//! Note: These tests verify the logic paths without full git/filesystem setup.
+//! They test that verbosity levels are properly handled and don't cause panics.
 
 use claude_code_sync::VerbosityLevel;
 
@@ -211,6 +211,7 @@ fn test_verbosity_in_struct() {
 
 /// Test clone and copy semantics for VerbosityLevel
 #[test]
+#[allow(clippy::clone_on_copy)] // the test exists to prove Clone works alongside Copy
 fn test_verbosity_clone_copy() {
     let original = VerbosityLevel::Normal;
     let copied = original; // Copy
@@ -227,19 +228,12 @@ fn test_verbosity_clone_copy() {
 /// Test interactive flag behavior
 #[test]
 fn test_interactive_flag_logic() {
-    let interactive = true;
-
     // Interactive mode should be checkable
-    if interactive {
-        // Would show preview and ask for confirmation
-        assert!(true);
-    }
+    let interactive = true;
+    assert!(interactive);
 
     let interactive = false;
-    if !interactive {
-        // Would skip preview
-        assert!(true);
-    }
+    assert!(!interactive);
 }
 
 /// Test verbosity with Option wrapper (as might be used in config)
@@ -247,7 +241,7 @@ fn test_interactive_flag_logic() {
 fn test_verbosity_option() {
     let maybe_verbosity: Option<VerbosityLevel> = Some(VerbosityLevel::Verbose);
     assert!(maybe_verbosity.is_some());
-    assert_eq!(maybe_verbosity.unwrap(), VerbosityLevel::Verbose);
+    assert_eq!(maybe_verbosity, Some(VerbosityLevel::Verbose));
 
     let maybe_verbosity: Option<VerbosityLevel> = None;
     assert!(maybe_verbosity.is_none());

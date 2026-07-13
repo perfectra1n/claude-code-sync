@@ -26,6 +26,7 @@ pub enum Backend {
 
 impl Backend {
     /// Check if this backend's binary is available on the system.
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn is_available(&self) -> bool {
         let binary = match self {
             Backend::Git => "git",
@@ -39,6 +40,7 @@ impl Backend {
     }
 
     /// Get the marker directory for this backend (.git, .hg, etc).
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn marker(&self) -> &'static str {
         match self {
             Backend::Git => ".git",
@@ -127,6 +129,7 @@ pub fn clone(url: &str, path: &Path) -> Result<Box<dyn Scm>> {
 ///
 /// This is useful for parameterized testing where you want to test
 /// the same operations against different SCM backends.
+#[allow(dead_code)] // used via the library target; the bin compiles this module separately
 pub fn init_with_backend(path: &Path, backend: Backend) -> Result<Box<dyn Scm>> {
     match backend {
         Backend::Git => Ok(Box::new(GitScm::init(path)?)),

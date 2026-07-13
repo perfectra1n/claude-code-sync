@@ -393,9 +393,10 @@ fn display_config_summary(config: &FilterConfig) {
         }
     );
 
-    println!("  {} {}",
+    println!(
+        "  {} {:.1} MB",
         "Max file size:".cyan(),
-        format!("{:.1} MB", config.max_file_size_bytes as f64 / (1024.0 * 1024.0))
+        config.max_file_size_bytes as f64 / (1024.0 * 1024.0)
     );
 
     println!("  {} {}",
@@ -712,6 +713,44 @@ pub fn handle_config_export() -> Result<()> {
     Ok(())
 }
 
+/// MultiSelect over all artifact categories, pre-selecting the currently
+/// enabled ones. Returns the resulting toggles.
+fn prompt_artifact_toggle_selection(
+    current: &crate::artifacts::registry::ArtifactToggles,
+) -> Result<crate::artifacts::registry::ArtifactToggles> {
+    use crate::artifacts::registry::{find_by_name, toggleable, ArtifactToggles};
+
+    let rows: Vec<_> = toggleable().collect();
+    let options: Vec<String> = rows
+        .iter()
+        .map(|d| format!("{} — {}", d.name, d.description))
+        .collect();
+    let preselected: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| current.is_enabled(d.id))
+        .map(|(i, _)| i)
+        .collect();
+
+    let picked = MultiSelect::new("Artifact categories to sync:", options)
+        .with_default(&preselected)
+        .with_help_message(
+            "Space toggles, Enter confirms. Secrets (credentials, settings.local.json, \
+             .env*, keys) are never synced regardless of selection.",
+        )
+        .prompt()
+        .context("Failed to get artifact category selection")?;
+
+    let mut toggles = ArtifactToggles::default();
+    for label in picked {
+        let name = label.split(" — ").next().unwrap_or(&label);
+        if let Some(desc) = find_by_name(name) {
+            toggles.set_enabled(desc.id, true);
+        }
+    }
+    Ok(toggles)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,42 +998,4 @@ mod tests {
         assert!(table.contains_key("scm_backend"));
         assert!(table.contains_key("sync_subdirectory"));
     }
-}
-
-/// MultiSelect over all artifact categories, pre-selecting the currently
-/// enabled ones. Returns the resulting toggles.
-fn prompt_artifact_toggle_selection(
-    current: &crate::artifacts::registry::ArtifactToggles,
-) -> Result<crate::artifacts::registry::ArtifactToggles> {
-    use crate::artifacts::registry::{find_by_name, toggleable, ArtifactToggles};
-
-    let rows: Vec<_> = toggleable().collect();
-    let options: Vec<String> = rows
-        .iter()
-        .map(|d| format!("{} — {}", d.name, d.description))
-        .collect();
-    let preselected: Vec<usize> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, d)| current.is_enabled(d.id))
-        .map(|(i, _)| i)
-        .collect();
-
-    let picked = MultiSelect::new("Artifact categories to sync:", options)
-        .with_default(&preselected)
-        .with_help_message(
-            "Space toggles, Enter confirms. Secrets (credentials, settings.local.json, \
-             .env*, keys) are never synced regardless of selection.",
-        )
-        .prompt()
-        .context("Failed to get artifact category selection")?;
-
-    let mut toggles = ArtifactToggles::default();
-    for label in picked {
-        let name = label.split(" — ").next().unwrap_or(&label);
-        if let Some(desc) = find_by_name(name) {
-            toggles.set_enabled(desc.id, true);
-        }
-    }
-    Ok(toggles)
 }

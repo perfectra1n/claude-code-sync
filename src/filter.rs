@@ -266,6 +266,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 /// Update the filter configuration
+#[allow(clippy::too_many_arguments)]
 pub fn update_config(
     exclude_older_than: Option<u32>,
     include_projects: Option<String>,

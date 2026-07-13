@@ -41,6 +41,7 @@ pub struct PushPlan {
 }
 
 /// Outcome counts of a completed push, returned to callers and tests.
+#[allow(dead_code)] // fields are read via the library target; the bin compiles this module separately
 #[derive(Debug, Default)]
 pub struct PushReport {
     pub added: usize,

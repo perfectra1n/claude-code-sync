@@ -87,6 +87,7 @@ impl ArtifactReport {
         self.counts.iter().map(|c| c.unchanged).sum()
     }
     /// True when nothing was copied, merged, or even inspected.
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn is_empty(&self) -> bool {
         self.counts.is_empty()
             || self

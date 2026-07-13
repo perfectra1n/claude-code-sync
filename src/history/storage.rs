@@ -533,8 +533,8 @@ mod tests {
 
             let history = OperationHistory::new();
             let result = history.save_to(Some(readonly_path.clone()));
-            if result.is_err() {
-                let error_msg = result.unwrap_err().to_string();
+            if let Err(err) = result {
+                let error_msg = err.to_string();
                 // Error should reference the path
                 assert!(
                     error_msg.contains("history")

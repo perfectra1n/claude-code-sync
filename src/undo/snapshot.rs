@@ -175,6 +175,7 @@ impl Snapshot {
     ///
     /// # Returns
     /// A new differential Snapshot, or a full snapshot if no base exists
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn create_differential_with_dir<P, I>(
         operation_type: OperationType,
         file_paths: I,
@@ -270,6 +271,7 @@ impl Snapshot {
     ///
     /// # Returns
     /// A new differential Snapshot, or a full snapshot if no base exists
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn create_differential<P, I>(
         operation_type: OperationType,
         file_paths: I,
@@ -286,6 +288,7 @@ impl Snapshot {
     ///
     /// This is the same as `create_differential` but with a clearer name
     /// when used with push operations that need to store a commit hash.
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn create_differential_with_commit<P, I>(
         operation_type: OperationType,
         file_paths: I,
@@ -306,6 +309,7 @@ impl Snapshot {
     ///
     /// # Returns
     /// The most recent snapshot, or None if no snapshots exist
+    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub(crate) fn find_latest_snapshot(operation_type: OperationType, custom_dir: Option<&Path>) -> Result<Option<Snapshot>> {
         let snapshots_dir = if let Some(dir) = custom_dir {
             dir.to_path_buf()
@@ -324,7 +328,7 @@ impl Snapshot {
             let entry = entry?;
             let path = entry.path();
 
-            if !path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
 
@@ -339,7 +343,7 @@ impl Snapshot {
         }
 
         // Sort by timestamp descending and get the most recent
-        snapshots.sort_by(|a, b| b.1.cmp(&a.1));
+        snapshots.sort_by_key(|s| std::cmp::Reverse(s.1));
 
         if let Some((path, _)) = snapshots.first() {
             let snapshot = Self::load_from_disk(path)?;

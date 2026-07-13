@@ -541,7 +541,7 @@ fn test_deleted_files_tracking() {
 
     let (snapshot3, _) = push_and_get_snapshot(
         &snapshots_dir,
-        &[file1.clone()],
+        std::slice::from_ref(&file1),
         None,
     ).unwrap();
 
@@ -581,7 +581,7 @@ fn test_broken_snapshot_chain() {
     // Create snapshot 1
     let (snapshot1, _snapshot1_path) = push_and_get_snapshot(
         &snapshots_dir,
-        &[file1.clone()],
+        std::slice::from_ref(&file1),
         None,
     ).unwrap();
 
@@ -589,7 +589,7 @@ fn test_broken_snapshot_chain() {
     fs::write(&file1, b"content2").unwrap();
     let (_snapshot2, snapshot2_path) = push_and_get_snapshot(
         &snapshots_dir,
-        &[file1.clone()],
+        std::slice::from_ref(&file1),
         None,
     ).unwrap();
 
@@ -597,7 +597,7 @@ fn test_broken_snapshot_chain() {
     fs::write(&file1, b"content3").unwrap();
     let (snapshot3, _snapshot3_path) = push_and_get_snapshot(
         &snapshots_dir,
-        &[file1.clone()],
+        std::slice::from_ref(&file1),
         None,
     ).unwrap();
 
@@ -654,7 +654,7 @@ fn test_differential_snapshot_with_scm() {
     println!("Creating snapshot with commit information...");
     let (snapshot1, _) = push_and_get_snapshot(
         &snapshots_dir,
-        &[file1.clone()],
+        std::slice::from_ref(&file1),
         Some(&initial_commit),
     ).unwrap();
 
@@ -676,7 +676,7 @@ fn test_differential_snapshot_with_scm() {
     // Create differential snapshot
     let (snapshot2, _) = push_and_get_snapshot(
         &snapshots_dir,
-        &[file1.clone()],
+        std::slice::from_ref(&file1),
         Some(&second_commit),
     ).unwrap();
 
@@ -784,7 +784,7 @@ fn test_empty_differential_snapshot() {
     println!("Creating initial snapshot...");
     let (_snapshot1, snapshot1_path) = push_and_get_snapshot(
         &snapshots_dir,
-        &[file1.clone()],
+        std::slice::from_ref(&file1),
         None,
     ).unwrap();
     let size1 = calculate_snapshot_size(&snapshot1_path).unwrap();
@@ -794,7 +794,7 @@ fn test_empty_differential_snapshot() {
     println!("Creating differential snapshot with no changes...");
     let (snapshot2, snapshot2_path) = push_and_get_snapshot(
         &snapshots_dir,
-        &[file1.clone()],
+        std::slice::from_ref(&file1),
         None,
     ).unwrap();
     let size2 = calculate_snapshot_size(&snapshot2_path).unwrap();
