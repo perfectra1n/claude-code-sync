@@ -1,6 +1,6 @@
 //! Full-pipeline end-to-end tests for artifact sync: the real push_history /
 //! pull_history / sync_bidirectional / undo_pull entry points, real git
-//! commits, and two simulated machines (distinct HOME +
+//! commits, and two simulated machines (distinct CLAUDE_CODE_SYNC_CLAUDE_DIR +
 //! CLAUDE_CODE_SYNC_CONFIG_DIR sharing one sync repository).
 //!
 //! Serialized: HOME and the config-dir override are process-global.
@@ -63,6 +63,9 @@ impl Machine {
 
     fn activate(&self) {
         std::env::set_var("HOME", &self.home);
+        // HOME alone is not enough on Windows (dirs::home_dir() ignores it
+        // there), so point the product at this machine's .claude explicitly.
+        std::env::set_var("CLAUDE_CODE_SYNC_CLAUDE_DIR", self.home.join(".claude"));
         std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", &self.config);
     }
 
@@ -73,6 +76,7 @@ impl Machine {
 
 struct EnvRestore {
     home: Option<String>,
+    claude: Option<String>,
     cfg: Option<String>,
 }
 
@@ -80,6 +84,7 @@ impl EnvRestore {
     fn capture() -> Self {
         Self {
             home: std::env::var("HOME").ok(),
+            claude: std::env::var("CLAUDE_CODE_SYNC_CLAUDE_DIR").ok(),
             cfg: std::env::var("CLAUDE_CODE_SYNC_CONFIG_DIR").ok(),
         }
     }
@@ -90,6 +95,10 @@ impl Drop for EnvRestore {
         match &self.home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        match &self.claude {
+            Some(v) => std::env::set_var("CLAUDE_CODE_SYNC_CLAUDE_DIR", v),
+            None => std::env::remove_var("CLAUDE_CODE_SYNC_CLAUDE_DIR"),
         }
         match &self.cfg {
             Some(v) => std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", v),
