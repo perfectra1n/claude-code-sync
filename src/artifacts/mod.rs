@@ -8,3 +8,4 @@
 
 pub mod denylist;
 pub mod registry;
+pub mod union_jsonl;
