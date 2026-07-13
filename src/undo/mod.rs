@@ -4,28 +4,30 @@
 //! Snapshots enable undoing pull operations (by restoring files) and push operations
 //! (by resetting Git commits). Includes validation and security checks for safe restoration.
 
-mod snapshot;
-mod restore;
-mod preview;
-mod operations;
 mod cleanup;
+mod operations;
+mod preview;
+mod restore;
+mod snapshot;
 
 // Re-export public types and functions to maintain API compatibility
-pub use snapshot::Snapshot;
-pub use preview::{VerbosityLevel, preview_undo_pull, preview_undo_push};
+pub use cleanup::{cleanup_old_snapshots, SnapshotCleanupConfig};
 pub use operations::{undo_pull, undo_push};
-pub use cleanup::{SnapshotCleanupConfig, cleanup_old_snapshots};
+pub use preview::{preview_undo_pull, preview_undo_push, VerbosityLevel};
+pub use snapshot::Snapshot;
 
 // These are part of the public API but currently only used in tests
 #[allow(unused_imports)]
-pub use preview::UndoPreview;
-#[allow(unused_imports)]
 pub use cleanup::cleanup_old_snapshots_with_dir;
+#[allow(unused_imports)]
+pub use preview::UndoPreview;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::{ConversationSummary, OperationRecord, OperationType, SyncOperation, OperationHistory};
+    use crate::history::{
+        ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
+    };
     use crate::scm::{self, Scm};
     use std::collections::HashMap;
     use std::fs;
@@ -707,7 +709,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_undo_pull_transaction_safety() {
         // This test verifies that history is updated FIRST, then files are restored.
@@ -897,9 +898,19 @@ mod tests {
         snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
 
         // Verify it's a full snapshot
-        assert!(snapshot.base_snapshot_id.is_none(), "First snapshot should not have a base");
-        assert_eq!(snapshot.files.len(), 2, "First snapshot should contain all files");
-        assert!(snapshot.deleted_files.is_empty(), "First snapshot should have no deleted files");
+        assert!(
+            snapshot.base_snapshot_id.is_none(),
+            "First snapshot should not have a base"
+        );
+        assert_eq!(
+            snapshot.files.len(),
+            2,
+            "First snapshot should contain all files"
+        );
+        assert!(
+            snapshot.deleted_files.is_empty(),
+            "First snapshot should have no deleted files"
+        );
     }
 
     #[test]
@@ -939,7 +950,10 @@ mod tests {
         snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
 
         // Verify it's a differential snapshot
-        assert!(snapshot2.base_snapshot_id.is_some(), "Second snapshot should have a base");
+        assert!(
+            snapshot2.base_snapshot_id.is_some(),
+            "Second snapshot should have a base"
+        );
         assert_eq!(
             snapshot2.base_snapshot_id.as_ref().unwrap(),
             &snapshot1.snapshot_id,
@@ -947,10 +961,20 @@ mod tests {
         );
 
         // Should only contain changed file (file1) and new file (file3), not file2
-        assert_eq!(snapshot2.files.len(), 2, "Should only contain changed and new files");
-        assert!(snapshot2.files.contains_key(&file1.to_string_lossy().to_string()));
-        assert!(snapshot2.files.contains_key(&file3.to_string_lossy().to_string()));
-        assert!(!snapshot2.files.contains_key(&file2.to_string_lossy().to_string()));
+        assert_eq!(
+            snapshot2.files.len(),
+            2,
+            "Should only contain changed and new files"
+        );
+        assert!(snapshot2
+            .files
+            .contains_key(&file1.to_string_lossy().to_string()));
+        assert!(snapshot2
+            .files
+            .contains_key(&file3.to_string_lossy().to_string()));
+        assert!(!snapshot2
+            .files
+            .contains_key(&file2.to_string_lossy().to_string()));
     }
 
     #[test]
@@ -988,9 +1012,15 @@ mod tests {
         snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
 
         // Verify deletion tracking
-        assert_eq!(snapshot2.deleted_files.len(), 1, "Should track one deleted file");
+        assert_eq!(
+            snapshot2.deleted_files.len(),
+            1,
+            "Should track one deleted file"
+        );
         assert!(
-            snapshot2.deleted_files.contains(&file2.to_string_lossy().to_string()),
+            snapshot2
+                .deleted_files
+                .contains(&file2.to_string_lossy().to_string()),
             "Should track file2 as deleted"
         );
     }
@@ -1030,13 +1060,34 @@ mod tests {
         snapshot2.save_to_disk(Some(&snapshots_dir)).unwrap();
 
         // Reconstruct full state from differential snapshot
-        let full_state = snapshot2.reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
+        let full_state = snapshot2
+            .reconstruct_full_state_with_dir(Some(&snapshots_dir))
+            .unwrap();
 
         // Should contain all three files with correct content
-        assert_eq!(full_state.len(), 3, "Should have 3 files after reconstruction");
-        assert_eq!(full_state.get(&file1.to_string_lossy().to_string()).unwrap(), b"v2");
-        assert_eq!(full_state.get(&file2.to_string_lossy().to_string()).unwrap(), b"v1"); // Unchanged from base
-        assert_eq!(full_state.get(&file3.to_string_lossy().to_string()).unwrap(), b"v2"); // New file
+        assert_eq!(
+            full_state.len(),
+            3,
+            "Should have 3 files after reconstruction"
+        );
+        assert_eq!(
+            full_state
+                .get(&file1.to_string_lossy().to_string())
+                .unwrap(),
+            b"v2"
+        );
+        assert_eq!(
+            full_state
+                .get(&file2.to_string_lossy().to_string())
+                .unwrap(),
+            b"v1"
+        ); // Unchanged from base
+        assert_eq!(
+            full_state
+                .get(&file3.to_string_lossy().to_string())
+                .unwrap(),
+            b"v2"
+        ); // New file
     }
 
     #[test]
@@ -1075,7 +1126,9 @@ mod tests {
         fs::write(&file2, b"should_be_deleted").unwrap();
 
         // Restore snapshot2 which should delete file2
-        snapshot2.restore_with_base_and_snapshots(Some(temp_dir.path()), Some(&snapshots_dir)).unwrap();
+        snapshot2
+            .restore_with_base_and_snapshots(Some(temp_dir.path()), Some(&snapshots_dir))
+            .unwrap();
 
         // Verify file1 exists and file2 was deleted
         assert!(file1.exists(), "file1 should exist after restore");
@@ -1107,7 +1160,10 @@ mod tests {
         let result = snapshot.reconstruct_full_state();
         assert!(result.is_err(), "Should fail when base snapshot is missing");
         assert!(
-            result.unwrap_err().to_string().contains("Base snapshot not found"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Base snapshot not found"),
             "Error should mention missing base snapshot"
         );
     }
@@ -1136,19 +1192,28 @@ mod tests {
         }
 
         // Verify chain structure
-        assert!(snapshots[0].base_snapshot_id.is_none(), "First should have no base");
+        assert!(
+            snapshots[0].base_snapshot_id.is_none(),
+            "First should have no base"
+        );
         for i in 1..5 {
             assert_eq!(
                 snapshots[i].base_snapshot_id.as_ref().unwrap(),
                 &snapshots[i - 1].snapshot_id,
-                "Snapshot {} should reference snapshot {}", i, i - 1
+                "Snapshot {} should reference snapshot {}",
+                i,
+                i - 1
             );
         }
 
         // Reconstruct from the last snapshot
-        let full_state = snapshots[4].reconstruct_full_state_with_dir(Some(&snapshots_dir)).unwrap();
+        let full_state = snapshots[4]
+            .reconstruct_full_state_with_dir(Some(&snapshots_dir))
+            .unwrap();
         assert_eq!(
-            full_state.get(&file1.to_string_lossy().to_string()).unwrap(),
+            full_state
+                .get(&file1.to_string_lossy().to_string())
+                .unwrap(),
             b"version_5",
             "Should reconstruct to the latest version"
         );
@@ -1185,7 +1250,8 @@ mod tests {
             max_age_days: 0, // Only count matters, not age
         };
 
-        let deleted = cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
+        let deleted =
+            cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
         assert_eq!(deleted, 5, "Should delete 5 old snapshots");
 
         // Count remaining snapshots
@@ -1224,7 +1290,8 @@ mod tests {
             max_age_days: 50,
         };
 
-        let deleted = cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
+        let deleted =
+            cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
 
         // Snapshots are at days: 5, 15, 25, 35, 45, 55, 65, 75, 85, 95
         // Age threshold is now - 50 days
@@ -1275,14 +1342,18 @@ mod tests {
             max_age_days: 0, // Don't keep by age
         };
 
-        let deleted = cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
+        let deleted =
+            cleanup_old_snapshots_with_dir(Some(config), false, Some(&snapshots_dir)).unwrap();
 
         // Should delete 7 pull + 7 push = 14 total
         assert_eq!(deleted, 14, "Should delete 14 old snapshots");
 
         // Should keep 3 pull + 3 push = 6 total
         let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
-        assert_eq!(remaining, 6, "Should have 6 snapshots remaining (3 per type)");
+        assert_eq!(
+            remaining, 6,
+            "Should have 6 snapshots remaining (3 per type)"
+        );
     }
 
     #[test]
@@ -1312,11 +1383,15 @@ mod tests {
         };
 
         // Dry run should report but not delete
-        let deleted = cleanup_old_snapshots_with_dir(Some(config), true, Some(&snapshots_dir)).unwrap();
+        let deleted =
+            cleanup_old_snapshots_with_dir(Some(config), true, Some(&snapshots_dir)).unwrap();
         assert_eq!(deleted, 7, "Should report 7 snapshots would be deleted");
 
         // All snapshots should still exist
         let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
-        assert_eq!(remaining, 10, "All snapshots should still exist after dry run");
+        assert_eq!(
+            remaining, 10,
+            "All snapshots should still exist after dry run"
+        );
     }
 }

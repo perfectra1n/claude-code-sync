@@ -63,7 +63,11 @@ pub fn set_remote(name: &str, url: &str) -> Result<()> {
     let repo = scm::open(&state.sync_repo_path)?;
 
     // Validate URL format
-    if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("git@") && !url.starts_with("ssh://") {
+    if !url.starts_with("http://")
+        && !url.starts_with("https://")
+        && !url.starts_with("git@")
+        && !url.starts_with("ssh://")
+    {
         return Err(anyhow!(
             "Invalid URL format: {url}\n\
             \n\

@@ -310,7 +310,10 @@ impl Snapshot {
     /// # Returns
     /// The most recent snapshot, or None if no snapshots exist
     #[allow(dead_code)] // used via the library target; the bin compiles this module separately
-    pub(crate) fn find_latest_snapshot(operation_type: OperationType, custom_dir: Option<&Path>) -> Result<Option<Snapshot>> {
+    pub(crate) fn find_latest_snapshot(
+        operation_type: OperationType,
+        custom_dir: Option<&Path>,
+    ) -> Result<Option<Snapshot>> {
         let snapshots_dir = if let Some(dir) = custom_dir {
             dir.to_path_buf()
         } else {
@@ -483,7 +486,10 @@ impl Snapshot {
     ///
     /// # Returns
     /// A HashMap containing the full state of all files
-    pub fn reconstruct_full_state_with_dir(&self, snapshots_dir: Option<&Path>) -> Result<HashMap<String, Vec<u8>>> {
+    pub fn reconstruct_full_state_with_dir(
+        &self,
+        snapshots_dir: Option<&Path>,
+    ) -> Result<HashMap<String, Vec<u8>>> {
         let mut state = HashMap::new();
 
         // If this is a differential snapshot, load the base chain
@@ -533,5 +539,4 @@ impl Snapshot {
     pub(crate) fn snapshots_dir() -> Result<PathBuf> {
         crate::config::ConfigManager::snapshots_dir()
     }
-
 }

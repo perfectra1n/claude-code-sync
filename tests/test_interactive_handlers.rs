@@ -1,6 +1,6 @@
-use claude_code_sync::VerbosityLevel;
-use claude_code_sync::undo::{UndoPreview, VerbosityLevel as UndoVerbosity};
 use claude_code_sync::history::OperationType;
+use claude_code_sync::undo::{UndoPreview, VerbosityLevel as UndoVerbosity};
+use claude_code_sync::VerbosityLevel;
 
 /// Test VerbosityLevel enum basic functionality
 #[test]
@@ -172,7 +172,10 @@ fn test_filter_config_clone() {
 
     assert_eq!(config.max_file_size_bytes, cloned.max_file_size_bytes);
     assert_eq!(config.exclude_attachments, cloned.exclude_attachments);
-    assert_eq!(config.exclude_older_than_days, cloned.exclude_older_than_days);
+    assert_eq!(
+        config.exclude_older_than_days,
+        cloned.exclude_older_than_days
+    );
 }
 
 /// Test that FilterConfig can be modified (needed for wizard)

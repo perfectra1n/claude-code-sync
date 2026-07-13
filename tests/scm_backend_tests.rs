@@ -444,10 +444,7 @@ fn test_backend_selection_invalid() {
         scm_backend: "svn".to_string(),
         ..Default::default()
     };
-    assert!(
-        config.backend().is_err(),
-        "Invalid backend should fail"
-    );
+    assert!(config.backend().is_err(), "Invalid backend should fail");
 }
 
 #[test]

@@ -91,11 +91,8 @@ pub fn pull_history(
     // ============================================================================
     // ARTIFACT PULL PLAN (read-only, so the snapshot below can cover it)
     // ============================================================================
-    let artifact_plan = crate::artifacts::engine::plan_pull(
-        &claude_home_dir()?,
-        &state.sync_repo_path,
-        &filter,
-    )?;
+    let artifact_plan =
+        crate::artifacts::engine::plan_pull(&claude_home_dir()?, &state.sync_repo_path, &filter)?;
 
     // ============================================================================
     // SNAPSHOT CREATION: Only backup files that will actually change
@@ -162,7 +159,11 @@ pub fn pull_history(
         println!();
         println!("{}", "Pull Summary:".bold().cyan());
         println!("  {} Local sessions: {}", "•".cyan(), local_sessions.len());
-        println!("  {} Remote sessions: {}", "•".cyan(), remote_sessions.len());
+        println!(
+            "  {} Remote sessions: {}",
+            "•".cyan(),
+            remote_sessions.len()
+        );
         println!();
     }
 
@@ -174,7 +175,12 @@ pub fn pull_history(
                 .strip_prefix(&remote_projects_dir)
                 .unwrap_or(Path::new(&session.file_path));
 
-            println!("  {}. {} ({} messages)", idx + 1, relative_path.display(), session.message_count());
+            println!(
+                "  {}. {} ({} messages)",
+                idx + 1,
+                relative_path.display(),
+                session.message_count()
+            );
         }
         if remote_sessions.len() > 20 {
             println!("  ... and {} more", remote_sessions.len() - 20);
@@ -184,11 +190,14 @@ pub fn pull_history(
 
     // Interactive confirmation
     if interactive && interactive_conflict::is_interactive() {
-        let confirm = Confirm::new("Do you want to proceed with pulling and merging these changes?")
-            .with_default(true)
-            .with_help_message("This will merge remote sessions into your local Claude Code history")
-            .prompt()
-            .context("Failed to get confirmation")?;
+        let confirm =
+            Confirm::new("Do you want to proceed with pulling and merging these changes?")
+                .with_default(true)
+                .with_help_message(
+                    "This will merge remote sessions into your local Claude Code history",
+                )
+                .prompt()
+                .context("Failed to get confirmation")?;
 
         if !confirm {
             println!("\n{}", "Pull cancelled.".yellow());
@@ -465,7 +474,10 @@ pub fn pull_history(
                         .unwrap_or_else(|_| remote_relative.to_path_buf());
                     (dest, tracking_path)
                 } else {
-                    log::warn!("Could not extract filename from remote path: {:?}", remote_relative);
+                    log::warn!(
+                        "Could not extract filename from remote path: {:?}",
+                        remote_relative
+                    );
                     skipped_no_local_match += 1;
                     continue; // Skip this session
                 }
@@ -534,10 +546,7 @@ pub fn pull_history(
             artifact_report.total_modified()
         );
         if artifact_report.total_modified() > 0 {
-            println!(
-                "    {}",
-                "Undo with: claude-code-sync undo pull".dimmed()
-            );
+            println!("    {}", "Undo with: claude-code-sync undo pull".dimmed());
         }
     }
 

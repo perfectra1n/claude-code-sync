@@ -86,7 +86,6 @@ impl HgScm {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-
     /// Get path to .hg/hgrc config file.
     fn hgrc_path(&self) -> PathBuf {
         self.path.join(".hg").join("hgrc")
@@ -348,13 +347,15 @@ mod tests {
 
         assert!(!scm.has_remote("origin"));
 
-        scm.add_remote("origin", "https://example.com/repo").unwrap();
+        scm.add_remote("origin", "https://example.com/repo")
+            .unwrap();
         assert!(scm.has_remote("origin"));
 
         let url = scm.get_remote_url("origin").unwrap();
         assert_eq!(url, "https://example.com/repo");
 
-        scm.set_remote_url("origin", "https://example.com/new").unwrap();
+        scm.set_remote_url("origin", "https://example.com/new")
+            .unwrap();
         let new_url = scm.get_remote_url("origin").unwrap();
         assert_eq!(new_url, "https://example.com/new");
 
@@ -374,8 +375,10 @@ mod tests {
 
         assert!(scm.list_remotes().unwrap().is_empty());
 
-        scm.add_remote("origin", "https://example.com/origin").unwrap();
-        scm.add_remote("upstream", "https://example.com/upstream").unwrap();
+        scm.add_remote("origin", "https://example.com/origin")
+            .unwrap();
+        scm.add_remote("upstream", "https://example.com/upstream")
+            .unwrap();
 
         let remotes = scm.list_remotes().unwrap();
         assert_eq!(remotes.len(), 2);

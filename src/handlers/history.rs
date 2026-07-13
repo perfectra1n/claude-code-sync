@@ -253,8 +253,14 @@ pub fn handle_history_clear() -> Result<()> {
 pub fn handle_history_review(limit: usize) -> Result<()> {
     // Check if we're in an interactive terminal
     if !interactive_conflict::is_interactive() {
-        println!("{}", "Review mode requires an interactive terminal.".yellow());
-        println!("{}", "Use 'history list' for non-interactive viewing.".dimmed());
+        println!(
+            "{}",
+            "Review mode requires an interactive terminal.".yellow()
+        );
+        println!(
+            "{}",
+            "Use 'history list' for non-interactive viewing.".dimmed()
+        );
         return Ok(());
     }
 
@@ -303,9 +309,12 @@ pub fn handle_history_review(limit: usize) -> Result<()> {
     options_with_exit.push("← Exit review".to_string());
 
     loop {
-        let selection = Select::new("Select an operation to review (or Exit):", options_with_exit.clone())
-            .with_help_message("Use arrow keys to navigate, Enter to select")
-            .prompt();
+        let selection = Select::new(
+            "Select an operation to review (or Exit):",
+            options_with_exit.clone(),
+        )
+        .with_help_message("Use arrow keys to navigate, Enter to select")
+        .prompt();
 
         match selection {
             Ok(selected) => {

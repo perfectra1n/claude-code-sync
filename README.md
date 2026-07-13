@@ -1,8 +1,7 @@
 # claude-code-sync
 
-[![Unit Tests](https://github.com/perfectra1n/claude-code-sync/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/unit-tests.yml)
-[![Integration Tests](https://github.com/perfectra1n/claude-code-sync/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/integration-tests.yml)
-[![Build](https://github.com/perfectra1n/claude-code-sync/actions/workflows/build.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/build.yml)
+[![CI](https://github.com/perfectra1n/claude-code-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/ci.yml)
+[![Release](https://github.com/perfectra1n/claude-code-sync/actions/workflows/release.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/release.yml)
 [![Documentation](https://github.com/perfectra1n/claude-code-sync/actions/workflows/docs.yml/badge.svg)](https://github.com/perfectra1n/claude-code-sync/actions/workflows/docs.yml)
 
 A Rust CLI tool for syncing Claude Code conversation history across machines using git repositories.

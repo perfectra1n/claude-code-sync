@@ -128,7 +128,10 @@ impl InitConfig {
         if let Ok(path) = std::env::var("CLAUDE_CODE_SYNC_INIT_CONFIG") {
             let path = PathBuf::from(&path);
             if path.exists() {
-                log::info!("Loading init config from CLAUDE_CODE_SYNC_INIT_CONFIG: {}", path.display());
+                log::info!(
+                    "Loading init config from CLAUDE_CODE_SYNC_INIT_CONFIG: {}",
+                    path.display()
+                );
                 return Ok(Some(Self::load(&path)?));
             }
         }
@@ -553,7 +556,10 @@ mod tests {
         "#;
         let config: InitConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.repo_path, "~/claude-sync");
-        assert_eq!(config.remote_url, Some("https://github.com/user/repo.git".to_string()));
+        assert_eq!(
+            config.remote_url,
+            Some("https://github.com/user/repo.git".to_string())
+        );
         assert!(config.clone);
         assert!(config.exclude_attachments);
         assert_eq!(config.exclude_older_than_days, Some(30));
@@ -629,7 +635,10 @@ mod tests {
         };
         let onboarding = config.to_onboarding_config().unwrap();
         assert_eq!(onboarding.repo_path, PathBuf::from("/tmp/test"));
-        assert_eq!(onboarding.remote_url, Some("https://github.com/user/repo.git".to_string()));
+        assert_eq!(
+            onboarding.remote_url,
+            Some("https://github.com/user/repo.git".to_string())
+        );
         assert!(onboarding.is_cloned);
         assert!(onboarding.exclude_attachments);
         assert_eq!(onboarding.exclude_older_than_days, Some(30));

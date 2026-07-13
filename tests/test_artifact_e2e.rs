@@ -1,6 +1,6 @@
 //! Full-pipeline end-to-end tests for artifact sync: the real push_history /
 //! pull_history / sync_bidirectional / undo_pull entry points, real git
-//! commits, and two simulated machines (distinct HOME +
+//! commits, and two simulated machines (distinct CLAUDE_CODE_SYNC_CLAUDE_DIR +
 //! CLAUDE_CODE_SYNC_CONFIG_DIR sharing one sync repository).
 //!
 //! Serialized: HOME and the config-dir override are process-global.
@@ -63,6 +63,9 @@ impl Machine {
 
     fn activate(&self) {
         std::env::set_var("HOME", &self.home);
+        // HOME alone is not enough on Windows (dirs::home_dir() ignores it
+        // there), so point the product at this machine's .claude explicitly.
+        std::env::set_var("CLAUDE_CODE_SYNC_CLAUDE_DIR", self.home.join(".claude"));
         std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", &self.config);
     }
 
@@ -73,6 +76,7 @@ impl Machine {
 
 struct EnvRestore {
     home: Option<String>,
+    claude: Option<String>,
     cfg: Option<String>,
 }
 
@@ -80,6 +84,7 @@ impl EnvRestore {
     fn capture() -> Self {
         Self {
             home: std::env::var("HOME").ok(),
+            claude: std::env::var("CLAUDE_CODE_SYNC_CLAUDE_DIR").ok(),
             cfg: std::env::var("CLAUDE_CODE_SYNC_CONFIG_DIR").ok(),
         }
     }
@@ -90,6 +95,10 @@ impl Drop for EnvRestore {
         match &self.home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        match &self.claude {
+            Some(v) => std::env::set_var("CLAUDE_CODE_SYNC_CLAUDE_DIR", v),
+            None => std::env::remove_var("CLAUDE_CODE_SYNC_CLAUDE_DIR"),
         }
         match &self.cfg {
             Some(v) => std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", v),
@@ -176,9 +185,7 @@ fn test_full_pipeline_push_pull_undo_across_two_machines() {
 
     // The push record carries per-category artifact counts.
     let history = OperationHistory::load().unwrap();
-    let last = history.get_last_operation_by_type(
-        claude_code_sync::history::OperationType::Push,
-    );
+    let last = history.get_last_operation_by_type(claude_code_sync::history::OperationType::Push);
     assert!(!last.unwrap().artifact_counts.is_empty());
 
     // ---- Machine B pulls the environment onto a fresh home ----
@@ -187,18 +194,26 @@ fn test_full_pipeline_push_pull_undo_across_two_machines() {
 
     pull_history(false, None, false, VerbosityLevel::Quiet).unwrap();
     let b = machine_b.claude();
-    assert_eq!(fs::read(b.join("settings.json")).unwrap(), b"{\"model\":\"opus\"}");
+    assert_eq!(
+        fs::read(b.join("settings.json")).unwrap(),
+        b"{\"model\":\"opus\"}"
+    );
     assert_eq!(fs::read(b.join("CLAUDE.md")).unwrap(), b"# global memory\n");
     assert!(b.join("skills/deploy/SKILL.md").is_file());
     assert!(b.join("projects/-home-user-webapp/diagram.png").is_file());
-    assert!(b.join("projects/-home-user-webapp/memory/MEMORY.md").is_file());
+    assert!(b
+        .join("projects/-home-user-webapp/memory/MEMORY.md")
+        .is_file());
     assert!(b.join("history.jsonl").is_file());
     assert!(!b.join(".credentials.json").exists());
 
     // ---- Undo the pull: every artifact the pull created disappears ----
     let summary = claude_code_sync::undo::undo_pull(None, Some(&machine_b.home)).unwrap();
     assert!(summary.contains("undone"), "undo summary: {summary}");
-    assert!(!b.join("settings.json").exists(), "created settings removed");
+    assert!(
+        !b.join("settings.json").exists(),
+        "created settings removed"
+    );
     assert!(!b.join("skills/deploy/SKILL.md").exists());
     assert!(!b.join("CLAUDE.md").exists());
 
@@ -218,9 +233,24 @@ fn test_full_pipeline_second_push_creates_no_commit() {
     machine.activate();
     seed_full_claude_home(&machine.claude());
 
-    push_history(Some("first"), false, None, false, false, VerbosityLevel::Quiet).unwrap();
-    let report = push_history(Some("second"), false, None, false, false, VerbosityLevel::Quiet)
-        .unwrap();
+    push_history(
+        Some("first"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+    )
+    .unwrap();
+    let report = push_history(
+        Some("second"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+    )
+    .unwrap();
 
     // Issue #68 end-to-end: nothing changed, nothing is added/modified,
     // and git records no second commit.
@@ -266,7 +296,11 @@ fn test_full_pipeline_sync_converges_prompt_history() {
     assert!(a_history.contains("from B"));
     let ts: Vec<u64> = a_history
         .lines()
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["timestamp"].as_u64().unwrap())
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["timestamp"]
+                .as_u64()
+                .unwrap()
+        })
         .collect();
     assert_eq!(ts, vec![1000, 2000], "chronological order");
 }

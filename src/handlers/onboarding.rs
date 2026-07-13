@@ -75,14 +75,10 @@ pub fn run_init_from_config<P: AsRef<Path>>(config_path: Option<P>) -> Result<()
         log::info!("Loading init config from: {}", path.as_ref().display());
         InitConfig::load(path.as_ref())?
     } else {
-        InitConfig::load_default()?
-            .ok_or_else(|| anyhow::anyhow!("No init config file found"))?
+        InitConfig::load_default()?.ok_or_else(|| anyhow::anyhow!("No init config file found"))?
     };
 
-    println!(
-        "{}",
-        "📄 Initializing from config file...".cyan().bold()
-    );
+    println!("{}", "📄 Initializing from config file...".cyan().bold());
 
     // Convert to onboarding config
     let onboarding_config = init_config.to_onboarding_config()?;
@@ -122,7 +118,11 @@ pub fn run_init_from_config<P: AsRef<Path>>(config_path: Option<P>) -> Result<()
         .context("Failed to save filter configuration")?;
 
     println!("{}", "✓ Initialization complete!".green().bold());
-    println!("  {} {}", "Repo:".cyan(), onboarding_config.repo_path.display());
+    println!(
+        "  {} {}",
+        "Repo:".cyan(),
+        onboarding_config.repo_path.display()
+    );
     if let Some(ref url) = onboarding_config.remote_url {
         println!("  {} {}", "Remote:".cyan(), url);
     }

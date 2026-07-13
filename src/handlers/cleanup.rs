@@ -7,9 +7,9 @@ use colored::Colorize;
 use inquire::Confirm;
 use std::fs;
 
-use crate::undo;
 use crate::history::OperationType;
 use crate::interactive_conflict;
+use crate::undo;
 
 /// Handle cleanup snapshots command
 pub fn handle_cleanup_snapshots(
@@ -25,7 +25,10 @@ pub fn handle_cleanup_snapshots(
         } else {
             println!("{}", "Cleaning up old snapshots...".cyan().bold());
         }
-        println!("  Keeping: last {} snapshots per type OR last {} days", max_count, max_age_days);
+        println!(
+            "  Keeping: last {} snapshots per type OR last {} days",
+            max_count, max_age_days
+        );
         println!();
     }
 
@@ -74,11 +77,7 @@ pub fn handle_cleanup_snapshots(
             }
         } else {
             if deleted_count > 0 {
-                println!(
-                    "{} Deleted {} old snapshots",
-                    "✓".green(),
-                    deleted_count
-                );
+                println!("{} Deleted {} old snapshots", "✓".green(), deleted_count);
             } else {
                 println!("{}", "No old snapshots to delete".dimmed());
             }
@@ -89,7 +88,11 @@ pub fn handle_cleanup_snapshots(
 }
 
 /// Show detailed information about snapshots before cleanup
-fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::VerbosityLevel) -> Result<()> {
+fn show_snapshot_details(
+    max_count: usize,
+    max_age_days: i64,
+    verbosity: crate::VerbosityLevel,
+) -> Result<()> {
     let snapshots_dir = undo::Snapshot::snapshots_dir()?;
 
     if !snapshots_dir.exists() {
@@ -98,8 +101,10 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
     }
 
     // Collect all snapshots with metadata
-    let mut pull_snapshots: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>, u64)> = Vec::new();
-    let mut push_snapshots: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>, u64)> = Vec::new();
+    let mut pull_snapshots: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>, u64)> =
+        Vec::new();
+    let mut push_snapshots: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>, u64)> =
+        Vec::new();
 
     for entry in fs::read_dir(&snapshots_dir)? {
         let entry = entry?;
@@ -116,8 +121,12 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(snapshot) = serde_json::from_str::<undo::Snapshot>(&content) {
                 match snapshot.operation_type {
-                    OperationType::Pull => pull_snapshots.push((path, snapshot.timestamp, file_size)),
-                    OperationType::Push => push_snapshots.push((path, snapshot.timestamp, file_size)),
+                    OperationType::Pull => {
+                        pull_snapshots.push((path, snapshot.timestamp, file_size))
+                    }
+                    OperationType::Push => {
+                        push_snapshots.push((path, snapshot.timestamp, file_size))
+                    }
                 }
             }
         }
@@ -135,7 +144,11 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
     println!("{}", "=".repeat(80).cyan());
 
     // Show pull snapshots
-    println!("\n{} ({} total)", "Pull Snapshots:".bold().green(), pull_snapshots.len());
+    println!(
+        "\n{} ({} total)",
+        "Pull Snapshots:".bold().green(),
+        pull_snapshots.len()
+    );
     let mut pull_keep_count = 0;
     let mut pull_delete_count = 0;
     let mut pull_total_size = 0u64;
@@ -173,7 +186,8 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
     }
 
     if verbosity != crate::VerbosityLevel::Verbose {
-        println!("  {} to keep, {} to delete ({:.1} KB total)",
+        println!(
+            "  {} to keep, {} to delete ({:.1} KB total)",
             pull_keep_count.to_string().green(),
             pull_delete_count.to_string().red(),
             pull_total_size as f64 / 1024.0
@@ -181,7 +195,11 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
     }
 
     // Show push snapshots
-    println!("\n{} ({} total)", "Push Snapshots:".bold().blue(), push_snapshots.len());
+    println!(
+        "\n{} ({} total)",
+        "Push Snapshots:".bold().blue(),
+        push_snapshots.len()
+    );
     let mut push_keep_count = 0;
     let mut push_delete_count = 0;
     let mut push_total_size = 0u64;
@@ -219,7 +237,8 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
     }
 
     if verbosity != crate::VerbosityLevel::Verbose {
-        println!("  {} to keep, {} to delete ({:.1} KB total)",
+        println!(
+            "  {} to keep, {} to delete ({:.1} KB total)",
             push_keep_count.to_string().green(),
             push_delete_count.to_string().red(),
             push_total_size as f64 / 1024.0
@@ -232,15 +251,26 @@ fn show_snapshot_details(max_count: usize, max_age_days: i64, verbosity: crate::
     let total_delete = pull_delete_count + push_delete_count;
     let total_size = (pull_total_size + push_total_size) as f64 / (1024.0 * 1024.0);
 
-    println!("  {} Total snapshots: {}", "•".cyan(), (pull_snapshots.len() + push_snapshots.len()));
+    println!(
+        "  {} Total snapshots: {}",
+        "•".cyan(),
+        (pull_snapshots.len() + push_snapshots.len())
+    );
     println!("  {} Will keep: {}", "•".green(), total_keep);
     println!("  {} Will delete: {}", "•".red(), total_delete);
     println!("  {} Total disk space: {:.2} MB", "•".cyan(), total_size);
 
     if total_delete > 0 {
-        let freed_space = ((pull_delete_count as u64 * (pull_total_size / pull_snapshots.len().max(1) as u64)) +
-                           (push_delete_count as u64 * (push_total_size / push_snapshots.len().max(1) as u64))) as f64 / (1024.0 * 1024.0);
-        println!("  {} Space to be freed: ~{:.2} MB", "•".yellow(), freed_space);
+        let freed_space = ((pull_delete_count as u64
+            * (pull_total_size / pull_snapshots.len().max(1) as u64))
+            + (push_delete_count as u64 * (push_total_size / push_snapshots.len().max(1) as u64)))
+            as f64
+            / (1024.0 * 1024.0);
+        println!(
+            "  {} Space to be freed: ~{:.2} MB",
+            "•".yellow(),
+            freed_space
+        );
     }
 
     println!();

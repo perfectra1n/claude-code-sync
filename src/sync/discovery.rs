@@ -12,6 +12,14 @@ pub(crate) const LARGE_FILE_WARNING_THRESHOLD: u64 = 10 * 1024 * 1024;
 
 /// Get the Claude Code home directory (`~/.claude`)
 pub(crate) fn claude_home_dir() -> Result<PathBuf> {
+    // Override for tests/automation, mirroring CLAUDE_CODE_SYNC_CONFIG_DIR:
+    // faking HOME cannot redirect dirs::home_dir() on Windows, where the
+    // profile comes from the known-folder API rather than the environment.
+    if let Ok(override_dir) = std::env::var("CLAUDE_CODE_SYNC_CLAUDE_DIR") {
+        if !override_dir.is_empty() {
+            return Ok(PathBuf::from(override_dir));
+        }
+    }
     let home = dirs::home_dir().context("Failed to get home directory")?;
     Ok(home.join(".claude"))
 }
@@ -118,7 +126,10 @@ pub fn extract_project_name(encoded_path: &str) -> &str {
 /// # Returns
 /// - `Some(PathBuf)` if exactly one matching project directory is found
 /// - `None` if no match found or multiple matches (ambiguous)
-pub fn find_local_project_by_name(claude_projects_dir: &Path, project_name: &str) -> Option<PathBuf> {
+pub fn find_local_project_by_name(
+    claude_projects_dir: &Path,
+    project_name: &str,
+) -> Option<PathBuf> {
     let entries = std::fs::read_dir(claude_projects_dir).ok()?;
 
     let matches: Vec<PathBuf> = entries

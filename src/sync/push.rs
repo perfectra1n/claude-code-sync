@@ -186,12 +186,15 @@ pub fn push_history(
             println!();
             println!(
                 "{}",
-                "Warning: Multiple projects map to the same name:".yellow().bold()
+                "Warning: Multiple projects map to the same name:"
+                    .yellow()
+                    .bold()
             );
             for (name, paths) in &collisions {
                 println!("  {} -> {} locations:", name.cyan(), paths.len());
                 for path in paths.iter().take(3) {
-                    let display_path = path.file_name()
+                    let display_path = path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("unknown");
                     println!("    - {}", display_path);
@@ -243,11 +246,7 @@ pub fn push_history(
             entry.operation,
         ) {
             Ok(summary) => pushed_conversations.push(summary),
-            Err(e) => log::warn!(
-                "Failed to create summary for {}: {}",
-                relative_path_str,
-                e
-            ),
+            Err(e) => log::warn!("Failed to create summary for {}: {}", relative_path_str, e),
         }
     }
 
@@ -342,11 +341,7 @@ pub fn push_history(
 
         if let Some(ref hash) = commit_before_push {
             if verbosity != VerbosityLevel::Quiet {
-                println!(
-                    "  {} Recorded commit {} for undo",
-                    "✓".green(),
-                    &hash[..8]
-                );
+                println!("  {} Recorded commit {} for undo", "✓".green(), &hash[..8]);
             }
         } else if verbosity != VerbosityLevel::Quiet {
             println!(
