@@ -16,6 +16,118 @@ use super::discovery::{claude_projects_dir, discover_sessions, find_colliding_pr
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
+/// One session's planned copy into the sync repository.
+#[derive(Debug, Clone)]
+pub struct PlannedSessionPush {
+    /// Index into the discovered sessions slice this entry refers to
+    pub session_index: usize,
+    /// Destination path relative to the sync repo's projects directory
+    pub relative_path: PathBuf,
+    /// How the session differs from what the sync repository already holds
+    pub operation: SyncOperation,
+}
+
+/// Read-only classification of a push: which sessions land where, and how they
+/// differ from what the sync repository already contains.
+#[derive(Debug, Default)]
+pub struct PushPlan {
+    pub entries: Vec<PlannedSessionPush>,
+    pub added: usize,
+    pub modified: usize,
+    pub unchanged: usize,
+    pub skipped_no_cwd: usize,
+}
+
+/// Outcome counts of a completed push, returned to callers and tests.
+#[derive(Debug, Default)]
+pub struct PushReport {
+    pub added: usize,
+    pub modified: usize,
+    pub unchanged: usize,
+    pub skipped_no_cwd: usize,
+}
+
+/// Compute a session's destination path relative to the projects directory,
+/// respecting `use_project_name_only`. Returns None when the session lacks the
+/// `cwd` needed for project-name mapping.
+fn compute_relative_path(
+    session: &crate::parser::ConversationSession,
+    claude_dir: &Path,
+    filter: &FilterConfig,
+) -> Option<PathBuf> {
+    if filter.use_project_name_only {
+        let full_relative = Path::new(&session.file_path)
+            .strip_prefix(claude_dir)
+            .unwrap_or(Path::new(&session.file_path));
+
+        let filename = full_relative.file_name()?;
+        let project_name = session.project_name()?;
+        Some(PathBuf::from(project_name).join(filename))
+    } else {
+        Some(
+            Path::new(&session.file_path)
+                .strip_prefix(claude_dir)
+                .unwrap_or(Path::new(&session.file_path))
+                .to_path_buf(),
+        )
+    }
+}
+
+/// Classify every discovered session against the sync repository's current
+/// contents without writing anything. Sessions are keyed by their identity
+/// (filename stem), so sibling files sharing an interior sessionId — subagent
+/// sidechains, resumed sessions — classify independently (issue #68).
+pub fn plan_push(
+    sessions: &[crate::parser::ConversationSession],
+    claude_dir: &Path,
+    projects_dir: &Path,
+    filter: &FilterConfig,
+) -> Result<PushPlan> {
+    let existing_sessions = if projects_dir.exists() {
+        discover_sessions(projects_dir, filter)?
+    } else {
+        Vec::new()
+    };
+    let existing_map: HashMap<_, _> = existing_sessions
+        .iter()
+        .map(|s| (s.session_id.clone(), s))
+        .collect();
+
+    let mut plan = PushPlan::default();
+
+    for (session_index, session) in sessions.iter().enumerate() {
+        let relative_path = match compute_relative_path(session, claude_dir, filter) {
+            Some(path) => path,
+            None => {
+                plan.skipped_no_cwd += 1;
+                log::debug!("Skipping session {} (no cwd)", session.session_id);
+                continue;
+            }
+        };
+
+        let operation = if let Some(existing) = existing_map.get(&session.session_id) {
+            if existing.content_hash() == session.content_hash() {
+                plan.unchanged += 1;
+                SyncOperation::Unchanged
+            } else {
+                plan.modified += 1;
+                SyncOperation::Modified
+            }
+        } else {
+            plan.added += 1;
+            SyncOperation::Added
+        };
+
+        plan.entries.push(PlannedSessionPush {
+            session_index,
+            relative_path,
+            operation,
+        });
+    }
+
+    Ok(plan)
+}
+
 /// Push local Claude Code history to sync repository
 pub fn push_history(
     commit_message: Option<&str>,
@@ -24,7 +136,7 @@ pub fn push_history(
     exclude_attachments: bool,
     interactive: bool,
     verbosity: crate::VerbosityLevel,
-) -> Result<()> {
+) -> Result<PushReport> {
     use crate::VerbosityLevel;
 
     if verbosity != VerbosityLevel::Quiet {
@@ -98,81 +210,32 @@ pub fn push_history(
     let projects_dir = state.sync_repo_path.join(&filter.sync_subdirectory);
     fs::create_dir_all(&projects_dir)?;
 
-    // Discover existing sessions in sync repo to determine operation type
+    // Classify every session against the sync repo, then apply the plan
     println!("  {} sessions to sync repository...", "Copying".cyan());
-    let existing_sessions = discover_sessions(&projects_dir, &filter)?;
-    let existing_map: HashMap<_, _> = existing_sessions
-        .iter()
-        .map(|s| (s.session_id.clone(), s))
-        .collect();
+    let plan = plan_push(&sessions, &claude_dir, &projects_dir, &filter)?;
+    let added_count = plan.added;
+    let modified_count = plan.modified;
+    let unchanged_count = plan.unchanged;
+    let skipped_no_cwd = plan.skipped_no_cwd;
 
     // Track pushed conversations for operation record
     let mut pushed_conversations: Vec<ConversationSummary> = Vec::new();
-    let mut added_count = 0;
-    let mut modified_count = 0;
-    let mut unchanged_count = 0;
 
-    // Track sessions skipped due to missing cwd
-    let mut skipped_no_cwd = 0;
-
-    // Closure to compute the relative path for a session, respecting use_project_name_only
-    let compute_relative_path =
-        |session: &crate::parser::ConversationSession| -> Option<PathBuf> {
-            if filter.use_project_name_only {
-                let full_relative = Path::new(&session.file_path)
-                    .strip_prefix(&claude_dir)
-                    .unwrap_or(Path::new(&session.file_path));
-
-                let filename = full_relative.file_name()?;
-                let project_name = session.project_name()?;
-                Some(PathBuf::from(project_name).join(filename))
-            } else {
-                Some(
-                    Path::new(&session.file_path)
-                        .strip_prefix(&claude_dir)
-                        .unwrap_or(Path::new(&session.file_path))
-                        .to_path_buf(),
-                )
-            }
-        };
-
-    for session in &sessions {
-        let relative_path = match compute_relative_path(session) {
-            Some(path) => path,
-            None => {
-                skipped_no_cwd += 1;
-                log::debug!("Skipping session {} (no cwd)", session.session_id);
-                continue;
-            }
-        };
-
-        let dest_path = projects_dir.join(&relative_path);
-
-        // Determine operation type based on existing state
-        let operation = if let Some(existing) = existing_map.get(&session.session_id) {
-            if existing.content_hash() == session.content_hash() {
-                unchanged_count += 1;
-                SyncOperation::Unchanged
-            } else {
-                modified_count += 1;
-                SyncOperation::Modified
-            }
-        } else {
-            added_count += 1;
-            SyncOperation::Added
-        };
+    for entry in &plan.entries {
+        let session = &sessions[entry.session_index];
+        let dest_path = projects_dir.join(&entry.relative_path);
 
         // Write the session file
         session.write_to_file(&dest_path)?;
 
         // Track this session in pushed conversations
-        let relative_path_str = relative_path.to_string_lossy().to_string();
+        let relative_path_str = entry.relative_path.to_string_lossy().to_string();
         match ConversationSummary::new(
             session.session_id.clone(),
             relative_path_str.clone(),
             session.latest_timestamp(),
             session.message_count(),
-            operation,
+            entry.operation,
         ) {
             Ok(summary) => pushed_conversations.push(summary),
             Err(e) => log::warn!(
@@ -205,25 +268,22 @@ pub fn push_history(
     // Show detailed file list in verbose mode
     if verbosity == VerbosityLevel::Verbose {
         println!("{}", "Files to be pushed:".bold());
-        for (idx, session) in sessions.iter().enumerate().take(20) {
-            let Some(relative_path) = compute_relative_path(session) else {
-                continue;
+        for (idx, entry) in plan.entries.iter().enumerate().take(20) {
+            let status = match entry.operation {
+                SyncOperation::Unchanged => "unchanged".dimmed(),
+                SyncOperation::Modified => "modified".yellow(),
+                _ => "new".green(),
             };
 
-            let status = if let Some(existing) = existing_map.get(&session.session_id) {
-                if existing.content_hash() == session.content_hash() {
-                    "unchanged".dimmed()
-                } else {
-                    "modified".yellow()
-                }
-            } else {
-                "new".green()
-            };
-
-            println!("  {}. {} [{}]", idx + 1, relative_path.display(), status);
+            println!(
+                "  {}. {} [{}]",
+                idx + 1,
+                entry.relative_path.display(),
+                status
+            );
         }
-        if sessions.len() > 20 {
-            println!("  ... and {} more", sessions.len() - 20);
+        if plan.entries.len() > 20 {
+            println!("  ... and {} more", plan.entries.len() - 20);
         }
         println!();
     }
@@ -238,7 +298,7 @@ pub fn push_history(
 
         if !confirm {
             println!("\n{}", "Push cancelled.".yellow());
-            return Ok(());
+            return Ok(PushReport::default());
         }
     }
 
@@ -413,5 +473,10 @@ pub fn push_history(
         log::warn!("Failed to cleanup old snapshots: {}", e);
     }
 
-    Ok(())
+    Ok(PushReport {
+        added: added_count,
+        modified: modified_count,
+        unchanged: unchanged_count,
+        skipped_no_cwd,
+    })
 }

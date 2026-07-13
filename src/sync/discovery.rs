@@ -17,7 +17,7 @@ pub(crate) fn claude_projects_dir() -> Result<PathBuf> {
 }
 
 /// Discover all conversation sessions in Claude Code history
-pub(crate) fn discover_sessions(
+pub fn discover_sessions(
     base_path: &Path,
     filter: &FilterConfig,
 ) -> Result<Vec<ConversationSession>> {
