@@ -1,29 +1,19 @@
-mod artifacts;
-mod config;
-mod conflict;
-mod filter;
-mod handlers;
-mod history;
-mod interactive_conflict;
-mod logger;
-mod merge;
-mod onboarding;
-mod parser;
-mod report;
-mod scm;
-mod sync;
-mod undo;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::path::PathBuf;
 
-// Import all handler functions
-use handlers::*;
-
-// Import VerbosityLevel from lib
-use claude_code_sync::VerbosityLevel;
+// The binary is a thin CLI over the `claude_code_sync` library. Import the
+// modules explicitly rather than glob-importing both the crate root and
+// `handlers` — both export a `config`, and two globs supplying the same name
+// is an ambiguity error at every `config::` call site.
+use claude_code_sync::handlers::{
+    handle_cleanup_snapshots, handle_config_export, handle_config_interactive,
+    handle_config_wizard, handle_history_clear, handle_history_last, handle_history_list,
+    handle_history_review, handle_repo_selector, handle_undo_pull, handle_undo_push,
+    is_initialized, run_init_from_config, run_onboarding_flow, try_init_from_config,
+};
+use claude_code_sync::{config, filter, logger, report, scm, sync, VerbosityLevel};
 
 #[derive(Parser)]
 #[command(name = "claude-code-sync")]

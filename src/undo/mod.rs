@@ -11,16 +11,10 @@ mod restore;
 mod snapshot;
 
 // Re-export public types and functions to maintain API compatibility
-pub use cleanup::{cleanup_old_snapshots, SnapshotCleanupConfig};
+pub use cleanup::{cleanup_old_snapshots, cleanup_old_snapshots_with_dir, SnapshotCleanupConfig};
 pub use operations::{undo_pull, undo_push};
-pub use preview::{preview_undo_pull, preview_undo_push, VerbosityLevel};
+pub use preview::{preview_undo_pull, preview_undo_push, UndoPreview, VerbosityLevel};
 pub use snapshot::Snapshot;
-
-// These are part of the public API but currently only used in tests
-#[allow(unused_imports)]
-pub use cleanup::cleanup_old_snapshots_with_dir;
-#[allow(unused_imports)]
-pub use preview::UndoPreview;
 
 #[cfg(test)]
 mod tests {

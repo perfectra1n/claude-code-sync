@@ -133,3 +133,9 @@ pub mod sync;
 /// Snapshots enable undoing pull operations (by restoring files) and push operations
 /// (by resetting Git commits). Includes validation and security checks for safe restoration.
 pub mod undo;
+
+/// Command handlers backing the `claude-code-sync` CLI subcommands.
+///
+/// Each handler owns one subcommand end-to-end: prompting, calling into the
+/// modules above, and reporting. The binary is a thin `clap` shell over these.
+pub mod handlers;
