@@ -56,6 +56,11 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      # On a mise cache hit the toolchain is lazily reinstalled by the
+      # runner's rustup with profile=minimal, which lacks these components.
+      - name: Ensure rustfmt and clippy components
+        run: rustup component add rustfmt clippy
+
       - name: Check formatting
         run: mise run fmt-check
 
