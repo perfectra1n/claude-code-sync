@@ -276,6 +276,8 @@ pub fn update_config(
     scm_backend: Option<String>,
     sync_subdirectory: Option<String>,
     use_project_name_only: Option<bool>,
+    enable_artifacts: Option<String>,
+    disable_artifacts: Option<String>,
 ) -> Result<()> {
     let mut config = FilterConfig::load()?;
 
@@ -379,11 +381,51 @@ pub fn update_config(
         );
     }
 
+    if let Some(names) = enable_artifacts {
+        apply_artifact_toggles(&mut config, &names, true)?;
+    }
+
+    if let Some(names) = disable_artifacts {
+        apply_artifact_toggles(&mut config, &names, false)?;
+    }
+
     // Validate configuration before saving
     config.validate()?;
 
     config.save()?;
     println!("{}", "Configuration saved successfully!".green().bold());
+
+    Ok(())
+}
+
+/// Resolve a comma-separated list of category names (or `all`) and flip their
+/// toggles. Unknown names abort before anything is persisted.
+fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -> Result<()> {
+    use crate::artifacts::registry::{find_by_name, ArtifactToggles, REGISTRY};
+
+    let verb = if value { "Enabled" } else { "Disabled" };
+
+    for name in names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if name == "all" {
+            config.sync_artifacts = if value {
+                ArtifactToggles::all_enabled()
+            } else {
+                ArtifactToggles::default()
+            };
+            println!("{}", format!("{verb} all artifact categories").green());
+            continue;
+        }
+        let Some(desc) = find_by_name(name) else {
+            let valid: Vec<&str> = REGISTRY.iter().map(|d| d.name).collect();
+            bail!(
+                "Unknown artifact category '{}'. Valid names: {}, all",
+                name,
+                valid.join(", ")
+            );
+        };
+        config.sync_artifacts.set_enabled(desc.id, value);
+        println!("{}", format!("{verb} artifact category: {name}").green());
+    }
 
     Ok(())
 }
@@ -462,6 +504,16 @@ pub fn show_config() -> Result<()> {
             "No (full path mode)".yellow()
         }
     );
+
+    println!("  {}:", "Artifact sync".cyan());
+    for desc in crate::artifacts::registry::REGISTRY {
+        let state = if config.sync_artifacts.is_enabled(desc.id) {
+            "enabled".green()
+        } else {
+            "disabled".yellow()
+        };
+        println!("    {}: {} — {}", desc.name, state, desc.description.dimmed());
+    }
 
     Ok(())
 }
