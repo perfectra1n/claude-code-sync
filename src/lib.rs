@@ -23,12 +23,14 @@
 //! The library is organized into modules that handle different aspects of the sync process:
 //!
 //! - Configuration and state management ([`config`], [`filter`])
-//! - Git operations ([`git`])
+//! - Source control operations, Git or Mercurial ([`scm`])
 //! - Conversation parsing and analysis ([`parser`])
-//! - Conflict detection and resolution ([`conflict`])
+//! - Conflict detection and resolution ([`conflict`], [`interactive_conflict`], [`merge`])
 //! - Operation tracking and undo ([`history`], [`undo`])
 //! - User interface and reporting ([`onboarding`], [`report`], [`logger`])
 //! - Core synchronization logic ([`sync`])
+//! - Syncing Claude Code state beyond conversations ([`artifacts`])
+//! - The command handlers behind the CLI ([`handlers`])
 
 /// Verbosity level for command output
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,12 +40,14 @@ pub enum VerbosityLevel {
     Verbose, // Detailed output
 }
 
+// `artifacts` documents itself in artifacts/mod.rs.
+pub mod artifacts;
+
 /// Platform-agnostic configuration directory management for claude-code-sync.
 ///
 /// Provides utilities for locating and managing configuration files and directories
 /// following platform conventions (XDG on Linux, Application Support on macOS,
 /// AppData on Windows).
-pub mod artifacts;
 pub mod config;
 
 /// Conflict detection and resolution for conversation synchronization.
@@ -69,9 +73,10 @@ pub mod filter;
 
 /// Source Control Management abstraction layer.
 ///
-/// Provides a unified interface for Git using CLI commands.
-/// Supports repository initialization, cloning, committing, pushing, pulling,
-/// and other common SCM operations through the [`scm::Scm`] trait.
+/// Provides a unified interface over Git and Mercurial, driving each through its
+/// CLI. Supports repository initialization, cloning, committing, pushing, pulling,
+/// and other common SCM operations through the [`scm::Scm`] trait; the backend is
+/// selected by the `scm_backend` setting in [`filter::FilterConfig`].
 pub mod scm;
 
 /// Operation history tracking and persistence.
@@ -133,3 +138,9 @@ pub mod sync;
 /// Snapshots enable undoing pull operations (by restoring files) and push operations
 /// (by resetting Git commits). Includes validation and security checks for safe restoration.
 pub mod undo;
+
+/// Command handlers backing the `claude-code-sync` CLI subcommands.
+///
+/// Each handler owns one subcommand end-to-end: prompting, calling into the
+/// modules above, and reporting. The binary is a thin `clap` shell over these.
+pub mod handlers;

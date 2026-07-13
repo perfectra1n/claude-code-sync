@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -113,7 +113,6 @@ impl Snapshot {
     ///
     /// # Returns
     /// A new Snapshot instance with all file contents captured
-    #[allow(dead_code)] // Used in integration tests
     pub fn create<P, I>(
         operation_type: OperationType,
         file_paths: I,
@@ -161,199 +160,6 @@ impl Snapshot {
             base_snapshot_id: None,
             deleted_files: Vec::new(),
         })
-    }
-
-    /// Create a differential snapshot that only stores changes since the last snapshot
-    ///
-    /// This significantly reduces disk usage by only storing files that have changed.
-    ///
-    /// # Arguments
-    /// * `operation_type` - Type of operation this snapshot is for
-    /// * `file_paths` - Iterator of file paths to include in snapshot
-    /// * `commit_hash` - Optional git commit hash to store in the snapshot
-    /// * `snapshots_dir` - Optional custom snapshots directory (for testing)
-    ///
-    /// # Returns
-    /// A new differential Snapshot, or a full snapshot if no base exists
-    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
-    pub fn create_differential_with_dir<P, I>(
-        operation_type: OperationType,
-        file_paths: I,
-        commit_hash: Option<&str>,
-        snapshots_dir: Option<&Path>,
-    ) -> Result<Self>
-    where
-        P: AsRef<Path>,
-        I: IntoIterator<Item = P>,
-    {
-        // Try to find the most recent snapshot of the same operation type
-        let base_snapshot = Self::find_latest_snapshot(operation_type, snapshots_dir)?;
-
-        let snapshot_id = Uuid::new_v4().to_string();
-        let timestamp = chrono::Utc::now();
-
-        // Collect current file paths and their content
-        let mut current_files: HashMap<String, Vec<u8>> = HashMap::new();
-        for path in file_paths {
-            let path = path.as_ref();
-            match fs::read(path) {
-                Ok(content) => {
-                    current_files.insert(path.to_string_lossy().to_string(), content);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    continue;
-                }
-                Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("Failed to read file for snapshot: {}", path.display())
-                    });
-                }
-            }
-        }
-
-        // If no base snapshot exists, create a full snapshot
-        let (files, base_snapshot_id, deleted_files) = if let Some(base) = base_snapshot {
-            let mut changed_files = HashMap::new();
-            let mut deleted = Vec::new();
-
-            // Reconstruct the full state from the base snapshot chain
-            // This is crucial: if the base is differential, we need the complete state,
-            // not just the changed files in that differential snapshot
-            let base_full_state = base.reconstruct_full_state_with_dir(snapshots_dir)?;
-
-            // Find files that changed or are new
-            for (path, content) in &current_files {
-                if let Some(base_content) = base_full_state.get(path) {
-                    // File exists in base - only include if content changed
-                    if base_content != content {
-                        changed_files.insert(path.clone(), content.clone());
-                    }
-                } else {
-                    // New file - always include
-                    changed_files.insert(path.clone(), content.clone());
-                }
-            }
-
-            // Find files that were deleted
-            for path in base_full_state.keys() {
-                if !current_files.contains_key(path) {
-                    deleted.push(path.clone());
-                }
-            }
-
-            (changed_files, Some(base.snapshot_id), deleted)
-        } else {
-            // No base snapshot - include all files (full snapshot)
-            (current_files, None, Vec::new())
-        };
-
-        Ok(Snapshot {
-            snapshot_id,
-            timestamp,
-            operation_type,
-            git_commit_hash: commit_hash.map(|s| s.to_string()),
-            files,
-            branch: None,
-            base_snapshot_id,
-            deleted_files,
-        })
-    }
-
-    /// Create a differential snapshot using the default snapshots directory
-    ///
-    /// This is a convenience wrapper around `create_differential_with_dir` that
-    /// uses the default snapshots directory.
-    ///
-    /// # Arguments
-    /// * `operation_type` - Type of operation this snapshot is for
-    /// * `file_paths` - Iterator of file paths to include in snapshot
-    /// * `commit_hash` - Optional git commit hash to store in the snapshot
-    ///
-    /// # Returns
-    /// A new differential Snapshot, or a full snapshot if no base exists
-    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
-    pub fn create_differential<P, I>(
-        operation_type: OperationType,
-        file_paths: I,
-        commit_hash: Option<&str>,
-    ) -> Result<Self>
-    where
-        P: AsRef<Path>,
-        I: IntoIterator<Item = P>,
-    {
-        Self::create_differential_with_dir(operation_type, file_paths, commit_hash, None)
-    }
-
-    /// Create a differential snapshot with a commit hash (convenience alias)
-    ///
-    /// This is the same as `create_differential` but with a clearer name
-    /// when used with push operations that need to store a commit hash.
-    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
-    pub fn create_differential_with_commit<P, I>(
-        operation_type: OperationType,
-        file_paths: I,
-        commit_hash: Option<&str>,
-    ) -> Result<Self>
-    where
-        P: AsRef<Path>,
-        I: IntoIterator<Item = P>,
-    {
-        Self::create_differential(operation_type, file_paths, commit_hash)
-    }
-
-    /// Find the most recent snapshot of a given operation type
-    ///
-    /// # Arguments
-    /// * `operation_type` - Type of operation to find snapshots for
-    /// * `custom_dir` - Optional custom snapshots directory (for testing)
-    ///
-    /// # Returns
-    /// The most recent snapshot, or None if no snapshots exist
-    #[allow(dead_code)] // used via the library target; the bin compiles this module separately
-    pub(crate) fn find_latest_snapshot(
-        operation_type: OperationType,
-        custom_dir: Option<&Path>,
-    ) -> Result<Option<Snapshot>> {
-        let snapshots_dir = if let Some(dir) = custom_dir {
-            dir.to_path_buf()
-        } else {
-            Self::snapshots_dir()?
-        };
-
-        if !snapshots_dir.exists() {
-            return Ok(None);
-        }
-
-        let mut snapshots: Vec<(PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
-
-        // Scan snapshots directory
-        for entry in fs::read_dir(&snapshots_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.extension().is_none_or(|ext| ext != "json") {
-                continue;
-            }
-
-            // Quick parse to get timestamp and operation type without loading full snapshot
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content) {
-                    if snapshot.operation_type == operation_type {
-                        snapshots.push((path, snapshot.timestamp));
-                    }
-                }
-            }
-        }
-
-        // Sort by timestamp descending and get the most recent
-        snapshots.sort_by_key(|s| std::cmp::Reverse(s.1));
-
-        if let Some((path, _)) = snapshots.first() {
-            let snapshot = Self::load_from_disk(path)?;
-            Ok(Some(snapshot))
-        } else {
-            Ok(None)
-        }
     }
 
     /// Save this snapshot to disk
@@ -476,67 +282,169 @@ impl Snapshot {
         Ok(snapshot)
     }
 
-    /// Reconstruct the full file state by walking the snapshot chain
-    ///
-    /// For differential snapshots, this loads all base snapshots recursively
-    /// and merges them to produce the complete file state.
-    ///
-    /// # Arguments
-    /// * `snapshots_dir` - Optional custom snapshots directory (for testing)
-    ///
-    /// # Returns
-    /// A HashMap containing the full state of all files
-    pub fn reconstruct_full_state_with_dir(
-        &self,
-        snapshots_dir: Option<&Path>,
-    ) -> Result<HashMap<String, Vec<u8>>> {
-        let mut state = HashMap::new();
-
-        // If this is a differential snapshot, load the base chain
-        if let Some(base_id) = &self.base_snapshot_id {
-            let snapshots_dir = if let Some(dir) = snapshots_dir {
-                dir.to_path_buf()
-            } else {
-                Self::snapshots_dir()?
-            };
-            let base_path = snapshots_dir.join(format!("{}.json", base_id));
-
-            if !base_path.exists() {
-                return Err(anyhow!(
-                    "Base snapshot not found: {}. \
-                    The snapshot chain is broken. Cannot restore differential snapshot.",
-                    base_id
-                ));
-            }
-
-            // Recursively load the base snapshot's state
-            let base_snapshot = Self::load_from_disk(&base_path)?;
-            state = base_snapshot.reconstruct_full_state_with_dir(Some(&snapshots_dir))?;
-        }
-
-        // Apply this snapshot's changes on top of the base state
-        for (path, content) in &self.files {
-            state.insert(path.clone(), content.clone());
-        }
-
-        // Remove deleted files
-        for deleted_path in &self.deleted_files {
-            state.remove(deleted_path);
-        }
-
-        Ok(state)
-    }
-
-    /// Reconstruct the full file state using the default snapshots directory
-    ///
-    /// This is a convenience wrapper around `reconstruct_full_state_with_dir`.
-    #[allow(dead_code)] // Used in unit tests
-    pub(crate) fn reconstruct_full_state(&self) -> Result<HashMap<String, Vec<u8>>> {
-        self.reconstruct_full_state_with_dir(None)
-    }
-
     /// Get the default snapshots directory
     pub(crate) fn snapshots_dir() -> Result<PathBuf> {
         crate::config::ConfigManager::snapshots_dir()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::undo::test_support::{create_test_file, setup_test_repo};
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_snapshot_create_and_save() {
+        let temp_dir = tempdir().unwrap();
+        let file1 = create_test_file(temp_dir.path(), "file1.txt", "content 1");
+        let file2 = create_test_file(temp_dir.path(), "file2.txt", "content 2");
+
+        let snapshot = Snapshot::create(OperationType::Pull, vec![&file1, &file2], None).unwrap();
+
+        assert_eq!(snapshot.operation_type, OperationType::Pull);
+        assert_eq!(snapshot.files.len(), 2);
+        assert!(snapshot.git_commit_hash.is_none());
+
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+        assert!(snapshot_path.exists());
+    }
+
+    #[test]
+    fn test_snapshot_with_commit_hash() {
+        let (temp_dir, repo) = setup_test_repo();
+        let file1 = temp_dir.path().join("test.txt");
+        let commit_hash = repo.current_commit_hash().unwrap();
+
+        let snapshot =
+            Snapshot::create(OperationType::Push, vec![&file1], Some(&commit_hash)).unwrap();
+
+        assert_eq!(snapshot.operation_type, OperationType::Push);
+        let stored_hash = snapshot.git_commit_hash.unwrap();
+        assert_eq!(stored_hash.len(), 40); // Git SHA-1 hash length
+        assert_eq!(stored_hash, commit_hash);
+    }
+
+    #[test]
+    fn test_snapshot_save_and_load() {
+        let temp_dir = tempdir().unwrap();
+        let file1 = create_test_file(temp_dir.path(), "file1.txt", "test content");
+
+        let original = Snapshot::create(OperationType::Pull, vec![&file1], None).unwrap();
+
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let snapshot_path = original.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        let loaded = Snapshot::load_from_disk(&snapshot_path).unwrap();
+
+        assert_eq!(loaded.snapshot_id, original.snapshot_id);
+        assert_eq!(loaded.operation_type, original.operation_type);
+        assert_eq!(loaded.files.len(), original.files.len());
+    }
+
+    #[test]
+    fn test_snapshot_handles_binary_files() {
+        let temp_dir = tempdir().unwrap();
+        let binary_file = temp_dir.path().join("binary.dat");
+
+        let binary_content: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03];
+        fs::write(&binary_file, &binary_content).unwrap();
+
+        let snapshot = Snapshot::create(OperationType::Pull, vec![&binary_file], None).unwrap();
+
+        let key = binary_file.to_string_lossy().to_string();
+        assert_eq!(snapshot.files.get(&key).unwrap(), &binary_content);
+
+        // The base64 serde shim has to survive a disk round-trip, not just
+        // hold the bytes in memory.
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        let loaded = Snapshot::load_from_disk(&snapshot_path).unwrap();
+        assert_eq!(loaded.files.get(&key).unwrap(), &binary_content);
+    }
+
+    #[test]
+    fn test_snapshot_serialization_with_special_characters() {
+        let temp_dir = tempdir().unwrap();
+        let file_with_unicode = temp_dir.path().join("日本語.txt");
+        fs::write(&file_with_unicode, "Hello 世界").unwrap();
+
+        let snapshot =
+            Snapshot::create(OperationType::Pull, vec![&file_with_unicode], None).unwrap();
+
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        let loaded = Snapshot::load_from_disk(&snapshot_path).unwrap();
+
+        let content = loaded.files.values().next().unwrap();
+        assert_eq!(String::from_utf8_lossy(content), "Hello 世界");
+    }
+
+    #[test]
+    fn test_base64_encoding_for_binary_data() {
+        let temp_dir = tempdir().unwrap();
+
+        // Every possible byte value, including those that are not valid UTF-8.
+        let binary_file = temp_dir.path().join("binary.dat");
+        let binary_data: Vec<u8> = (0..=255).collect();
+        fs::write(&binary_file, &binary_data).unwrap();
+
+        let snapshot = Snapshot::create(OperationType::Pull, vec![&binary_file], None).unwrap();
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let _parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let deserialized: Snapshot = serde_json::from_str(&json).unwrap();
+
+        let key = binary_file.to_string_lossy().to_string();
+        assert_eq!(
+            snapshot.files.get(&key).unwrap(),
+            deserialized.files.get(&key).unwrap()
+        );
+        assert_eq!(deserialized.files.get(&key).unwrap(), &binary_data);
+    }
+
+    #[test]
+    fn test_empty_snapshot() {
+        let snapshot = Snapshot::create::<PathBuf, _>(OperationType::Pull, vec![], None).unwrap();
+
+        assert_eq!(snapshot.files.len(), 0);
+        assert!(snapshot.git_commit_hash.is_none());
+
+        let temp_dir = tempdir().unwrap();
+        let snapshot_path = snapshot.save_to_disk(Some(temp_dir.path())).unwrap();
+
+        let loaded = Snapshot::load_from_disk(&snapshot_path).unwrap();
+        assert_eq!(loaded.files.len(), 0);
+
+        // Restoring nothing must be a no-op, not an error.
+        loaded.restore().unwrap();
+    }
+
+    #[test]
+    fn test_snapshot_create_handles_missing_files() {
+        let temp_dir = tempdir().unwrap();
+
+        let existing_file = create_test_file(temp_dir.path(), "exists.txt", "content");
+        let missing_file = temp_dir.path().join("does_not_exist.txt");
+
+        // A path that has already been deleted is skipped, not an error.
+        let snapshot = Snapshot::create(
+            OperationType::Pull,
+            vec![&existing_file, &missing_file],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert!(snapshot
+            .files
+            .contains_key(&existing_file.to_string_lossy().to_string()));
+        assert!(!snapshot
+            .files
+            .contains_key(&missing_file.to_string_lossy().to_string()));
     }
 }
