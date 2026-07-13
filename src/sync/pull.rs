@@ -15,7 +15,10 @@ use crate::report::{save_conflict_report, ConflictReport};
 use crate::scm;
 use crate::undo::Snapshot;
 
-use super::discovery::{claude_projects_dir, discover_sessions, find_local_project_by_name, warn_large_files};
+use super::discovery::{
+    claude_home_dir, claude_projects_dir, discover_sessions, find_local_project_by_name,
+    warn_large_files,
+};
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
@@ -86,31 +89,49 @@ pub fn pull_history(
     detector.detect(&local_sessions, &remote_sessions);
 
     // ============================================================================
-    // SNAPSHOT CREATION: Only backup files that have conflicts
+    // ARTIFACT PULL PLAN (read-only, so the snapshot below can cover it)
     // ============================================================================
-    // Optimization: Only backup local files that have conflicts and will be merged.
-    // Files that are new (remote-only) or unchanged don't need backup.
-    // This reduces snapshot size from potentially gigabytes to typically <1MB.
-    let snapshot_path = if detector.has_conflicts() {
-        println!("  {} snapshot of {} conflicting files...", "Creating".cyan(), detector.conflict_count());
+    let artifact_plan = crate::artifacts::engine::plan_pull(
+        &claude_home_dir()?,
+        &state.sync_repo_path,
+        &filter,
+    )?;
 
-        // Only collect paths for files that have conflicts
-        let conflicting_file_paths: Vec<PathBuf> = detector
+    // ============================================================================
+    // SNAPSHOT CREATION: Only backup files that will actually change
+    // ============================================================================
+    // Optimization: Only backup local files that have conflicts and will be merged,
+    // plus artifact files this pull will overwrite. Files that are new (remote-only)
+    // or unchanged don't need backup — created artifact paths are recorded as
+    // deleted_files so undo removes them again.
+    // This reduces snapshot size from potentially gigabytes to typically <1MB.
+    let snapshot_path = if detector.has_conflicts() || !artifact_plan.is_empty() {
+        let mut files_to_snapshot: Vec<PathBuf> = detector
             .conflicts()
             .iter()
             .map(|c| c.local_file.clone())
             .collect();
+        files_to_snapshot.extend(artifact_plan.paths_to_snapshot());
+
+        println!(
+            "  {} snapshot of {} files to be modified...",
+            "Creating".cyan(),
+            files_to_snapshot.len()
+        );
 
         // Check for large conversation files and warn users
-        warn_large_files(&conflicting_file_paths);
+        warn_large_files(&files_to_snapshot);
 
-        // Create snapshot of ONLY conflicting files
-        let snapshot = Snapshot::create(
+        // Create snapshot of ONLY files this pull will modify
+        let mut snapshot = Snapshot::create(
             OperationType::Pull,
-            conflicting_file_paths.iter(),
+            files_to_snapshot.iter(),
             None, // No git manager needed for pull snapshots
         )
         .context("Failed to create snapshot before pull")?;
+
+        // Artifact files the pull will create: undo deletes them again.
+        snapshot.deleted_files = artifact_plan.created_paths();
 
         // Save snapshot to disk
         let path = snapshot
@@ -124,7 +145,7 @@ pub fn pull_history(
                 path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.display().to_string()),
-                conflicting_file_paths.len()
+                files_to_snapshot.len()
             );
         }
 
@@ -502,6 +523,25 @@ pub fn pull_history(
     println!("  {} Merged {} sessions", "✓".green(), merged_count);
 
     // ============================================================================
+    // APPLY ARTIFACT PULL PLAN (remote wins; snapshot already covers changes)
+    // ============================================================================
+    let artifact_report = crate::artifacts::engine::apply_pull(&artifact_plan, interactive)?;
+    if !artifact_plan.is_empty() {
+        println!(
+            "  {} Artifacts: {} created, {} overwritten locally",
+            "✓".green(),
+            artifact_report.total_added(),
+            artifact_report.total_modified()
+        );
+        if artifact_report.total_modified() > 0 {
+            println!(
+                "    {}",
+                "Undo with: claude-code-sync undo pull".dimmed()
+            );
+        }
+    }
+
+    // ============================================================================
     // CREATE AND SAVE OPERATION RECORD
     // ============================================================================
     let mut operation_record = OperationRecord::new(
@@ -548,6 +588,15 @@ pub fn pull_history(
             "  {} Skipped (no local match): {}",
             "!".yellow(),
             skipped_no_local_match
+        );
+    }
+    if !artifact_report.counts.is_empty() || artifact_plan.unchanged > 0 {
+        println!(
+            "  {} Artifacts: {} added, {} modified, {} unchanged",
+            "•".cyan(),
+            artifact_report.total_added(),
+            artifact_report.total_modified(),
+            artifact_plan.unchanged
         );
     }
     println!();

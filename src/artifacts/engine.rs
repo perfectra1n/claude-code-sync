@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use crate::filter::FilterConfig;
 use crate::scm::Backend;
 
-use super::denylist::is_denied;
+use super::denylist::{is_denied, is_unsafe_rel_path};
 use super::registry::{
     enabled_categories, CategoryDescriptor, CategoryId, MergeStrategy, SourceSpec,
     ARTIFACTS_SUBDIR,
@@ -221,6 +221,234 @@ pub fn push_artifacts(
         report.counts.push(counts);
     }
 
+    Ok(report)
+}
+
+/// One planned local write during a pull.
+#[derive(Debug, Clone)]
+pub struct PlannedWrite {
+    pub category: CategoryId,
+    /// Absolute destination under `~/.claude`.
+    pub local_path: PathBuf,
+    /// Absolute source inside the sync repository.
+    pub repo_path: PathBuf,
+}
+
+/// Read-only classification of an artifact pull, computed BEFORE any write so
+/// the caller can snapshot the exact set of files that will change.
+#[derive(Debug, Default)]
+pub struct PullPlan {
+    /// Local file exists and repo bytes differ: remote wins after snapshot.
+    pub overwrites: Vec<PlannedWrite>,
+    /// No local file yet: created, and recorded for deletion on undo.
+    pub creates: Vec<PlannedWrite>,
+    /// Union-merge targets whose local file would gain lines.
+    pub unions: Vec<PlannedWrite>,
+    pub unchanged: usize,
+    /// Repo files refused (denied names, unsafe paths).
+    pub skipped: usize,
+}
+
+impl PullPlan {
+    /// True when applying the plan would write nothing.
+    pub fn is_empty(&self) -> bool {
+        self.overwrites.is_empty() && self.creates.is_empty() && self.unions.is_empty()
+    }
+
+    /// Existing local files the caller must snapshot before applying
+    /// (overwritten raw files and union-merged files).
+    pub fn paths_to_snapshot(&self) -> Vec<PathBuf> {
+        self.overwrites
+            .iter()
+            .chain(self.unions.iter())
+            .map(|w| w.local_path.clone())
+            .collect()
+    }
+
+    /// Local paths this pull will create; recording them as a snapshot's
+    /// `deleted_files` makes undo remove them again.
+    pub fn created_paths(&self) -> Vec<String> {
+        self.creates
+            .iter()
+            .map(|w| w.local_path.to_string_lossy().to_string())
+            .collect()
+    }
+}
+
+/// Enumerate one category's files as stored in the sync repository, returning
+/// (absolute repo path, path relative to the category subdir). Denied and
+/// unsafe paths are refused here, so nothing below ever sees them.
+fn collect_repo_files(
+    desc: &CategoryDescriptor,
+    repo_root: &Path,
+    skipped: &mut usize,
+) -> Vec<(PathBuf, PathBuf)> {
+    let category_root = repo_root.join(ARTIFACTS_SUBDIR).join(desc.repo_subdir);
+    if !category_root.is_dir() {
+        return Vec::new();
+    }
+
+    let mut files = Vec::new();
+    for entry in walkdir::WalkDir::new(&category_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let abs = entry.path();
+        let rel = abs
+            .strip_prefix(&category_root)
+            .unwrap_or(abs)
+            .to_path_buf();
+        if is_unsafe_rel_path(&rel) || is_denied(&rel) {
+            log::warn!(
+                "Refusing denied/unsafe artifact from sync repo: {}",
+                abs.display()
+            );
+            *skipped += 1;
+            continue;
+        }
+        files.push((abs.to_path_buf(), rel));
+    }
+    files
+}
+
+/// Map a category-relative repo path back to its absolute local destination
+/// under `~/.claude`.
+fn local_destination(desc: &CategoryDescriptor, claude_dir: &Path, rel: &Path) -> PathBuf {
+    match desc.source {
+        // File lists are stored flat in the repo; restore to the listed
+        // location whose file name matches.
+        SourceSpec::Files(list) => {
+            for entry in list {
+                if Path::new(entry).file_name() == rel.file_name() {
+                    return claude_dir.join(entry);
+                }
+            }
+            claude_dir.join(rel)
+        }
+        SourceSpec::Dir(dir) => claude_dir.join(dir).join(rel),
+    }
+}
+
+/// Classify what a pull would write, without writing. Remote (repo) bytes win
+/// for raw categories; union targets are compared against local ∪ remote.
+pub fn plan_pull(
+    claude_dir: &Path,
+    repo_root: &Path,
+    filter: &FilterConfig,
+) -> Result<PullPlan> {
+    let mut plan = PullPlan::default();
+
+    for desc in enabled_categories(&filter.sync_artifacts) {
+        for (repo_path, rel) in collect_repo_files(desc, repo_root, &mut plan.skipped) {
+            let local_path = local_destination(desc, claude_dir, &rel);
+            let write = PlannedWrite {
+                category: desc.id,
+                local_path: local_path.clone(),
+                repo_path: repo_path.clone(),
+            };
+
+            match desc.merge {
+                MergeStrategy::UnionJsonl => {
+                    if !local_path.is_file() {
+                        plan.creates.push(write);
+                        continue;
+                    }
+                    let local_text = fs::read_to_string(&local_path).unwrap_or_default();
+                    let repo_text = fs::read_to_string(&repo_path).unwrap_or_default();
+                    let (merged, _) = merge_history_lines(&local_text, &repo_text);
+                    if merged != local_text {
+                        plan.unions.push(write);
+                    } else {
+                        plan.unchanged += 1;
+                    }
+                }
+                MergeStrategy::RawOverwrite => {
+                    if !local_path.is_file() {
+                        plan.creates.push(write);
+                    } else if fs::read(&local_path)? != fs::read(&repo_path)? {
+                        plan.overwrites.push(write);
+                    } else {
+                        plan.unchanged += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(plan)
+}
+
+/// Apply a pull plan: create missing files, overwrite differing ones
+/// (remote wins), and union-merge prompt history. Under `interactive` in a
+/// terminal, each overwrite asks for per-file confirmation; declined files
+/// count as skipped.
+pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> {
+    use std::collections::HashMap;
+
+    let mut by_category: HashMap<CategoryId, CategoryCounts> = HashMap::new();
+    fn counts_for(
+        map: &mut HashMap<CategoryId, CategoryCounts>,
+        id: CategoryId,
+    ) -> &mut CategoryCounts {
+        map.entry(id).or_insert_with(move || CategoryCounts {
+            category: id,
+            added: 0,
+            modified: 0,
+            unchanged: 0,
+            skipped: 0,
+            merged_entries: 0,
+        })
+    }
+
+    let prompt_overwrites = interactive && crate::interactive_conflict::is_interactive();
+
+    for write in &plan.creates {
+        let bytes = fs::read(&write.repo_path)?;
+        write_atomic(&write.local_path, &bytes)?;
+        counts_for(&mut by_category, write.category).added += 1;
+    }
+
+    for write in &plan.overwrites {
+        if prompt_overwrites {
+            let file_name = write
+                .local_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| write.local_path.display().to_string());
+            let confirmed = inquire::Confirm::new(&format!(
+                "Overwrite local '{file_name}' with the sync repo version?"
+            ))
+            .with_default(true)
+            .with_help_message("Declined files keep their local content")
+            .prompt()
+            .unwrap_or(false);
+            if !confirmed {
+                counts_for(&mut by_category, write.category).skipped += 1;
+                continue;
+            }
+        }
+        let bytes = fs::read(&write.repo_path)?;
+        write_atomic(&write.local_path, &bytes)?;
+        counts_for(&mut by_category, write.category).modified += 1;
+    }
+
+    for write in &plan.unions {
+        let local_text = fs::read_to_string(&write.local_path).unwrap_or_default();
+        let repo_text = fs::read_to_string(&write.repo_path).unwrap_or_default();
+        let (merged, new_lines) = merge_history_lines(&local_text, &repo_text);
+        write_atomic(&write.local_path, merged.as_bytes())?;
+        let counts = counts_for(&mut by_category, write.category);
+        counts.modified += 1;
+        counts.merged_entries += new_lines;
+    }
+
+    let mut report = ArtifactReport::default();
+    report.counts = by_category.into_values().collect();
+    report.counts.sort_by_key(|c| c.category as usize);
     Ok(report)
 }
 

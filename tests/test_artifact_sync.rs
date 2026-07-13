@@ -320,3 +320,180 @@ fn test_ignore_file_for_mercurial_backend() {
     assert!(hgignore.contains("syntax: glob"));
     assert!(hgignore.contains(".credentials.json"));
 }
+
+// ============================================================================
+// Pull side
+// ============================================================================
+
+use claude_code_sync::artifacts::engine::{apply_pull, plan_pull};
+
+#[test]
+fn test_pull_restores_artifacts_to_fresh_machine() {
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    seed_claude_dir(machine_a.path());
+    let filter = all_on_filter();
+
+    push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    assert!(!plan.is_empty());
+    assert!(plan.overwrites.is_empty(), "fresh machine has nothing to overwrite");
+    let report = apply_pull(&plan, false).unwrap();
+
+    assert_eq!(
+        fs::read(machine_b.path().join("settings.json")).unwrap(),
+        fs::read(machine_a.path().join("settings.json")).unwrap()
+    );
+    assert_eq!(
+        fs::read(machine_b.path().join("skills/my-skill/SKILL.md")).unwrap(),
+        b"# skill\n"
+    );
+    assert!(machine_b.path().join("CLAUDE.md").is_file());
+    assert!(machine_b.path().join("plugins/installed_plugins.json").is_file());
+    assert!(machine_b.path().join("history.jsonl").is_file());
+    assert!(report.total_added() >= 12);
+    assert_eq!(report.total_modified(), 0);
+}
+
+#[test]
+fn test_pull_remote_wins_when_bytes_differ() {
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    seed_claude_dir(machine_a.path());
+    let filter = all_on_filter();
+    push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
+
+    // Machine B has its own, different settings.
+    fs::write(machine_b.path().join("settings.json"), b"{\"model\":\"local\"}").unwrap();
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    let overwrite_targets: Vec<_> = plan
+        .overwrites
+        .iter()
+        .map(|w| w.local_path.clone())
+        .collect();
+    assert!(overwrite_targets.contains(&machine_b.path().join("settings.json")));
+
+    apply_pull(&plan, false).unwrap();
+    assert_eq!(
+        fs::read(machine_b.path().join("settings.json")).unwrap(),
+        b"{\"model\":\"opus\"}",
+        "remote bytes win"
+    );
+}
+
+#[test]
+fn test_pull_does_not_rewrite_identical_files() {
+    let machine_a = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    seed_claude_dir(machine_a.path());
+    let filter = all_on_filter();
+    push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
+
+    // Pulling straight back into the same machine: everything identical.
+    let plan = plan_pull(machine_a.path(), repo.path(), &filter).unwrap();
+    assert!(plan.is_empty(), "no writes planned when bytes match: {plan:?}");
+    assert!(plan.unchanged >= 12);
+}
+
+#[test]
+fn test_pull_unions_prompt_history_with_local() {
+    let machine_b = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    let repo_history = repo.path().join("artifacts/prompt-history/history.jsonl");
+    fs::create_dir_all(repo_history.parent().unwrap()).unwrap();
+    fs::write(&repo_history, format!("{}{}", history_line(500, "remote-old"), history_line(2000, "remote-new"))).unwrap();
+    fs::write(machine_b.path().join("history.jsonl"), history_line(1000, "local-only")).unwrap();
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    let report = apply_pull(&plan, false).unwrap();
+
+    let merged = fs::read_to_string(machine_b.path().join("history.jsonl")).unwrap();
+    let displays: Vec<_> = merged
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["display"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(displays, vec!["remote-old", "local-only", "remote-new"], "union, chronological");
+    let ph = report.counts.iter().find(|c| c.category == CategoryId::PromptHistory).unwrap();
+    assert_eq!(ph.merged_entries, 2, "two remote lines were new locally");
+}
+
+#[test]
+fn test_pull_refuses_denied_files_planted_in_repo() {
+    let machine_b = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    // A poisoned sync repo tries to deliver credentials and key material.
+    fs::create_dir_all(repo.path().join("artifacts/settings")).unwrap();
+    fs::write(repo.path().join("artifacts/settings/settings.json"), b"{}").unwrap();
+    fs::write(repo.path().join("artifacts/settings/.credentials.json"), b"{\"t\":1}").unwrap();
+    fs::create_dir_all(repo.path().join("artifacts/skills/s")).unwrap();
+    fs::write(repo.path().join("artifacts/skills/s/evil.pem"), b"PEM").unwrap();
+    fs::write(repo.path().join("artifacts/skills/s/ok.md"), b"fine").unwrap();
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+
+    assert!(machine_b.path().join("settings.json").is_file());
+    assert!(machine_b.path().join("skills/s/ok.md").is_file());
+    assert!(!machine_b.path().join(".credentials.json").exists());
+    assert!(!machine_b.path().join("skills/s/evil.pem").exists());
+    assert!(plan.skipped >= 2, "denied repo files are counted as skipped");
+}
+
+#[test]
+fn test_pull_plan_snapshot_paths_enable_exact_undo() {
+    // The pull plan's snapshot inputs must make undo an exact inverse:
+    // overwritten files restore to their old bytes, created files are deleted.
+    use claude_code_sync::history::OperationType;
+    use claude_code_sync::undo::Snapshot;
+
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    seed_claude_dir(machine_a.path());
+    let filter = all_on_filter();
+    push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
+
+    // Machine B: one file that will be overwritten, everything else created.
+    fs::write(machine_b.path().join("settings.json"), b"{\"model\":\"mine\"}").unwrap();
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+
+    let mut snapshot = Snapshot::create(
+        OperationType::Pull,
+        plan.paths_to_snapshot().iter(),
+        None,
+    )
+    .unwrap();
+    snapshot.deleted_files = plan.created_paths();
+
+    apply_pull(&plan, false).unwrap();
+    assert_eq!(
+        fs::read(machine_b.path().join("settings.json")).unwrap(),
+        b"{\"model\":\"opus\"}"
+    );
+    assert!(machine_b.path().join("CLAUDE.md").is_file());
+
+    // Undo: restore the snapshot.
+    snapshot.restore_with_base(Some(machine_b.path())).unwrap();
+    assert_eq!(
+        fs::read(machine_b.path().join("settings.json")).unwrap(),
+        b"{\"model\":\"mine\"}",
+        "overwritten file restored"
+    );
+    assert!(
+        !machine_b.path().join("CLAUDE.md").exists(),
+        "created file removed by undo"
+    );
+    assert!(
+        !machine_b.path().join("skills/my-skill/SKILL.md").exists(),
+        "created skill removed by undo"
+    );
+}
