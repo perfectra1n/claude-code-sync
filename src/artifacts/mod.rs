@@ -7,5 +7,6 @@
 //! config toggle.
 
 pub mod denylist;
+pub mod engine;
 pub mod registry;
 pub mod union_jsonl;

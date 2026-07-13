@@ -54,6 +54,12 @@ pub struct FilterConfig {
     /// when usernames or paths differ across machines.
     #[serde(default)]
     pub use_project_name_only: bool,
+
+    /// Per-category switches for syncing Claude Code artifacts beyond
+    /// conversation history (settings, skills, agents, ...). All default to
+    /// false so configs from older versions keep their exact behavior.
+    #[serde(default)]
+    pub sync_artifacts: crate::artifacts::registry::ArtifactToggles,
 }
 
 fn default_lfs_patterns() -> Vec<String> {
@@ -85,6 +91,7 @@ impl Default for FilterConfig {
             scm_backend: default_scm_backend(),
             sync_subdirectory: default_sync_subdirectory(),
             use_project_name_only: false,
+            sync_artifacts: Default::default(),
         }
     }
 }
@@ -211,6 +218,13 @@ impl FilterConfig {
                 "Git LFS is only supported with the 'git' backend. \
                  Current backend: '{}'",
                 self.scm_backend
+            );
+        }
+        if self.sync_subdirectory == crate::artifacts::registry::ARTIFACTS_SUBDIR {
+            bail!(
+                "sync_subdirectory cannot be '{}': that directory is reserved \
+                 for artifact sync",
+                crate::artifacts::registry::ARTIFACTS_SUBDIR
             );
         }
         Ok(())

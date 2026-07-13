@@ -12,7 +12,9 @@ use crate::history::{
 use crate::interactive_conflict;
 use crate::scm;
 
-use super::discovery::{claude_projects_dir, discover_sessions, find_colliding_projects};
+use super::discovery::{
+    claude_home_dir, claude_projects_dir, discover_sessions, find_colliding_projects,
+};
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
@@ -45,6 +47,8 @@ pub struct PushReport {
     pub modified: usize,
     pub unchanged: usize,
     pub skipped_no_cwd: usize,
+    /// Per-category artifact outcomes (empty when no category is enabled).
+    pub artifacts: crate::artifacts::engine::ArtifactReport,
 }
 
 /// Compute a session's destination path relative to the projects directory,
@@ -247,6 +251,16 @@ pub fn push_history(
     }
 
     // ============================================================================
+    // COPY ARTIFACTS (settings, skills, agents, ...) AND WRITE IGNORE GUARD
+    // ============================================================================
+    let artifact_report = crate::artifacts::engine::push_artifacts(
+        &claude_home_dir()?,
+        &state.sync_repo_path,
+        &filter,
+    )?;
+    crate::artifacts::engine::ensure_ignore_files(&state.sync_repo_path, filter.backend()?)?;
+
+    // ============================================================================
     // SHOW SUMMARY AND INTERACTIVE CONFIRMATION
     // ============================================================================
     if verbosity != VerbosityLevel::Quiet {
@@ -262,6 +276,15 @@ pub fn push_history(
             "•".cyan(),
             total_with_cwd
         );
+        if !artifact_report.counts.is_empty() {
+            println!(
+                "  {} Artifacts: {} added, {} modified, {} unchanged",
+                "•".cyan(),
+                artifact_report.total_added(),
+                artifact_report.total_modified(),
+                artifact_report.total_unchanged()
+            );
+        }
         println!();
     }
 
@@ -478,5 +501,6 @@ pub fn push_history(
         modified: modified_count,
         unchanged: unchanged_count,
         skipped_no_cwd,
+        artifacts: artifact_report,
     })
 }

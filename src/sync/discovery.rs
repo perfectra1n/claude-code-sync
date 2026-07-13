@@ -10,10 +10,15 @@ use crate::parser::ConversationSession;
 /// Threshold for warning about large conversation files (10 MB)
 pub(crate) const LARGE_FILE_WARNING_THRESHOLD: u64 = 10 * 1024 * 1024;
 
+/// Get the Claude Code home directory (`~/.claude`)
+pub(crate) fn claude_home_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Failed to get home directory")?;
+    Ok(home.join(".claude"))
+}
+
 /// Get the Claude Code projects directory
 pub(crate) fn claude_projects_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Failed to get home directory")?;
-    Ok(home.join(".claude").join("projects"))
+    Ok(claude_home_dir()?.join("projects"))
 }
 
 /// Discover all conversation sessions in Claude Code history
