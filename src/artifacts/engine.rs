@@ -378,15 +378,13 @@ fn local_destination(
 ) -> Option<PathBuf> {
     match desc.source {
         // File lists are stored flat in the repo; restore to the listed
-        // location whose file name matches.
-        SourceSpec::Files(list) => {
-            for entry in list {
-                if Path::new(entry).file_name() == rel.file_name() {
-                    return Some(claude_dir.join(entry));
-                }
-            }
-            Some(claude_dir.join(rel))
-        }
+        // location whose file name matches. An unlisted name has NO valid
+        // destination — the allowlist must hold on pull as well as push, or a
+        // poisoned repo could plant arbitrary files at the top of ~/.claude.
+        SourceSpec::Files(list) => list
+            .iter()
+            .find(|entry| Path::new(entry).file_name() == rel.file_name())
+            .map(|entry| claude_dir.join(entry)),
         SourceSpec::Dir(dir) => {
             if desc.dest == DestRoot::SessionTree && filter.use_project_name_only {
                 // Repo path is <project-name>/<rest>; find the matching local

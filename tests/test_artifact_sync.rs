@@ -637,3 +637,34 @@ fn test_attachments_map_project_names_in_name_only_mode() {
     );
     assert!(plan.skipped >= 1);
 }
+
+#[test]
+fn test_pull_refuses_unlisted_files_in_allowlist_categories() {
+    // A Files-sourced category (settings, plugins, ...) is an exact
+    // allowlist: a repo carrying an unexpected filename inside that
+    // category directory must be skipped, never written into ~/.claude.
+    let machine_b = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    fs::create_dir_all(repo.path().join("artifacts/settings")).unwrap();
+    fs::write(repo.path().join("artifacts/settings/settings.json"), b"{}").unwrap();
+    fs::write(
+        repo.path().join("artifacts/settings/unexpected.json"),
+        b"{\"planted\":true}",
+    )
+    .unwrap();
+    fs::create_dir_all(repo.path().join("artifacts/plugins")).unwrap();
+    fs::write(repo.path().join("artifacts/plugins/rogue-manifest.json"), b"{}").unwrap();
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+
+    assert!(machine_b.path().join("settings.json").is_file());
+    for entry in walkdir::WalkDir::new(machine_b.path()) {
+        let name = entry.unwrap().file_name().to_string_lossy().to_string();
+        assert_ne!(name, "unexpected.json", "unlisted file must not be restored");
+        assert_ne!(name, "rogue-manifest.json");
+    }
+    assert!(plan.skipped >= 2, "unlisted allowlist files count as skipped");
+}
