@@ -28,6 +28,12 @@
       "automerge": true,
       "automergeType": "pr",
       "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Bump the mise.toml rust pin and the Dockerfile rust image together so the toolchains never drift",
+      "matchDepNames": ["rust"],
+      "matchManagers": ["mise", "dockerfile"],
+      "groupName": "rust toolchain"
     }
   ]
 }

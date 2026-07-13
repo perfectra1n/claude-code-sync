@@ -1,0 +1,92 @@
+# Dev toolchain + tasks (https://mise.jdx.dev). CI runs these same tasks via jdx/mise-action.
+[tools]
+# Must stay in lockstep with the rust:1.96-slim-trixie builder image in ./Dockerfile.
+rust = { version = "1.96", profile = "default" } # default profile includes rustfmt + clippy
+# cargo-binstall lets the cargo: backend below install prebuilt binaries instead of compiling.
+cargo-binstall = "1.20"
+"cargo:cargo-tarpaulin" = "0.37"
+"cargo:cargo-audit" = "0.22"
+
+[env]
+CARGO_TERM_COLOR = "always"
+RUST_BACKTRACE = "1"
+
+[tasks.fmt]
+description = "Format all code"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Check formatting without modifying"
+run = "cargo fmt --all -- --check"
+
+[tasks.lint]
+description = "Clippy with warnings as errors"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.build]
+description = "Debug build"
+run = "cargo build --verbose"
+
+[tasks.build-release]
+description = "Release build; pass a target with: mise run build-release -- --target <triple>"
+run = "cargo build --release --verbose"
+
+[tasks.test]
+description = "Full test suite; --test-threads=1 is REQUIRED (tests share CLAUDE_CODE_SYNC_CONFIG_DIR)"
+run = "cargo test --verbose -- --test-threads=1"
+
+[tasks.test-unit]
+description = "Library unit tests"
+run = "cargo test --lib --verbose -- --test-threads=1"
+
+[tasks.test-doc]
+description = "Documentation tests"
+run = "cargo test --doc --verbose"
+
+[tasks.test-integration]
+description = "Integration test binaries (needs git identity configured; not Windows-portable)"
+run = [
+  "cargo test --test '*' --verbose -- --test-threads=1",
+  "cargo test --all-features --verbose -- --test-threads=1",
+]
+
+[tasks.test-scm]
+description = "SCM backend tests; asserts the Mercurial cases actually ran (requires hg)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+out=$(mktemp)
+cargo test --test scm_backend_tests --verbose -- --test-threads=1 2>&1 | tee "$out"
+if ! grep -q "case_2_mercurial" "$out"; then
+  echo "ERROR: Mercurial tests did not run! Is hg installed?" >&2
+  exit 1
+fi
+"""
+
+[tasks.audit]
+description = "Security audit of dependencies"
+run = "cargo audit"
+
+[tasks.coverage]
+description = "Coverage report (cobertura.xml) via tarpaulin"
+run = "cargo tarpaulin --out xml --verbose --timeout 300"
+
+[tasks.doc]
+description = "Build rustdoc with redirect index (published by docs.yml)"
+env = { RUSTDOCFLAGS = "--default-theme ayu" }
+run = [
+  "cargo doc --no-deps --all-features",
+  """echo '<meta http-equiv="refresh" content="0; url=claude_code_sync/index.html">' > target/doc/index.html""",
+]
+
+[tasks.e2e]
+description = "Release build smoke test"
+run = [
+  "cargo build --release --verbose",
+  "./target/release/claude-code-sync --version",
+  "./target/release/claude-code-sync --help",
+]
+
+[tasks.ci]
+description = "Everything the CI quality+test gates run"
+depends = ["fmt-check", "lint", "build", "test"]

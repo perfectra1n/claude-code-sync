@@ -2,7 +2,7 @@ name: Documentation
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -13,36 +13,17 @@ jobs:
     name: Build and Deploy Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout code
+        uses: actions/checkout@v7
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v6
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v6
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install mise
+        uses: jdx/mise-action@v4
 
       - name: Cache cargo build
-        uses: actions/cache@v6
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-docs-target-${{ hashFiles('**/Cargo.lock') }}
+        uses: Swatinem/rust-cache@v2
 
       - name: Build documentation
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: "--default-theme ayu"
-
-      - name: Add redirect index
-        run: echo '<meta http-equiv="refresh" content="0; url=claude_code_sync/index.html">' > target/doc/index.html
+        run: mise run doc
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

@@ -2,143 +2,155 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, beta]
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout code
+        uses: actions/checkout@v7
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
+      - name: Install mise
+        uses: jdx/mise-action@v4
 
-      - name: Install Mercurial (Ubuntu only)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Mercurial (for SCM backend tests)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y mercurial
           hg --version
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v6
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v6
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Check formatting
-        run: cargo fmt -- --check || true
-        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
-
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
-        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.email "ci@github.actions"
+          git config --global user.name "GitHub Actions CI"
 
       - name: Build
-        run: cargo build --verbose
+        run: mise run build
 
       - name: Run tests
-        run: cargo test --verbose -- --test-threads=1
+        run: mise run test
 
-      - name: Build release
-        run: cargo build --release --verbose
+  quality:
+    name: Format & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: mise run fmt-check
+
+      - name: Run clippy
+        run: mise run lint
+
+  test-scm:
+    name: SCM Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Mercurial
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mercurial
+          hg --version
+
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.email "ci@github.actions"
+          git config --global user.name "GitHub Actions CI"
+
+      - name: Run SCM backend tests (with Mercurial guard)
+        run: mise run test-scm
+
+  e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.email "ci@github.actions"
+          git config --global user.name "GitHub Actions CI"
+
+      - name: Build and smoke-test release binary
+        run: mise run e2e
 
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout code
+        uses: actions/checkout@v7
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install mise
+        uses: jdx/mise-action@v4
 
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
 
-      - name: Generate coverage
-        run: cargo tarpaulin --out xml --verbose
+      - name: Install Mercurial (for SCM backend tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mercurial
 
-      - name: Upload coverage to Codecov
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.email "ci@github.actions"
+          git config --global user.name "GitHub Actions CI"
+
+      - name: Generate coverage report
+        run: mise run coverage
+
+      - name: Upload to Codecov
         uses: codecov/codecov-action@v7
         with:
           files: ./cobertura.xml
           fail_ci_if_error: false
 
-  security-audit:
+  audit:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout code
+        uses: actions/checkout@v7
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit || true
+      - name: Install mise
+        uses: jdx/mise-action@v4
 
       - name: Run security audit
-        run: cargo audit
-
-  build-binary:
-    name: Build Release Binaries
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-linux-x86_64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-macos-aarch64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: claude-code-sync.exe
-            asset_name: claude-code-sync-windows-x86_64.exe
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Upload binary as artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.asset_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        run: mise run audit

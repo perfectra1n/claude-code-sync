@@ -1,0 +1,178 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - name: Run release-please
+        id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-binaries:
+    name: Build Release Binaries
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: claude-code-sync
+            asset_name: claude-code-sync-linux-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: claude-code-sync
+            asset_name: claude-code-sync-linux-x86_64-musl
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: claude-code-sync
+            asset_name: claude-code-sync-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: claude-code-sync
+            asset_name: claude-code-sync-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: claude-code-sync.exe
+            asset_name: claude-code-sync-windows-x86_64.exe
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Add compilation target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools (Linux musl only)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: mise run build-release -- --target ${{ matrix.target }}
+
+      - name: Package binary with checksum
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a ${{ matrix.asset_name }}.zip ${{ matrix.artifact_name }}
+            sha256sum ${{ matrix.asset_name }}.zip > ${{ matrix.asset_name }}.zip.sha256
+          else
+            strip ${{ matrix.artifact_name }}
+            tar czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
+            shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
+          fi
+
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ needs.release-please.outputs.tag_name }} \
+            target/${{ matrix.target }}/release/${{ matrix.asset_name }}.* \
+            --clobber
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: [release-please, build-binaries]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify package
+        run: cargo package --verbose
+
+      # No prerelease gating: release-please's default versioning never emits
+      # alpha/beta/rc tags, so every release it creates is publishable.
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+  docker:
+    name: Build and Push Docker Image
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The triggering event is a branch push, not a tag push, so semver tags
+      # must be derived explicitly from the release-please tag.
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
+            type=semver,pattern={{major}},value=${{ needs.release-please.outputs.tag_name }}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
