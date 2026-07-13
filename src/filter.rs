@@ -108,8 +108,31 @@ impl FilterConfig {
         let content = fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
 
-        let config: FilterConfig =
+        let mut config: FilterConfig =
             toml::from_str(&content).context("Failed to parse config file")?;
+
+        // Repair rather than reject. A `max_file_size_bytes` of 0 filters out
+        // every file, so a user with one in their config sees sync silently do
+        // nothing -- and until this was fixed, entering a negative size at the
+        // `config` prompt wrote exactly that (the `as u64` cast saturates), so
+        // configs in the wild have it.
+        //
+        // Hard-failing here would be a trap: `handle_config_interactive` opens
+        // with `FilterConfig::load()`, so erroring would take down the one command
+        // that can fix the value and leave hand-editing TOML as the only way out.
+        // `validate()` is strict, so a bad value can never be *written*; on the
+        // read path we fall back to the default and say so.
+        if config.max_file_size_bytes == 0 {
+            let default = default_max_file_size();
+            eprintln!(
+                "{} max_file_size_bytes is 0 in {}, which would exclude every file. \
+                 Falling back to {} MB. Run `claude-code-sync config` to set it.",
+                "!".yellow(),
+                config_path.display(),
+                default / (1024 * 1024),
+            );
+            config.max_file_size_bytes = default;
+        }
 
         Ok(config)
     }
@@ -228,6 +251,12 @@ impl FilterConfig {
                 "sync_subdirectory cannot be '{}': that directory is reserved \
                  for artifact sync",
                 crate::artifacts::registry::ARTIFACTS_SUBDIR
+            );
+        }
+        if self.max_file_size_bytes == 0 {
+            bail!(
+                "max_file_size_bytes cannot be 0: every file would be filtered out \
+                 and nothing would ever sync"
             );
         }
         Ok(())
@@ -531,6 +560,55 @@ pub fn show_config() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_rejects_zero_max_file_size() {
+        // 0 bytes means `should_include` rejects everything, so sync silently
+        // does nothing. It must never be written to disk.
+        let config = FilterConfig {
+            max_file_size_bytes: 0,
+            ..Default::default()
+        };
+
+        let err = config
+            .validate()
+            .expect_err("a 0-byte size limit must not validate")
+            .to_string();
+        assert!(err.contains("max_file_size_bytes"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn test_validate_accepts_a_positive_max_file_size() {
+        let config = FilterConfig {
+            max_file_size_bytes: 1,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_zero_max_file_size_excludes_every_real_file() {
+        // Pins down *why* 0 is rejected, rather than asserting it in the abstract.
+        // The file has to actually exist: `should_include` only consults the size
+        // when `fs::metadata` succeeds.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("session.jsonl");
+        fs::write(&file, b"x").unwrap();
+
+        assert!(
+            FilterConfig::default().should_include(&file),
+            "sanity: the default config includes this file"
+        );
+
+        let broken = FilterConfig {
+            max_file_size_bytes: 0,
+            ..Default::default()
+        };
+        assert!(
+            !broken.should_include(&file),
+            "a 0-byte limit excludes every non-empty file — this is the damage"
+        );
+    }
 
     #[test]
     fn test_glob_match() {

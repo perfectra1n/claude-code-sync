@@ -130,6 +130,35 @@ fn test_multiple_config_operations() -> Result<()> {
 }
 
 #[test]
+#[serial]
+fn test_load_repairs_a_zero_max_file_size() -> Result<()> {
+    let env = ConfigEnv::new();
+
+    // A config.toml as the pre-fix prompt would have written it: entering a
+    // negative size saturated the `as u64` cast to 0, which excludes every file.
+    // Loading must not hand that straight back, or sync silently does nothing.
+    std::fs::write(
+        env.config_dir().join("config.toml"),
+        "max_file_size_bytes = 0\n",
+    )?;
+
+    let loaded = FilterConfig::load()?;
+
+    assert_ne!(
+        loaded.max_file_size_bytes, 0,
+        "load must repair a 0-byte limit rather than return it"
+    );
+
+    // And loading must still *succeed* — `config` is the command that fixes this,
+    // and it opens by calling load(), so a hard error here would lock the user out.
+    let file = env.join("session.jsonl");
+    std::fs::write(&file, b"x")?;
+    assert!(loaded.should_include(&file));
+
+    Ok(())
+}
+
+#[test]
 fn test_filter_config_with_attachments() -> Result<()> {
     let config = FilterConfig {
         exclude_attachments: true,
