@@ -29,7 +29,7 @@ jobs:
           hg --version
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/registry
           key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -37,7 +37,7 @@ jobs:
             ubuntu-cargo-registry-
 
       - name: Cache cargo index
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/git
           key: ubuntu-cargo-git-${{ hashFiles('**/Cargo.lock') }}
@@ -45,7 +45,7 @@ jobs:
             ubuntu-cargo-git-
 
       - name: Cache cargo build
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: target
           key: ubuntu-cargo-build-${{ hashFiles('**/Cargo.lock') }}
@@ -84,7 +84,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/registry
           key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -92,7 +92,7 @@ jobs:
             ubuntu-cargo-registry-
 
       - name: Cache cargo index
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/git
           key: ubuntu-cargo-git-${{ hashFiles('**/Cargo.lock') }}
