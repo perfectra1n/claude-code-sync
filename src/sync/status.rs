@@ -61,6 +61,43 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
         println!("  Sync repo: {}", remote_sessions.len().to_string().cyan());
     }
 
+    // Artifact categories: enabled state and local-vs-repo drift
+    println!();
+    println!("{}", "Artifacts:".bold());
+    if filter.sync_artifacts.any_enabled() || !filter.exclude_attachments {
+        let claude_home = super::discovery::claude_home_dir()?;
+        let plan =
+            crate::artifacts::engine::plan_pull(&claude_home, &state.sync_repo_path, &filter)?;
+        for desc in crate::artifacts::registry::REGISTRY {
+            if !crate::artifacts::engine::is_category_enabled(desc, &filter) {
+                println!("  {}: {}", desc.name, "disabled".dimmed());
+                continue;
+            }
+            let differing = plan
+                .overwrites
+                .iter()
+                .chain(plan.creates.iter())
+                .chain(plan.unions.iter())
+                .filter(|w| w.category == desc.id)
+                .count();
+            if differing == 0 {
+                println!("  {}: {}", desc.name, "in sync".green());
+            } else {
+                println!(
+                    "  {}: {}",
+                    desc.name,
+                    format!("{differing} file(s) differ from sync repo").yellow()
+                );
+            }
+        }
+    } else {
+        println!(
+            "  {}",
+            "All categories disabled — enable with: claude-code-sync config --enable-artifacts <names|all>"
+                .dimmed()
+        );
+    }
+
     // Show files if requested
     if show_files {
         println!();

@@ -145,6 +145,38 @@ pub fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
         }
     }
 
+    // Show artifact sync outcomes when any category was active
+    if !operation.artifact_counts.is_empty() {
+        println!("\n{}", "Artifacts:".bold());
+        for counts in &operation.artifact_counts {
+            let name = crate::artifacts::registry::REGISTRY
+                .iter()
+                .find(|d| d.id == counts.category)
+                .map(|d| d.name)
+                .unwrap_or("unknown");
+            let mut parts = Vec::new();
+            if counts.added > 0 {
+                parts.push(format!("{} added", counts.added));
+            }
+            if counts.modified > 0 {
+                parts.push(format!("{} modified", counts.modified));
+            }
+            if counts.unchanged > 0 {
+                parts.push(format!("{} unchanged", counts.unchanged));
+            }
+            if counts.skipped > 0 {
+                parts.push(format!("{} skipped", counts.skipped));
+            }
+            if counts.merged_entries > 0 {
+                parts.push(format!("{} lines merged", counts.merged_entries));
+            }
+            if parts.is_empty() {
+                continue;
+            }
+            println!("  {} {}", format!("{name}:").cyan(), parts.join(", "));
+        }
+    }
+
     if let Some(snapshot_path) = &operation.snapshot_path {
         println!(
             "\n{} {}",

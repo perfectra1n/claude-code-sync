@@ -54,6 +54,12 @@ pub struct FilterConfig {
     /// when usernames or paths differ across machines.
     #[serde(default)]
     pub use_project_name_only: bool,
+
+    /// Per-category switches for syncing Claude Code artifacts beyond
+    /// conversation history (settings, skills, agents, ...). All default to
+    /// false so configs from older versions keep their exact behavior.
+    #[serde(default)]
+    pub sync_artifacts: crate::artifacts::registry::ArtifactToggles,
 }
 
 fn default_lfs_patterns() -> Vec<String> {
@@ -85,6 +91,7 @@ impl Default for FilterConfig {
             scm_backend: default_scm_backend(),
             sync_subdirectory: default_sync_subdirectory(),
             use_project_name_only: false,
+            sync_artifacts: Default::default(),
         }
     }
 }
@@ -213,6 +220,13 @@ impl FilterConfig {
                 self.scm_backend
             );
         }
+        if self.sync_subdirectory == crate::artifacts::registry::ARTIFACTS_SUBDIR {
+            bail!(
+                "sync_subdirectory cannot be '{}': that directory is reserved \
+                 for artifact sync",
+                crate::artifacts::registry::ARTIFACTS_SUBDIR
+            );
+        }
         Ok(())
     }
 }
@@ -262,6 +276,8 @@ pub fn update_config(
     scm_backend: Option<String>,
     sync_subdirectory: Option<String>,
     use_project_name_only: Option<bool>,
+    enable_artifacts: Option<String>,
+    disable_artifacts: Option<String>,
 ) -> Result<()> {
     let mut config = FilterConfig::load()?;
 
@@ -365,11 +381,58 @@ pub fn update_config(
         );
     }
 
+    if let Some(names) = enable_artifacts {
+        apply_artifact_toggles(&mut config, &names, true)?;
+    }
+
+    if let Some(names) = disable_artifacts {
+        apply_artifact_toggles(&mut config, &names, false)?;
+    }
+
     // Validate configuration before saving
     config.validate()?;
 
     config.save()?;
     println!("{}", "Configuration saved successfully!".green().bold());
+
+    Ok(())
+}
+
+/// Resolve a comma-separated list of category names (or `all`) and flip their
+/// toggles. Unknown names abort before anything is persisted.
+fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -> Result<()> {
+    use crate::artifacts::registry::{find_by_name, ArtifactToggles};
+
+    let verb = if value { "Enabled" } else { "Disabled" };
+
+    for name in names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if name == "all" {
+            config.sync_artifacts = if value {
+                ArtifactToggles::all_enabled()
+            } else {
+                ArtifactToggles::default()
+            };
+            println!("{}", format!("{verb} all artifact categories").green());
+            continue;
+        }
+        if name == "attachments" {
+            bail!(
+                "Attachments are controlled by --exclude-attachments, not an artifact toggle"
+            );
+        }
+        let Some(desc) = find_by_name(name) else {
+            let valid: Vec<&str> = crate::artifacts::registry::toggleable()
+                .map(|d| d.name)
+                .collect::<Vec<_>>();
+            bail!(
+                "Unknown artifact category '{}'. Valid names: {}, all",
+                name,
+                valid.join(", ")
+            );
+        };
+        config.sync_artifacts.set_enabled(desc.id, value);
+        println!("{}", format!("{verb} artifact category: {name}").green());
+    }
 
     Ok(())
 }
@@ -448,6 +511,16 @@ pub fn show_config() -> Result<()> {
             "No (full path mode)".yellow()
         }
     );
+
+    println!("  {}:", "Artifact sync".cyan());
+    for desc in crate::artifacts::registry::toggleable() {
+        let state = if config.sync_artifacts.is_enabled(desc.id) {
+            "enabled".green()
+        } else {
+            "disabled".yellow()
+        };
+        println!("    {}: {} — {}", desc.name, state, desc.description.dimmed());
+    }
 
     Ok(())
 }

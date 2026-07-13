@@ -24,6 +24,8 @@ cargo doc --open --no-deps --all-features
 | Feature | Description |
 |---------|-------------|
 | **Smart Merge** | Automatically combines non-conflicting conversation changes |
+| **Artifact Sync** | Carry settings, skills, agents, commands, plugin manifests, plans, todos, and prompt history across machines |
+| **Secrets Guard** | Hardcoded never-sync denylist plus a managed ignore block in the sync repo |
 | **Bidirectional Sync** | Pull and push changes in one command with `sync` |
 | **Interactive Onboarding** | First-time setup wizard guides you through configuration |
 | **Non-Interactive Init** | Config file support for CI/CD and automation |
@@ -53,11 +55,79 @@ Claude Code stores conversation history locally in `~/.claude/projects/` as JSON
 
 `claude-code-sync`:
 1. Discovers all conversation files in your local Claude Code history
-2. Copies them to a git repository
+2. Copies them to a git repository (plus any enabled artifact categories — see [Artifact Sync](#artifact-sync))
 3. Commits and optionally pushes to a remote
 4. On pull, merges remote changes with local history
 5. Detects conflicts (same session modified on different machines)
 6. Resolves conflicts by keeping both versions with renamed files
+
+## Artifact Sync
+
+Conversation history is only part of a Claude Code environment. Artifact sync
+carries the rest of `~/.claude` across machines, per category:
+
+| Category | What it covers | Notes |
+|----------|----------------|-------|
+| `settings` | `settings.json`, `keybindings.json` | `settings.local.json` is never synced |
+| `memory` | `~/.claude/CLAUDE.md` | Global user memory |
+| `skills` | `~/.claude/skills/` | Custom skills, recursively |
+| `agents` | `~/.claude/agents/` | Custom subagent definitions |
+| `commands` | `~/.claude/commands/` | Custom slash commands |
+| `plugins` | `installed_plugins.json`, `known_marketplaces.json` | Only the manifests — plugin caches never sync |
+| `plans` | `~/.claude/plans/` | Plan-mode documents (may contain sensitive prose) |
+| `todos` | `~/.claude/todos/` | Session task lists (churny; consider leaving off) |
+| `prompt-history` | `~/.claude/history.jsonl` | Union-merged in both directions, so machines converge to the superset |
+| attachments | non-`.jsonl` files in `~/.claude/projects/` | Images, PDFs, and per-project `memory/` dirs; governed by `--exclude-attachments`, not a toggle |
+
+Enable categories per machine (all default **off** for existing configs; the
+first-run wizard pre-selects them for new setups):
+
+```bash
+# Enable everything
+claude-code-sync config --enable-artifacts all
+
+# Or pick categories
+claude-code-sync config --enable-artifacts settings,skills,agents,commands,plugins,prompt-history
+
+# Turn one off again
+claude-code-sync config --disable-artifacts todos
+```
+
+### What is NEVER synced
+
+A hardcoded denylist is enforced on every copy, in both directions, and cannot
+be overridden by any configuration: `.credentials.json`,
+`settings.local.json`, `.claude.json`, `*.pem`, `*.key`, `.env*`, `daemon*`,
+`stats-cache.json`, and machine-local directories (`shell-snapshots/`,
+`session-env/`, `file-history/`, `paste-cache/`, `cache/`, `debug/`,
+`statsig/`, `backups/`, `sessions/`). Pull refuses these paths even if they
+appear inside the sync repository, and every push maintains a managed guard
+block in the repo's `.gitignore` (or `.hgignore`) as defense in depth.
+
+### Sync repository layout
+
+```
+<sync_repo>/
+  .gitignore              # managed never-sync guard block
+  projects/               # conversation transcripts + attachments
+  artifacts/
+    settings/  memory/  skills/  agents/  commands/
+    plugins/   plans/   todos/   prompt-history/
+```
+
+### Conflict policy and undo
+
+Artifact pulls are **remote-wins**: a file is only written when its bytes
+differ, every overwritten local file is snapshotted first, and files the pull
+creates are recorded so `claude-code-sync undo pull` is an exact inverse
+(restores overwritten bytes, deletes created files). Interactive pulls
+(`pull --interactive`) confirm each overwrite per file. `history.jsonl` is
+never overwritten — both push and pull merge the union of lines, so prompt
+history only ever grows.
+
+> **Note (Git LFS):** if your `lfs_patterns` include `*.jsonl`, the repo copy
+> of `history.jsonl` is LFS-tracked; content is materialized on checkout, so
+> union merging still works.
 
 ## Installation
 
@@ -282,6 +352,8 @@ claude-code-sync config [OPTIONS] [--show]
 - `--lfs-patterns <PATTERNS>`: File patterns to track with LFS (comma-separated, default: `*.jsonl`)
 - `--scm-backend <BACKEND>`: SCM backend to use: `git` or `mercurial` (default: `git`)
 - `--sync-subdirectory <DIR>`: Subdirectory within sync repo for projects (default: `projects`)
+- `--enable-artifacts <NAMES>`: Enable artifact categories (comma-separated, or `all`)
+- `--disable-artifacts <NAMES>`: Disable artifact categories (comma-separated, or `all`)
 - `--show`: Show current configuration
 
 **Examples:**
@@ -306,6 +378,9 @@ claude-code-sync config --scm-backend mercurial
 
 # Store projects in a custom subdirectory
 claude-code-sync config --sync-subdirectory "claude-history"
+
+# Sync settings, skills, and prompt history alongside conversations
+claude-code-sync config --enable-artifacts settings,skills,prompt-history
 
 # Show current config
 claude-code-sync config --show
@@ -589,6 +664,19 @@ scm_backend = "git"
 
 # Subdirectory within sync repo for projects
 sync_subdirectory = "projects"
+
+# Artifact categories to sync alongside conversation history
+# (all default to false; see the Artifact Sync section)
+[sync_artifacts]
+settings = true
+memory = true
+skills = true
+agents = true
+commands = true
+plugins = true
+plans = false
+todos = false
+prompt_history = true
 ```
 
 ## Sync State

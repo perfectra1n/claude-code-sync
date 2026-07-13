@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
-use inquire::{Confirm, Select, Text};
+use inquire::{Confirm, MultiSelect, Select, Text};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,6 +43,12 @@ use crate::config::ConfigManager;
 ///
 /// # Optional: Use only project name for multi-device sync (default: false)
 /// use_project_name_only = true
+///
+/// # Optional: Artifact categories to sync (all default to false)
+/// [sync_artifacts]
+/// settings = true
+/// skills = true
+/// prompt_history = true
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitConfig {
@@ -81,6 +87,11 @@ pub struct InitConfig {
     /// Enables multi-device sync compatibility.
     #[serde(default)]
     pub use_project_name_only: bool,
+
+    /// Per-category artifact sync switches (`[sync_artifacts]` table).
+    /// Missing table means every category stays off.
+    #[serde(default)]
+    pub sync_artifacts: crate::artifacts::registry::ArtifactToggles,
 }
 
 fn default_scm_backend() -> String {
@@ -191,6 +202,7 @@ impl InitConfig {
             is_cloned: self.clone,
             exclude_attachments: self.exclude_attachments,
             exclude_older_than_days: self.exclude_older_than_days,
+            sync_artifacts: self.sync_artifacts.clone(),
         })
     }
 }
@@ -282,6 +294,10 @@ pub struct OnboardingConfig {
     /// - `Some(30)`: Only sync conversations modified in the last 30 days
     /// - `None`: Sync all conversations regardless of age
     pub exclude_older_than_days: Option<u32>,
+
+    /// Which artifact categories (settings, skills, agents, ...) to sync
+    /// alongside conversation history.
+    pub sync_artifacts: crate::artifacts::registry::ArtifactToggles,
 }
 
 /// Run the interactive onboarding flow
@@ -406,6 +422,9 @@ pub fn run_onboarding() -> Result<OnboardingConfig> {
         None
     };
 
+    // Step 3: Artifact sync (settings, skills, agents, ...)
+    let sync_artifacts = prompt_artifact_categories()?;
+
     println!();
     println!("{}", "✓ Configuration complete!".green().bold());
 
@@ -415,7 +434,41 @@ pub fn run_onboarding() -> Result<OnboardingConfig> {
         is_cloned,
         exclude_attachments,
         exclude_older_than_days,
+        sync_artifacts,
     })
+}
+
+/// Ask which artifact categories to sync. All categories are pre-checked for
+/// new setups; help text flags the two with caveats (plans may contain
+/// sensitive prose, todos churn on every session).
+fn prompt_artifact_categories() -> Result<crate::artifacts::registry::ArtifactToggles> {
+    use crate::artifacts::registry::{toggleable, ArtifactToggles};
+
+    let options: Vec<String> = toggleable()
+        .map(|d| format!("{} — {}", d.name, d.description))
+        .collect();
+    let all_indices: Vec<usize> = (0..options.len()).collect();
+
+    let picked = MultiSelect::new(
+        "Sync these Claude Code artifacts alongside conversation history?",
+        options,
+    )
+    .with_default(&all_indices)
+    .with_help_message(
+        "Space toggles, enter confirms. Secrets (credentials, settings.local.json, \
+         .env*, keys) are never synced regardless of selection.",
+    )
+    .prompt()
+    .context("Failed to get artifact sync preference")?;
+
+    let mut toggles = ArtifactToggles::default();
+    for label in picked {
+        let name = label.split(" — ").next().unwrap_or(&label);
+        if let Some(desc) = crate::artifacts::registry::find_by_name(name) {
+            toggles.set_enabled(desc.id, true);
+        }
+    }
+    Ok(toggles)
 }
 
 /// Validate git URL format
@@ -521,6 +574,7 @@ mod tests {
             scm_backend: "git".to_string(),
             sync_subdirectory: "projects".to_string(),
             use_project_name_only: false,
+            sync_artifacts: Default::default(),
         };
         assert!(config.validate().is_err());
     }
@@ -537,6 +591,7 @@ mod tests {
             scm_backend: "mercurial".to_string(),
             sync_subdirectory: "projects".to_string(),
             use_project_name_only: false,
+            sync_artifacts: Default::default(),
         };
         assert!(config.validate().is_err());
     }
@@ -553,6 +608,7 @@ mod tests {
             scm_backend: "svn".to_string(),
             sync_subdirectory: "projects".to_string(),
             use_project_name_only: false,
+            sync_artifacts: Default::default(),
         };
         assert!(config.validate().is_err());
     }
@@ -569,6 +625,7 @@ mod tests {
             scm_backend: "git".to_string(),
             sync_subdirectory: "projects".to_string(),
             use_project_name_only: false,
+            sync_artifacts: Default::default(),
         };
         let onboarding = config.to_onboarding_config().unwrap();
         assert_eq!(onboarding.repo_path, PathBuf::from("/tmp/test"));

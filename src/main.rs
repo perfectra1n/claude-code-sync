@@ -1,3 +1,4 @@
+mod artifacts;
 mod config;
 mod conflict;
 mod filter;
@@ -183,6 +184,15 @@ enum Commands {
         /// Use only project name instead of full path (enables multi-device sync)
         #[arg(long)]
         use_project_name_only: Option<bool>,
+
+        /// Enable artifact categories (comma-separated names or "all"),
+        /// e.g. "settings,skills,prompt-history"
+        #[arg(long)]
+        enable_artifacts: Option<String>,
+
+        /// Disable artifact categories (comma-separated names or "all")
+        #[arg(long)]
+        disable_artifacts: Option<String>,
 
         /// Show current configuration
         #[arg(long)]
@@ -547,6 +557,8 @@ fn main() -> Result<()> {
             scm_backend,
             sync_subdirectory,
             use_project_name_only,
+            enable_artifacts,
+            disable_artifacts,
             show,
             interactive,
             wizard,
@@ -561,6 +573,9 @@ fn main() -> Result<()> {
                 || lfs_patterns.is_some()
                 || scm_backend.is_some()
                 || sync_subdirectory.is_some()
+                || use_project_name_only.is_some()
+                || enable_artifacts.is_some()
+                || disable_artifacts.is_some()
                 || show
                 || interactive
                 || wizard
@@ -588,6 +603,8 @@ fn main() -> Result<()> {
                     scm_backend,
                     sync_subdirectory,
                     use_project_name_only,
+                    enable_artifacts,
+                    disable_artifacts,
                 )?;
             }
         }

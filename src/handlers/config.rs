@@ -38,6 +38,7 @@ pub fn handle_config_interactive() -> Result<()> {
         "Exclude patterns",
         "Exclude attachments",
         "Max file size",
+        "Artifact sync categories",
     ];
 
     // Let user select which settings to modify
@@ -142,6 +143,11 @@ pub fn handle_config_interactive() -> Result<()> {
 
                 modified_config.exclude_attachments = exclude;
                 println!("  {} Set exclude_attachments to {}", "✓".green(), exclude);
+            }
+
+            "Artifact sync categories" => {
+                modified_config.sync_artifacts =
+                    prompt_artifact_toggle_selection(&modified_config.sync_artifacts)?;
             }
 
             "Max file size" => {
@@ -330,6 +336,15 @@ pub fn handle_config_wizard() -> Result<()> {
         println!("  {} Keeping current max file size\n", "✓".green());
     }
 
+    // Artifact sync categories
+    let change_artifacts = Confirm::new("Configure artifact sync categories (settings, skills, agents, ...)?")
+        .with_default(false)
+        .prompt()?;
+    if change_artifacts {
+        modified_config.sync_artifacts =
+            prompt_artifact_toggle_selection(&modified_config.sync_artifacts)?;
+    }
+
     // Summary and confirmation
     println!("{}", "=".repeat(80).cyan());
     println!("{}", "Configuration Summary:".bold().cyan());
@@ -389,6 +404,19 @@ fn display_config_summary(config: &FilterConfig) {
             "Yes (only .jsonl files)".green().to_string()
         } else {
             "No (all files)".yellow().to_string()
+        }
+    );
+
+    let enabled: Vec<&str> = crate::artifacts::registry::toggleable()
+        .filter(|d| config.sync_artifacts.is_enabled(d.id))
+        .map(|d| d.name)
+        .collect();
+    println!("  {} {}",
+        "Artifact sync:".cyan(),
+        if enabled.is_empty() {
+            "All disabled".dimmed().to_string()
+        } else {
+            enabled.join(", ")
         }
     );
 }
@@ -665,6 +693,7 @@ pub fn handle_config_export() -> Result<()> {
         scm_backend: filter.scm_backend,
         sync_subdirectory: filter.sync_subdirectory,
         use_project_name_only: filter.use_project_name_only,
+        sync_artifacts: filter.sync_artifacts.clone(),
     };
 
     let content = toml::to_string_pretty(&init_config)
@@ -930,4 +959,42 @@ mod tests {
         assert!(table.contains_key("scm_backend"));
         assert!(table.contains_key("sync_subdirectory"));
     }
+}
+
+/// MultiSelect over all artifact categories, pre-selecting the currently
+/// enabled ones. Returns the resulting toggles.
+fn prompt_artifact_toggle_selection(
+    current: &crate::artifacts::registry::ArtifactToggles,
+) -> Result<crate::artifacts::registry::ArtifactToggles> {
+    use crate::artifacts::registry::{find_by_name, toggleable, ArtifactToggles};
+
+    let rows: Vec<_> = toggleable().collect();
+    let options: Vec<String> = rows
+        .iter()
+        .map(|d| format!("{} — {}", d.name, d.description))
+        .collect();
+    let preselected: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| current.is_enabled(d.id))
+        .map(|(i, _)| i)
+        .collect();
+
+    let picked = MultiSelect::new("Artifact categories to sync:", options)
+        .with_default(&preselected)
+        .with_help_message(
+            "Space toggles, Enter confirms. Secrets (credentials, settings.local.json, \
+             .env*, keys) are never synced regardless of selection.",
+        )
+        .prompt()
+        .context("Failed to get artifact category selection")?;
+
+    let mut toggles = ArtifactToggles::default();
+    for label in picked {
+        let name = label.split(" — ").next().unwrap_or(&label);
+        if let Some(desc) = find_by_name(name) {
+            toggles.set_enabled(desc.id, true);
+        }
+    }
+    Ok(toggles)
 }

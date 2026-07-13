@@ -1,8 +1,8 @@
 // Module declarations
-mod discovery;
+pub mod discovery;
 mod init;
 mod pull;
-mod push;
+pub mod push;
 mod remote;
 mod state;
 mod status;

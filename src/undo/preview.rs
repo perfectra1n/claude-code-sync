@@ -19,8 +19,9 @@ pub struct UndoPreview {
     pub conversation_count: usize,
     /// Git commit hash (for push operations)
     pub commit_hash: Option<String>,
-    /// Snapshot creation timestamp
-    pub snapshot_timestamp: chrono::DateTime<chrono::Utc>,
+    /// Snapshot creation timestamp (None when the operation has no snapshot,
+    /// e.g. modern push records that only store a commit hash)
+    pub snapshot_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Verbosity level for preview display
@@ -105,14 +106,16 @@ impl UndoPreview {
                     }
                 }
 
-                println!(
-                    "\n{} {}",
-                    "Snapshot taken:".bold(),
-                    self.snapshot_timestamp
-                        .format("%Y-%m-%d %H:%M:%S UTC")
-                        .to_string()
-                        .dimmed()
-                );
+                if let Some(snapshot_ts) = self.snapshot_timestamp {
+                    println!(
+                        "\n{} {}",
+                        "Snapshot taken:".bold(),
+                        snapshot_ts
+                            .format("%Y-%m-%d %H:%M:%S UTC")
+                            .to_string()
+                            .dimmed()
+                    );
+                }
 
                 println!("{}", "=".repeat(80).yellow());
             }
@@ -170,23 +173,25 @@ impl UndoPreview {
                     }
                 }
 
-                println!(
-                    "\n{} {}",
-                    "Snapshot created:".bold(),
-                    self.snapshot_timestamp
-                        .format("%Y-%m-%d %H:%M:%S UTC")
-                        .to_string()
-                        .cyan()
-                );
+                if let Some(snapshot_ts) = self.snapshot_timestamp {
+                    println!(
+                        "\n{} {}",
+                        "Snapshot created:".bold(),
+                        snapshot_ts
+                            .format("%Y-%m-%d %H:%M:%S UTC")
+                            .to_string()
+                            .cyan()
+                    );
 
-                let time_diff = chrono::Utc::now().signed_duration_since(self.snapshot_timestamp);
-                let days = time_diff.num_days();
-                let hours = time_diff.num_hours() % 24;
-                let mins = time_diff.num_minutes() % 60;
-                println!("  {} {} days, {} hours, {} minutes ago",
-                    "Age:".dimmed(),
-                    days, hours, mins
-                );
+                    let time_diff = chrono::Utc::now().signed_duration_since(snapshot_ts);
+                    let days = time_diff.num_days();
+                    let hours = time_diff.num_hours() % 24;
+                    let mins = time_diff.num_minutes() % 60;
+                    println!("  {} {} days, {} hours, {} minutes ago",
+                        "Age:".dimmed(),
+                        days, hours, mins
+                    );
+                }
 
                 println!("{}", "=".repeat(80).yellow());
             }
@@ -240,7 +245,7 @@ pub fn preview_undo_pull(history_path: Option<PathBuf>) -> Result<UndoPreview> {
         affected_files,
         conversation_count: last_pull.affected_conversations.len(),
         commit_hash: None,
-        snapshot_timestamp: snapshot.timestamp,
+        snapshot_timestamp: Some(snapshot.timestamp),
     })
 }
 
@@ -260,11 +265,26 @@ pub fn preview_undo_push(history_path: Option<PathBuf>) -> Result<UndoPreview> {
         .get_last_operation_by_type(OperationType::Push)
         .ok_or_else(|| anyhow!("No push operation found in history to undo"))?;
 
-    // Get the snapshot path
+    // Modern push records store the reset target directly in commit_hash and have
+    // no snapshot file (git itself holds the history). Only legacy records carry a
+    // snapshot; mirror the fallback order used by undo_push in operations.rs.
+    if let Some(ref hash) = last_push.commit_hash {
+        return Ok(UndoPreview {
+            operation_type: OperationType::Push,
+            operation_timestamp: last_push.timestamp,
+            branch: last_push.branch.clone(),
+            affected_files: Vec::new(), // Push doesn't restore files, just resets git
+            conversation_count: last_push.affected_conversations.len(),
+            commit_hash: Some(hash.clone()),
+            snapshot_timestamp: None,
+        });
+    }
+
+    // Legacy: get the snapshot path
     let snapshot_path = last_push.snapshot_path.as_ref().ok_or_else(|| {
         anyhow!(
-            "No snapshot found for last push operation. \
-                Cannot undo without a snapshot."
+            "No commit hash or snapshot found for last push operation. \
+                Cannot undo."
         )
     })?;
 
@@ -287,6 +307,35 @@ pub fn preview_undo_push(history_path: Option<PathBuf>) -> Result<UndoPreview> {
         affected_files: Vec::new(), // Push doesn't restore files, just resets git
         conversation_count: last_push.affected_conversations.len(),
         commit_hash: snapshot.git_commit_hash.clone(),
-        snapshot_timestamp: snapshot.timestamp,
+        snapshot_timestamp: Some(snapshot.timestamp),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::{OperationRecord, OperationType};
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_preview_undo_push_with_commit_hash_only() {
+        // Modern push records store only commit_hash (no snapshot file); preview
+        // must succeed from the record alone instead of demanding a snapshot.
+        let temp_dir = TempDir::new().unwrap();
+        let history_path = temp_dir.path().join("operation-history.json");
+
+        let mut record =
+            OperationRecord::new(OperationType::Push, Some("main".to_string()), vec![]);
+        record.commit_hash = Some("abcdef1234567890".to_string());
+        assert!(record.snapshot_path.is_none());
+
+        let mut history = OperationHistory::from_path(Some(history_path.clone())).unwrap();
+        history.add_operation(record).unwrap();
+
+        let preview = preview_undo_push(Some(history_path)).unwrap();
+        assert_eq!(preview.commit_hash.as_deref(), Some("abcdef1234567890"));
+        assert_eq!(preview.branch.as_deref(), Some("main"));
+        assert!(preview.affected_files.is_empty());
+        assert!(preview.snapshot_timestamp.is_none());
+    }
 }
