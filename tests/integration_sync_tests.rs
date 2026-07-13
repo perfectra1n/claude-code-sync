@@ -494,8 +494,10 @@ fn test_conflict_handling() {
 {"type":"assistant","uuid":"2","sessionId":"shared-session-123","timestamp":"2025-01-01T00:01:00Z"}
 "#;
 
-    let m1_file = m1_projects.join("test").join("conversation.jsonl");
-    let m2_file = m2_projects.join("test").join("conversation.jsonl");
+    // Claude Code names each transcript file after its session id; mirror that so
+    // the (filename-derived) session identity matches across machines.
+    let m1_file = m1_projects.join("test").join(format!("{session_id}.jsonl"));
+    let m2_file = m2_projects.join("test").join(format!("{session_id}.jsonl"));
 
     fs::create_dir_all(m1_file.parent().unwrap()).unwrap();
     fs::create_dir_all(m2_file.parent().unwrap()).unwrap();
@@ -512,7 +514,7 @@ fn test_conflict_handling() {
     fs::write(&m1_file, &m1_modified).unwrap();
 
     let m1_session = ConversationSession::from_file(&m1_file).unwrap();
-    let sync_file = sync_projects.join("test").join("conversation.jsonl");
+    let sync_file = sync_projects.join("test").join(format!("{session_id}.jsonl"));
     fs::create_dir_all(sync_file.parent().unwrap()).unwrap();
     m1_session.write_to_file(&sync_file).unwrap();
 

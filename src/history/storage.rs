@@ -14,13 +14,22 @@ const MAX_HISTORY_SIZE: usize = 5;
 pub struct OperationHistory {
     /// List of operation records, most recent first
     pub operations: Vec<OperationRecord>,
+
+    /// The file this history is bound to. `None` means the default (global)
+    /// location. When a history is loaded via `from_path(Some(p))`, it remembers
+    /// `p` so that a later `save()`/`add_operation()` writes back to the SAME file
+    /// rather than the global one — without this, code (and tests) that load from a
+    /// custom path would silently persist to the real user config.
+    #[serde(skip)]
+    path: Option<PathBuf>,
 }
 
 impl OperationHistory {
-    /// Create a new empty operation history
+    /// Create a new empty operation history bound to the default location.
     fn new() -> Self {
         Self {
             operations: Vec::new(),
+            path: None,
         }
     }
 
@@ -35,13 +44,18 @@ impl OperationHistory {
     /// # Arguments
     /// * `path` - Optional custom path to load from. If None, uses default location.
     pub fn from_path(path: Option<PathBuf>) -> Result<Self> {
+        // Remember the caller's intent so save() targets the same file.
+        let bound_path = path.clone();
+
         let file_path = match path {
             Some(p) => p,
             None => Self::history_file_path()?,
         };
 
         if !file_path.exists() {
-            return Ok(Self::new());
+            let mut history = Self::new();
+            history.path = bound_path;
+            return Ok(history);
         }
 
         let content = fs::read_to_string(&file_path).with_context(|| {
@@ -51,12 +65,13 @@ impl OperationHistory {
             )
         })?;
 
-        let history: OperationHistory = serde_json::from_str(&content).with_context(|| {
+        let mut history: OperationHistory = serde_json::from_str(&content).with_context(|| {
             format!(
                 "Failed to parse operation history JSON from: {}",
                 file_path.display()
             )
         })?;
+        history.path = bound_path;
 
         Ok(history)
     }
@@ -97,9 +112,10 @@ impl OperationHistory {
         Ok(())
     }
 
-    /// Save operation history to disk using default location
+    /// Save operation history to disk. Targets the file this history is bound to
+    /// (see `from_path`); falls back to the default location when unbound.
     pub fn save(&self) -> Result<()> {
-        self.save_to(None)
+        self.save_to(self.path.clone())
     }
 
     /// Add a new operation record to history
@@ -213,6 +229,14 @@ mod tests {
     /// Helper to create a temporary history file path
     fn setup_test_env() -> (TempDir, PathBuf) {
         let temp_dir = TempDir::new().unwrap();
+        // Redirect the config dir at the temp dir so that any history operation
+        // resolving the *default* path (clear/save/add_operation on a history that
+        // isn't bound to an explicit path) stays isolated and never touches the real
+        // ~/Library/Application Support/claude-code-sync/operation-history.json.
+        // Every test in this module calls this first, so the override is always set
+        // to some temp dir before any global-path write. Run the suite single-
+        // threaded (see CONTRIBUTING) to avoid the process-global env racing.
+        std::env::set_var("CLAUDE_CODE_SYNC_CONFIG_DIR", temp_dir.path());
         let history_path = temp_dir.path().join("operation-history.json");
         (temp_dir, history_path)
     }
@@ -229,15 +253,14 @@ mod tests {
     fn test_operation_history_add_operation() {
         let (_temp_dir, path) = setup_test_env();
 
-        let mut history = OperationHistory::new();
+        // Bind the history to the temp path so add_operation -> save() persists
+        // there instead of the real default location.
+        let mut history = OperationHistory::from_path(Some(path.clone())).unwrap();
 
         let record = OperationRecord::new(OperationType::Push, Some("main".to_string()), vec![]);
 
-        // Add operation and save
+        // Add operation (persists to the bound temp path)
         history.add_operation(record).unwrap();
-
-        // Save to test path
-        history.save_to(Some(path.clone())).unwrap();
 
         // Load and verify
         let loaded = OperationHistory::from_path(Some(path)).unwrap();

@@ -120,7 +120,7 @@ impl ConversationSession {
 
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
-        let mut session_id = None;
+        let mut entry_session_id = None;
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line.with_context(|| {
@@ -139,23 +139,28 @@ impl ConversationSession {
                 )
             })?;
 
-            // Extract session ID from first entry that has one
-            if session_id.is_none() {
+            // Remember the first interior sessionId, used only as a fallback below.
+            if entry_session_id.is_none() {
                 if let Some(ref sid) = entry.session_id {
-                    session_id = Some(sid.clone());
+                    entry_session_id = Some(sid.clone());
                 }
             }
 
             entries.push(entry);
         }
 
-        // If no session ID in entries, use filename (without extension) as session ID
-        let session_id = session_id
-            .or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string())
-            })
+        // Identity is the filename stem, which Claude Code guarantees is unique per
+        // transcript: `<uuid>.jsonl` for a session and `agent-<hash>.jsonl` for each
+        // of its subagents. The interior `sessionId` field is NOT unique — subagent
+        // sidechain transcripts carry their *parent* session's id, so keying identity
+        // on it collapses every subagent onto the parent and makes sync drop the
+        // parent's main transcript. Fall back to the interior id only if the path has
+        // no usable stem.
+        let session_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .or(entry_session_id)
             .with_context(|| {
                 format!(
                     "No session ID found in file or filename: {}",
@@ -237,7 +242,6 @@ impl ConversationSession {
 mod tests {
     use super::*;
     use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn test_parse_conversation_entry() {
@@ -250,20 +254,28 @@ mod tests {
 
     #[test]
     fn test_read_write_session() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, r#"{{"type":"user","sessionId":"test-123","uuid":"1","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
-        writeln!(temp_file, r#"{{"type":"assistant","sessionId":"test-123","uuid":"2","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        use std::fs::File;
+        use tempfile::TempDir;
 
-        let session = ConversationSession::from_file(temp_file.path()).unwrap();
+        // Identity comes from the filename stem, so use a controlled filename.
+        let temp_dir = TempDir::new().unwrap();
+        let session_path = temp_dir.path().join("test-123.jsonl");
+        let mut file = File::create(&session_path).unwrap();
+        writeln!(file, r#"{{"type":"user","sessionId":"test-123","uuid":"1","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"assistant","sessionId":"test-123","uuid":"2","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
+        drop(file);
+
+        let session = ConversationSession::from_file(&session_path).unwrap();
         assert_eq!(session.session_id, "test-123");
         assert_eq!(session.entries.len(), 2);
         assert_eq!(session.message_count(), 2);
 
-        // Test write
-        let output_temp = NamedTempFile::new().unwrap();
-        session.write_to_file(output_temp.path()).unwrap();
+        // Round-trip: writing then re-reading the same path preserves content and id.
+        let output_dir = TempDir::new().unwrap();
+        let output_path = output_dir.path().join("test-123.jsonl");
+        session.write_to_file(&output_path).unwrap();
 
-        let reloaded = ConversationSession::from_file(output_temp.path()).unwrap();
+        let reloaded = ConversationSession::from_file(&output_path).unwrap();
         assert_eq!(reloaded.session_id, session.session_id);
         assert_eq!(reloaded.entries.len(), session.entries.len());
     }
@@ -291,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_id_from_entry_preferred() {
+    fn test_session_id_from_filename_preferred() {
         use std::fs::File;
         use std::io::Write;
         use tempfile::TempDir;
@@ -299,13 +311,34 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let session_file = temp_dir.path().join("filename-uuid.jsonl");
 
-        // Create file with sessionId in entries
+        // Create file with a (different) sessionId in entries
         let mut file = File::create(&session_file).unwrap();
         writeln!(file, r#"{{"type":"user","sessionId":"entry-uuid","uuid":"1","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
 
-        // Should prefer sessionId from entry over filename
+        // Identity must come from the filename, not the interior sessionId.
         let session = ConversationSession::from_file(&session_file).unwrap();
-        assert_eq!(session.session_id, "entry-uuid");
+        assert_eq!(session.session_id, "filename-uuid");
+    }
+
+    #[test]
+    fn test_subagent_does_not_inherit_parent_session_id() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        // Regression: Claude Code subagent transcripts are named `agent-<hash>.jsonl`
+        // but every entry carries the *parent* session's id with isSidechain=true.
+        // Keying on the interior id collapsed all subagents onto the parent and made
+        // sync drop the parent's main transcript. Identity must be the filename stem.
+        let temp_dir = TempDir::new().unwrap();
+        let subagent_file = temp_dir.path().join("agent-a16263cbf10e1ad0b.jsonl");
+
+        let mut file = File::create(&subagent_file).unwrap();
+        writeln!(file, r#"{{"type":"user","sessionId":"56d02190-2a2d-4a55-9ec1-38e34fb25e84","isSidechain":true,"uuid":"1","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
+
+        let session = ConversationSession::from_file(&subagent_file).unwrap();
+        assert_eq!(session.session_id, "agent-a16263cbf10e1ad0b");
+        assert_ne!(session.session_id, "56d02190-2a2d-4a55-9ec1-38e34fb25e84");
     }
 
     #[test]
@@ -322,9 +355,9 @@ mod tests {
         writeln!(file, r#"{{"type":"file-history-snapshot","messageId":"abc","timestamp":"2025-01-01T00:00:00Z"}}"#).unwrap();
         writeln!(file, r#"{{"type":"user","sessionId":"test-123","uuid":"1","timestamp":"2025-01-01T00:01:00Z"}}"#).unwrap();
 
-        // Should use sessionId from the entry that has it
+        // Identity comes from the filename stem regardless of interior ids.
         let session = ConversationSession::from_file(&session_file).unwrap();
-        assert_eq!(session.session_id, "test-123");
+        assert_eq!(session.session_id, "test-session");
         assert_eq!(session.entries.len(), 2);
     }
 

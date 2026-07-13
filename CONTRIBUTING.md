@@ -192,6 +192,17 @@ pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
 
 ### Testing
 
+> **Run the test suite single-threaded:**
+> ```bash
+> cargo test -- --test-threads=1
+> ```
+> Tests share a process-global configuration directory (resolved by
+> `ConfigManager`, overridable via the `CLAUDE_CODE_SYNC_CONFIG_DIR` environment
+> variable). Running them in parallel would race on that shared location. The CI
+> workflows already pass `--test-threads=1`. On macOS in particular, a parallel
+> run could otherwise fall back to and clobber your real
+> `~/Library/Application Support/claude-code-sync` directory.
+
 All new code should include tests:
 
 1. **Unit Tests**: Test individual functions
