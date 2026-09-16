@@ -399,3 +399,149 @@ fn rules_sync_like_any_other_curated_directory() {
         "# go rules\n"
     );
 }
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path).unwrap().permissions().mode() & 0o111 != 0
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    write(path, contents);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// settings.json names hook scripts by path, so the scripts have to travel
+/// with it -- and a hook that arrives without its executable bit is a hook
+/// Claude Code cannot run.
+#[cfg(unix)]
+#[test]
+fn a_hook_arrives_on_the_other_machine_ready_to_run() {
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let script = "#!/bin/bash\nexit 0\n";
+    write_executable(&machine_a.path().join("hooks/rule-check.sh"), script);
+
+    push_artifacts(machine_a.path(), repo.path(), &all_on_filter()).unwrap();
+    let stored = repo.path().join("artifacts/hooks/rule-check.sh");
+    assert!(
+        is_executable(&stored),
+        "the repo copy carries the bit, so git records mode 100755"
+    );
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
+    apply_pull(&plan, false).unwrap();
+
+    let landed = machine_b.path().join("hooks/rule-check.sh");
+    assert_eq!(fs::read_to_string(&landed).unwrap(), script);
+    assert!(is_executable(&landed));
+}
+
+/// Only the executable bit travels. A pull must never hand out read rights the
+/// local file did not give away: prompt history, plans and settings are private
+/// files on a shared machine.
+#[cfg(unix)]
+#[test]
+fn a_pull_does_not_widen_a_private_local_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    write(&machine_a.path().join("plans/plan.md"), "from A\n");
+    write(&machine_b.path().join("plans/plan.md"), "from B\n");
+    let private = machine_b.path().join("plans/plan.md");
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).unwrap();
+
+    push_artifacts(machine_a.path(), repo.path(), &all_on_filter()).unwrap();
+    let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
+    apply_pull(&plan, false).unwrap();
+
+    assert_eq!(fs::read_to_string(&private).unwrap(), "from A\n");
+    assert_eq!(
+        fs::metadata(&private).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "the repo's checkout mode must not replace the local file's"
+    );
+    assert!(!is_executable(&private));
+}
+
+/// Every repository written before the bit was synced holds its files
+/// non-executable, so a pull from one must leave this machine's scripts alone
+/// rather than disarm them — and `sync` pulls before it pushes.
+#[cfg(unix)]
+#[test]
+fn a_pull_does_not_disarm_a_local_script() {
+    let repo = TempDir::new().unwrap();
+    let claude = TempDir::new().unwrap();
+    let script = "#!/bin/bash\nexit 0\n";
+    write_executable(&claude.path().join("hooks/rule-check.sh"), script);
+    // What an older version left in the repo: same bytes, no executable bit.
+    write(&repo.path().join("artifacts/hooks/rule-check.sh"), script);
+
+    let plan = plan_pull(claude.path(), repo.path(), &all_on_filter()).unwrap();
+    apply_pull(&plan, false).unwrap();
+
+    assert!(is_executable(&claude.path().join("hooks/rule-check.sh")));
+}
+
+/// A `chmod +x` changes no bytes, so content comparison alone would leave the
+/// other machine running a script it cannot execute.
+#[cfg(unix)]
+#[test]
+fn making_a_hook_executable_reaches_the_other_machine_on_its_own() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let hook = machine_a.path().join("hooks/late.sh");
+    write(&hook, "#!/bin/bash\n");
+
+    sync_both_ways(machine_a.path(), repo.path(), &all_on_filter());
+    let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
+    apply_pull(&plan, false).unwrap();
+    let landed = machine_b.path().join("hooks/late.sh");
+    assert!(!is_executable(&landed), "not a script yet");
+
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    push_artifacts(machine_a.path(), repo.path(), &all_on_filter()).unwrap();
+    assert!(
+        is_executable(&repo.path().join("artifacts/hooks/late.sh")),
+        "the bit alone is enough to update the repo copy"
+    );
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
+    assert!(!plan.is_empty(), "a mode-only difference is still a change");
+    apply_pull(&plan, false).unwrap();
+
+    assert!(is_executable(&landed));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hook_deleted_here_is_gone_on_the_other_machine_too() {
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let hook = machine_a.path().join("hooks/stale.sh");
+    write_executable(&hook, "#!/bin/bash\n");
+
+    sync_both_ways(machine_a.path(), repo.path(), &all_on_filter());
+    let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
+    apply_pull(&plan, false).unwrap();
+    assert!(machine_b.path().join("hooks/stale.sh").is_file());
+
+    fs::remove_file(&hook).unwrap();
+    push_artifacts(machine_a.path(), repo.path(), &all_on_filter()).unwrap();
+    let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
+    apply_pull(&plan, false).unwrap();
+
+    assert!(!repo.path().join("artifacts/hooks/stale.sh").exists());
+    assert!(!machine_b.path().join("hooks/stale.sh").exists());
+}

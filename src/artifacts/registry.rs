@@ -14,6 +14,7 @@ pub enum CategoryId {
     Agents,
     Commands,
     Rules,
+    Hooks,
     Plugins,
     Plans,
     Todos,
@@ -163,6 +164,18 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         description: "Shared rule files projects import from ~/.claude/rules",
     },
     CategoryDescriptor {
+        id: CategoryId::Hooks,
+        name: "hooks",
+        repo_subdir: "hooks",
+        source: SourceSpec::Dir("hooks"),
+        merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: true,
+        description: "Hook scripts settings.json points at (they run automatically)",
+    },
+    CategoryDescriptor {
         id: CategoryId::Plugins,
         name: "plugins",
         repo_subdir: "plugins",
@@ -245,6 +258,8 @@ pub struct ArtifactToggles {
     #[serde(default)]
     pub rules: bool,
     #[serde(default)]
+    pub hooks: bool,
+    #[serde(default)]
     pub plugins: bool,
     #[serde(default)]
     pub plans: bool,
@@ -265,6 +280,7 @@ impl ArtifactToggles {
             agents: true,
             commands: true,
             rules: true,
+            hooks: true,
             plugins: true,
             plans: true,
             todos: true,
@@ -286,6 +302,7 @@ impl ArtifactToggles {
             CategoryId::Agents => self.agents,
             CategoryId::Commands => self.commands,
             CategoryId::Rules => self.rules,
+            CategoryId::Hooks => self.hooks,
             CategoryId::Plugins => self.plugins,
             CategoryId::Plans => self.plans,
             CategoryId::Todos => self.todos,
@@ -305,6 +322,7 @@ impl ArtifactToggles {
             CategoryId::Agents => self.agents = value,
             CategoryId::Commands => self.commands = value,
             CategoryId::Rules => self.rules = value,
+            CategoryId::Hooks => self.hooks = value,
             CategoryId::Plugins => self.plugins = value,
             CategoryId::Plans => self.plans = value,
             CategoryId::Todos => self.todos = value,
@@ -342,10 +360,10 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn test_registry_has_all_eleven_categories() {
-        assert_eq!(REGISTRY.len(), 11);
+    fn test_registry_has_all_twelve_categories() {
+        assert_eq!(REGISTRY.len(), 12);
         let ids: HashSet<_> = REGISTRY.iter().map(|d| d.id).collect();
-        assert_eq!(ids.len(), 11, "every category appears exactly once");
+        assert_eq!(ids.len(), 12, "every category appears exactly once");
     }
 
     #[test]
@@ -408,7 +426,7 @@ mod tests {
             .collect();
         assert_eq!(
             mirrored,
-            HashSet::from(["skills", "agents", "commands", "rules"])
+            HashSet::from(["skills", "agents", "commands", "rules", "hooks"])
         );
         for d in REGISTRY.iter().filter(|d| d.mirror_deletes) {
             assert!(

@@ -216,17 +216,110 @@ fn collect(
 }
 
 /// Write `content` to `path` via a same-directory temp file + atomic rename,
-/// so a reader (or a crash) never sees a half-written file.
-fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
+/// so a reader (or a crash) never sees a half-written file. `mode_source` is
+/// the file whose executable bit the result adopts.
+#[cfg_attr(not(unix), allow(unused_variables))]
+fn write_atomic(path: &Path, content: &[u8], mode_source: &Path) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("No parent directory for {}", path.display()))?;
     fs::create_dir_all(parent)?;
     let tmp = tempfile::NamedTempFile::new_in(parent)?;
     fs::write(tmp.path(), content)?;
+    #[cfg(unix)]
+    {
+        if let Some(mode) = get_mode_for_copy(path, mode_source) {
+            set_mode(tmp.path(), mode);
+        }
+    }
     tmp.persist(path)
         .with_context(|| format!("Failed to persist {}", path.display()))?;
     Ok(())
+}
+
+/// The mode a copy of `mode_source` should have at `destination`: what the
+/// destination already has, plus the owner's executable bit when the source is
+/// executable. Granting only: a repository written before this bit was synced
+/// holds every file non-executable, and a pull from it must not disarm the
+/// scripts on this machine.
+#[cfg(unix)]
+fn get_mode_for_copy(destination: &Path, mode_source: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let source_mode = fs::metadata(mode_source).ok()?.permissions().mode();
+    let base = match fs::metadata(destination) {
+        Ok(existing) => existing.permissions().mode() & 0o777,
+        Err(_) => 0o600,
+    };
+    if source_mode & 0o111 == 0 {
+        return Some(base);
+    }
+    Some(base | 0o100)
+}
+
+/// Apply `mode` and report whether the file actually carries it afterwards. A
+/// filesystem without permission bits (exFAT, some CIFS mounts) either refuses
+/// the call or ignores it; either way the sync continues and the file counts as
+/// unchanged, instead of being offered again on every run.
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(mode)) {
+        log::warn!("Could not set permissions on {}: {error}", path.display());
+        return false;
+    }
+    let applied = fs::metadata(path).map(|m| m.permissions().mode() & 0o777);
+    applied.is_ok_and(|applied| applied == mode)
+}
+
+/// Whether `path` is missing an executable bit that `mode_source` has. Content
+/// comparison alone never notices a `chmod +x`, which would leave the bit stuck
+/// at whatever it was when the file was first copied.
+#[cfg(unix)]
+fn executable_bit_differs(path: &Path, mode_source: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    if is_symlink(path) {
+        return false;
+    }
+    let Some(wanted) = get_mode_for_copy(path, mode_source) else {
+        return false;
+    };
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    metadata.permissions().mode() & 0o777 != wanted
+}
+
+#[cfg(not(unix))]
+fn executable_bit_differs(_path: &Path, _mode_source: &Path) -> bool {
+    false
+}
+
+/// A chmod follows symlinks, so it would reach a file outside `~/.claude` that
+/// a write never touches: `write_atomic` replaces the link itself.
+#[cfg(unix)]
+fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+}
+
+/// Bring `path`'s executable bit in line with `mode_source`, reporting whether
+/// the file changed.
+#[cfg(unix)]
+fn align_executable_bit(path: &Path, mode_source: &Path) -> bool {
+    if !executable_bit_differs(path, mode_source) {
+        return false;
+    }
+    let Some(mode) = get_mode_for_copy(path, mode_source) else {
+        return false;
+    };
+    set_mode(path, mode)
+}
+
+#[cfg(not(unix))]
+fn align_executable_bit(_path: &Path, _mode_source: &Path) -> bool {
+    false
 }
 
 /// Copy every enabled artifact category into `<repo_root>/artifacts/`,
@@ -266,10 +359,10 @@ pub fn push_artifacts(
                     let (merged, new_lines) = merge_history_lines(&repo_text, &local_text);
                     counts.merged_entries += new_lines;
                     if !existed {
-                        write_atomic(&dest, merged.as_bytes())?;
+                        write_atomic(&dest, merged.as_bytes(), &file.abs)?;
                         counts.added += 1;
                     } else if merged != repo_text {
-                        write_atomic(&dest, merged.as_bytes())?;
+                        write_atomic(&dest, merged.as_bytes(), &file.abs)?;
                         counts.modified += 1;
                     } else {
                         counts.unchanged += 1;
@@ -295,13 +388,18 @@ pub fn push_artifacts(
                     }
 
                     if !existed {
-                        write_atomic(&dest, &src_bytes)?;
+                        write_atomic(&dest, &src_bytes, &file.abs)?;
                         counts.added += 1;
                     } else if fs::read(&dest)? != src_bytes {
-                        write_atomic(&dest, &src_bytes)?;
+                        write_atomic(&dest, &src_bytes, &file.abs)?;
                         counts.modified += 1;
                     } else {
-                        counts.unchanged += 1;
+                        let realigned = align_executable_bit(&dest, &file.abs);
+                        if realigned {
+                            counts.modified += 1;
+                        } else {
+                            counts.unchanged += 1;
+                        }
                     }
                 }
             }
@@ -428,6 +526,9 @@ pub struct PullPlan {
     pub creates: Vec<PlannedWrite>,
     /// Union-merge targets whose local file would gain lines.
     pub unions: Vec<PlannedWrite>,
+    /// Local files whose content already matches but whose executable bit does
+    /// not: a `chmod +x` elsewhere, with nothing to rewrite.
+    pub mode_fixes: Vec<PlannedWrite>,
     /// Local files this machine synced before that the repo no longer has.
     pub deletes: Vec<PlannedDelete>,
     pub unchanged: usize,
@@ -463,6 +564,7 @@ impl PullPlan {
         self.overwrites.is_empty()
             && self.creates.is_empty()
             && self.unions.is_empty()
+            && self.mode_fixes.is_empty()
             && self.deletes.is_empty()
     }
 
@@ -674,7 +776,13 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                     {
                         plan.overwrites.push(write);
                     } else {
-                        plan.unchanged += 1;
+                        let missing_executable_bit =
+                            executable_bit_differs(&local_path, &repo_path);
+                        if missing_executable_bit {
+                            plan.mode_fixes.push(write);
+                        } else {
+                            plan.unchanged += 1;
+                        }
                     }
                 }
             }
@@ -749,7 +857,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
 
     for write in &plan.creates {
         let bytes = machine_bytes(descriptor(write.category), &plan.tokens, &write.repo_path)?;
-        write_atomic(&write.local_path, &bytes)?;
+        write_atomic(&write.local_path, &bytes, &write.repo_path)?;
         counts_for(&mut by_category, write.category).added += 1;
     }
 
@@ -767,7 +875,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         } else {
             bytes
         };
-        write_atomic(&write.local_path, &bytes)?;
+        write_atomic(&write.local_path, &bytes, &write.repo_path)?;
         counts_for(&mut by_category, write.category).modified += 1;
     }
 
@@ -785,10 +893,21 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 (text.into_bytes(), lines)
             }
         };
-        write_atomic(&write.local_path, &merged)?;
+        write_atomic(&write.local_path, &merged, &write.repo_path)?;
         let counts = counts_for(&mut by_category, write.category);
         counts.modified += 1;
         counts.merged_entries += new_entries;
+    }
+
+    for write in &plan.mode_fixes {
+        if prompt_overwrites && !confirm_executable(&write.local_path) {
+            counts_for(&mut by_category, write.category).skipped += 1;
+            continue;
+        }
+        let realigned = align_executable_bit(&write.local_path, &write.repo_path);
+        if realigned {
+            counts_for(&mut by_category, write.category).modified += 1;
+        }
     }
 
     for delete in &plan.deletes {
@@ -814,6 +933,21 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
     let mut counts: Vec<CategoryCounts> = by_category.into_values().collect();
     counts.sort_by_key(|c| c.category as usize);
     Ok(ArtifactReport { counts })
+}
+
+/// Ask before making a local file runnable, since a hook runs on its own.
+fn confirm_executable(local_path: &Path) -> bool {
+    let file_name = local_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| local_path.display().to_string());
+    inquire::Confirm::new(&format!(
+        "'{file_name}' is executable on another machine. Make it executable here too?"
+    ))
+    .with_default(true)
+    .with_help_message("Declining leaves the file as it is")
+    .prompt()
+    .unwrap_or(false)
 }
 
 /// Ask before removing a local file the sync repo no longer has.

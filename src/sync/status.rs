@@ -78,6 +78,7 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
                 .iter()
                 .chain(plan.creates.iter())
                 .chain(plan.unions.iter())
+                .chain(plan.mode_fixes.iter())
                 .filter(|w| w.category == desc.id)
                 .count();
             if differing == 0 {

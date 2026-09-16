@@ -23,10 +23,10 @@ cargo doc --open --no-deps --all-features
 | Feature | Description |
 |---------|-------------|
 | **Smart Merge** | Automatically combines non-conflicting conversation changes |
-| **Artifact Sync** | Carry settings, skills, agents, commands, rules, plugin manifests, plans, todos, and prompt history across machines |
+| **Artifact Sync** | Carry settings, skills, agents, commands, rules, hooks, plugin manifests, plans, todos, and prompt history across machines |
 | **Project Map** | Pin a project to its path per machine, so renamed or relocated checkouts stay one project |
 | **Neutral Paths** | Synced config files store `__HOME__` / `__CLAUDE_DIR__` instead of this machine's absolute paths |
-| **Deletion Mirroring** | Deleting a skill, agent, command or rule propagates, guarded so a fresh machine can never wipe the repo |
+| **Deletion Mirroring** | Deleting a skill, agent, command, rule or hook propagates, guarded so a fresh machine can never wipe the repo |
 | **External Merge Tool** | Resolve a differing file in a real three-way merge window instead of picking a side |
 | **Transcript Retention** | `purge` old conversations from the machine and the repo together, never sooner than Claude Code would |
 | **Secrets Guard** | Hardcoded never-sync denylist plus a managed ignore block in the sync repo |
@@ -78,6 +78,7 @@ carries the rest of `~/.claude` across machines, per category:
 | `agents` | `~/.claude/agents/` | Custom subagent definitions |
 | `commands` | `~/.claude/commands/` | Custom slash commands |
 | `rules` | `~/.claude/rules/` | Shared rule files projects import |
+| `hooks` | `~/.claude/hooks/` | The scripts `settings.json` points at; they arrive executable |
 | `plugins` | `installed_plugins.json`, `known_marketplaces.json` | Only the manifests — plugin caches never sync |
 | `plans` | `~/.claude/plans/` | Plan-mode documents (may contain sensitive prose) |
 | `todos` | `~/.claude/todos/` | Session task lists (churny; consider leaving off) |
@@ -98,6 +99,26 @@ claude-code-sync config --enable-artifacts settings,skills,agents,commands,plugi
 claude-code-sync config --disable-artifacts todos
 ```
 
+A category added after a config was written stays off until it is named, so an
+existing setup picks up hooks with
+`claude-code-sync config --enable-artifacts hooks`.
+
+Of a file's permissions only the executable bit travels — it is the one git
+records — and it travels on its own: a `chmod +x` with no content change is
+still a change to sync. It is only ever granted, never taken away, so a
+repository written before this existed cannot disarm a script here, and a
+`chmod -x` has to be repeated per machine. Nothing else about a mode is copied:
+a pull never widens a local file, and a file a pull creates starts private.
+Carrying the bit at all depends on `core.fileMode` being true in the sync
+repository, which is git's default everywhere except Windows checkouts.
+
+**Hooks are executed code.** Unlike skills and rules, which are text the model
+reads, everything under `~/.claude/hooks/` runs automatically, and the
+`settings.json` that registers a hook syncs alongside it. An interactive pull
+confirms making a file executable, but a file the repository adds is still
+written without a prompt, so enable this category only for a repository you
+control.
+
 ### What is NEVER synced
 
 A hardcoded denylist is enforced on every copy, in both directions, and cannot
@@ -117,7 +138,7 @@ block in the repo's `.gitignore` (or `.hgignore`) as defense in depth.
   projects/               # conversation transcripts + attachments
   artifacts/
     settings/  memory/  skills/  agents/  commands/  rules/
-    plugins/   plans/   todos/   prompt-history/
+    hooks/     plugins/ plans/   todos/   prompt-history/
 ```
 
 ### Conflict policy and undo
@@ -181,7 +202,7 @@ Each machine records which artifact paths it last synced (in
 `~/.claude/.claude-code-sync-tracked.json`, per sync repo, never itself synced).
 A file that machine received before and no longer has is a deletion: push
 removes it from the repo, pull removes it locally. This applies to the curated
-directories only — `skills`, `agents`, `commands`, `rules` — never to
+directories only — `skills`, `agents`, `commands`, `rules`, `hooks` — never to
 transcripts, attachments, plans, todos or prompt history.
 
 Three guards keep it from destroying anything:
@@ -887,6 +908,7 @@ skills = true
 agents = true
 commands = true
 rules = true
+hooks = true
 plugins = true
 plans = false
 todos = false
