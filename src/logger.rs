@@ -2,8 +2,23 @@ use anyhow::{Context, Result};
 use log::LevelFilter;
 use std::fs::OpenOptions;
 use std::io::Write;
+use time::format_description::BorrowedFormatItem;
+use time::macros::format_description;
+use time::OffsetDateTime;
 
 use crate::config::ConfigManager;
+
+/// Wall-clock time for a log line.
+///
+/// Local time is read from the system, falling back to UTC when the offset
+/// cannot be determined safely (a process with several threads on Unix). It is
+/// deliberately not `chrono::Local`, whose macOS implementation links
+/// CoreFoundation and so cannot be cross-compiled for Apple targets — see
+/// bin/release.sh.
+fn now_local_formatted(format: &[BorrowedFormatItem<'_>]) -> String {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    now.format(format).unwrap_or_default()
+}
 
 /// Initialize the logging system
 ///
@@ -50,7 +65,7 @@ pub fn init_logger() -> Result<()> {
             writeln!(
                 buf,
                 "{} [{:5}] {}",
-                chrono::Local::now().format("%H:%M:%S"),
+                now_local_formatted(format_description!("[hour]:[minute]:[second]")),
                 record.level(),
                 record.args()
             )
@@ -79,7 +94,9 @@ pub fn log_to_file(message: &str) -> Result<()> {
     writeln!(
         file,
         "[{}] {}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        now_local_formatted(format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second]"
+        )),
         message
     )?;
 

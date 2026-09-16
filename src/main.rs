@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use claude_code_sync::handlers::{
     handle_cleanup_snapshots, handle_config_export, handle_config_interactive,
     handle_config_wizard, handle_history_clear, handle_history_last, handle_history_list,
-    handle_history_review, handle_repo_selector, handle_undo_pull, handle_undo_push,
+    handle_history_review, handle_purge, handle_repo_selector, handle_undo_pull, handle_undo_push,
     is_initialized, run_init_from_config, run_onboarding_flow, try_init_from_config,
+    validate_older_than,
 };
 use claude_code_sync::{config, filter, logger, report, scm, sync, VerbosityLevel};
 
@@ -137,6 +138,22 @@ enum Commands {
         show_files: bool,
     },
 
+    /// Delete transcripts past the retention window, here and in the sync repo
+    Purge {
+        /// Retention window in days (default: the longer of 180 and this
+        /// machine's Claude Code cleanupPeriodDays)
+        #[arg(long, value_name = "DAYS")]
+        older_than: Option<u32>,
+
+        /// Show what would be deleted and stop
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Delete without asking (required outside a terminal)
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
     /// Configure sync settings
     Config {
         /// Exclude projects older than N days
@@ -183,6 +200,30 @@ enum Commands {
         /// Disable artifact categories (comma-separated names or "all")
         #[arg(long)]
         disable_artifacts: Option<String>,
+
+        /// Map a project to this machine's path, as id=/absolute/path
+        /// (repeatable). A mapped project syncs under its id, so it stays one
+        /// project across machines that keep it elsewhere.
+        #[arg(long, value_name = "ID=PATH")]
+        map_project: Vec<String>,
+
+        /// Remove a project mapping by id (repeatable)
+        #[arg(long, value_name = "ID")]
+        unmap_project: Vec<String>,
+
+        /// External three-way merge command offered when a file differs,
+        /// e.g. "phpstorm merge". Pass an empty string to clear it.
+        #[arg(long)]
+        merge_tool: Option<String>,
+
+        /// Retention window for `purge`, in days (default: the longer of 180
+        /// and this machine's Claude Code cleanupPeriodDays)
+        #[arg(long, value_name = "DAYS")]
+        purge_older_than: Option<u32>,
+
+        /// Purge as part of every sync, between the pull and the push
+        #[arg(long)]
+        purge_after_sync: Option<bool>,
 
         /// Show current configuration
         #[arg(long)]
@@ -541,6 +582,14 @@ fn main() -> Result<()> {
         } => {
             sync::show_status(show_conflicts, show_files)?;
         }
+        Commands::Purge {
+            older_than,
+            dry_run,
+            yes,
+        } => {
+            validate_older_than(older_than)?;
+            handle_purge(older_than, dry_run, yes)?;
+        }
         Commands::Config {
             exclude_older_than,
             include_projects,
@@ -553,13 +602,17 @@ fn main() -> Result<()> {
             use_project_name_only,
             enable_artifacts,
             disable_artifacts,
+            map_project,
+            unmap_project,
+            merge_tool,
+            purge_older_than,
+            purge_after_sync,
             show,
             interactive,
             wizard,
             export,
         } => {
-            // Check if ANY flag was provided
-            let has_any_flag = exclude_older_than.is_some()
+            let has_filter_flag = exclude_older_than.is_some()
                 || include_projects.is_some()
                 || exclude_projects.is_some()
                 || exclude_attachments.is_some()
@@ -569,7 +622,15 @@ fn main() -> Result<()> {
                 || sync_subdirectory.is_some()
                 || use_project_name_only.is_some()
                 || enable_artifacts.is_some()
-                || disable_artifacts.is_some()
+                || disable_artifacts.is_some();
+
+            // Check if ANY flag was provided
+            let has_any_flag = has_filter_flag
+                || !map_project.is_empty()
+                || !unmap_project.is_empty()
+                || merge_tool.is_some()
+                || purge_older_than.is_some()
+                || purge_after_sync.is_some()
                 || show
                 || interactive
                 || wizard
@@ -587,19 +648,32 @@ fn main() -> Result<()> {
             } else if show {
                 filter::show_config()?;
             } else {
-                filter::update_config(
-                    exclude_older_than,
-                    include_projects,
-                    exclude_projects,
-                    exclude_attachments,
-                    enable_lfs,
-                    lfs_patterns,
-                    scm_backend,
-                    sync_subdirectory,
-                    use_project_name_only,
-                    enable_artifacts,
-                    disable_artifacts,
-                )?;
+                // Each setting is applied on its own, so passing several in one
+                // invocation does not silently drop all but the first.
+                if !map_project.is_empty() || !unmap_project.is_empty() {
+                    filter::update_project_map(&map_project, &unmap_project)?;
+                }
+                if let Some(command) = merge_tool {
+                    filter::set_merge_tool(&command)?;
+                }
+                if purge_older_than.is_some() || purge_after_sync.is_some() {
+                    filter::configure_purge(purge_older_than, purge_after_sync)?;
+                }
+                if has_filter_flag {
+                    filter::update_config(
+                        exclude_older_than,
+                        include_projects,
+                        exclude_projects,
+                        exclude_attachments,
+                        enable_lfs,
+                        lfs_patterns,
+                        scm_backend,
+                        sync_subdirectory,
+                        use_project_name_only,
+                        enable_artifacts,
+                        disable_artifacts,
+                    )?;
+                }
             }
         }
         Commands::Report { format, output } => {

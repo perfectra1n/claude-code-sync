@@ -1,5 +1,5 @@
 //! Artifact sync: carries Claude Code state beyond conversation history
-//! (settings, skills, agents, commands, plugin manifests, plans, todos,
+//! (settings, skills, agents, commands, rules, plugin manifests, plans, todos,
 //! prompt history) between `~/.claude` and the sync repository.
 //!
 //! Sessions keep their dedicated pipeline in `crate::sync`; this module owns
@@ -8,5 +8,8 @@
 
 pub mod denylist;
 pub mod engine;
+pub mod memory_index;
 pub mod registry;
+pub mod tokens;
+pub mod tracked;
 pub mod union_jsonl;

@@ -170,6 +170,16 @@ pub fn undo_push(repo_path: &Path, history_path: Option<PathBuf>) -> Result<Stri
     repo.reset_soft(&target_commit)
         .context("Failed to reset repository to previous commit")?;
 
+    // The repository now holds less than this machine's record of what it
+    // synced, and the next pull would read the difference as deletions made
+    // elsewhere. Forgetting the record puts this machine where a fresh clone
+    // is: it deletes nothing and re-learns on the next sync.
+    if let Ok(claude_dir) = crate::sync::discovery::claude_home_dir() {
+        if let Err(e) = crate::artifacts::tracked::forget(&claude_dir, repo_path) {
+            log::warn!("Failed to reset the artifact sync record: {e}");
+        }
+    }
+
     // Step 3: Clean up legacy snapshot file if it exists
     if let Some(ref snapshot_path) = last_push.snapshot_path {
         if snapshot_path.exists() {

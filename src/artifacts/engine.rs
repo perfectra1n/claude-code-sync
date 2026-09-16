@@ -12,9 +12,12 @@ use crate::filter::FilterConfig;
 use crate::scm::Backend;
 
 use super::denylist::{is_denied, is_unsafe_rel_path};
+use super::memory_index::{is_memory_index, merge_memory_index};
 use super::registry::{
     CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR, REGISTRY,
 };
+use super::tokens::PathTokens;
+use super::tracked::{self, TrackedPaths};
 use super::union_jsonl::merge_history_lines;
 
 /// Whether one category participates for this configuration: toggles for the
@@ -73,6 +76,24 @@ pub struct CategoryCounts {
     /// New lines contributed by a union merge (prompt history).
     #[serde(default)]
     pub merged_entries: usize,
+    /// Files removed because this machine synced them before and no longer has
+    /// them (only for categories that mirror deletions).
+    #[serde(default)]
+    pub deleted: usize,
+}
+
+impl CategoryCounts {
+    fn new(category: CategoryId) -> Self {
+        CategoryCounts {
+            category,
+            added: 0,
+            modified: 0,
+            unchanged: 0,
+            skipped: 0,
+            merged_entries: 0,
+            deleted: 0,
+        }
+    }
 }
 
 /// Outcome of one artifact push or pull across all enabled categories.
@@ -90,6 +111,9 @@ impl ArtifactReport {
     }
     pub fn total_unchanged(&self) -> usize {
         self.counts.iter().map(|c| c.unchanged).sum()
+    }
+    pub fn total_deleted(&self) -> usize {
+        self.counts.iter().map(|c| c.deleted).sum()
     }
     /// True when nothing was copied, merged, or even inspected.
     #[allow(dead_code)] // used via the library target; the bin compiles this module separately
@@ -169,16 +193,16 @@ fn collect(
                     continue;
                 }
                 let mut rel = abs.strip_prefix(&base).unwrap_or(abs).to_path_buf();
-                // Attachments in name-only mode collapse the encoded project
-                // dir to the bare project name, mirroring session layout.
-                if desc.dest == DestRoot::SessionTree && filter.use_project_name_only {
+                // Attachments take the project's repo-side directory name,
+                // mirroring session layout.
+                if desc.dest == DestRoot::SessionTree {
                     let mut parts = rel.components();
                     let Some(encoded) = parts.next().and_then(|c| c.as_os_str().to_str()) else {
                         *skipped += 1;
                         continue;
                     };
-                    let project = crate::sync::discovery::extract_project_name(encoded);
-                    rel = Path::new(project).join(parts.as_path());
+                    let project = crate::project_map::repo_dir_name(filter, encoded);
+                    rel = Path::new(&project).join(parts.as_path());
                 }
                 files.push(CollectedFile {
                     abs: abs.to_path_buf(),
@@ -207,26 +231,25 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
 
 /// Copy every enabled artifact category into `<repo_root>/artifacts/`,
 /// classifying each file Added/Modified/Unchanged by byte comparison.
-/// Prompt history is union-merged into the repo copy instead of overwritten.
+/// Prompt history and memory indexes are union-merged into the repo copy
+/// instead of overwritten, config files are path-tokenized, and a file this
+/// machine previously synced and has since deleted is removed from the repo.
 pub fn push_artifacts(
     claude_dir: &Path,
     repo_root: &Path,
     filter: &FilterConfig,
 ) -> Result<ArtifactReport> {
     let mut report = ArtifactReport::default();
+    let tokens = PathTokens::for_claude_dir(claude_dir);
+    let tracked_before = tracked::load(claude_dir, repo_root);
+    let mut tracked_now = TrackedPaths::new();
 
     for desc in active_categories(filter) {
-        let mut counts = CategoryCounts {
-            category: desc.id,
-            added: 0,
-            modified: 0,
-            unchanged: 0,
-            skipped: 0,
-            merged_entries: 0,
-        };
+        let mut counts = CategoryCounts::new(desc.id);
 
         let files = collect(desc, claude_dir, filter, &mut counts.skipped)?;
         let category_root = category_repo_root(desc, repo_root, filter);
+        let mut pushed: TrackedPaths = TrackedPaths::new();
 
         for file in files {
             let dest = category_root.join(&file.rel);
@@ -252,11 +275,26 @@ pub fn push_artifacts(
                         counts.unchanged += 1;
                     }
                 }
-                MergeStrategy::RawOverwrite => {
-                    let src_bytes = fs::read(&file.abs).with_context(|| {
+                MergeStrategy::UnionMemoryIndex | MergeStrategy::RawOverwrite => {
+                    let read_bytes = fs::read(&file.abs).with_context(|| {
                         format!("Failed to read artifact {}", file.abs.display())
                     })?;
-                    if !dest.is_file() {
+                    let mut src_bytes = if desc.tokenize_paths {
+                        tokens.to_repo(&read_bytes)
+                    } else {
+                        read_bytes
+                    };
+                    let existed = dest.is_file();
+                    let unions_index =
+                        desc.merge == MergeStrategy::UnionMemoryIndex && is_memory_index(&file.rel);
+                    if existed && unions_index {
+                        let (merged, new_entries) =
+                            merge_memory_index(&fs::read(&dest)?, &src_bytes);
+                        counts.merged_entries += new_entries;
+                        src_bytes = merged;
+                    }
+
+                    if !existed {
                         write_atomic(&dest, &src_bytes)?;
                         counts.added += 1;
                     } else if fs::read(&dest)? != src_bytes {
@@ -267,12 +305,107 @@ pub fn push_artifacts(
                     }
                 }
             }
+
+            if let Some(rel) = repo_relative(repo_root, &dest) {
+                pushed.insert(rel);
+            }
+        }
+
+        if desc.mirror_deletes {
+            if source_is_present(desc, claude_dir) {
+                mark_category_synced(&category_root)?;
+                counts.deleted +=
+                    remove_from_repo(&tracked_before, &pushed, &category_root, repo_root)?;
+                tracked_now.extend(pushed);
+            } else {
+                // A category this machine does not have says nothing about
+                // what the others hold: leave the repo copy and the record.
+                log::info!(
+                    "Category {} is not present under {}; its repo copy is left untouched",
+                    desc.name,
+                    claude_dir.display()
+                );
+                tracked_now.extend(tracked_under(&tracked_before, &category_root, repo_root));
+            }
         }
 
         report.counts.push(counts);
     }
 
+    if active_categories(filter).any(|desc| desc.mirror_deletes) {
+        tracked::save(claude_dir, repo_root, tracked_now)?;
+    }
     Ok(report)
+}
+
+/// Marker file that keeps a category's repo directory present once its last
+/// real file is deleted.
+///
+/// Git does not track directories, so an emptied category would disappear and
+/// be read as "this repo has no such category", which pull must not delete
+/// for. The marker distinguishes an empty category from an absent one.
+pub const CATEGORY_MARKER: &str = ".synced";
+
+/// Keep the category's repo directory alive across an emptying push.
+fn mark_category_synced(category_root: &Path) -> Result<()> {
+    let marker = category_root.join(CATEGORY_MARKER);
+    if marker.is_file() {
+        return Ok(());
+    }
+    fs::create_dir_all(category_root)?;
+    fs::write(&marker, b"").with_context(|| format!("Failed to write {}", marker.display()))?;
+    Ok(())
+}
+
+/// A repo path as a `/`-separated string relative to the repository root.
+fn repo_relative(repo_root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(repo_root).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
+}
+
+/// Whether this machine has the source a category copies from. A `Files`
+/// category is always "present": its individual files are optional.
+fn source_is_present(desc: &CategoryDescriptor, claude_dir: &Path) -> bool {
+    match desc.source {
+        SourceSpec::Files(_) => true,
+        SourceSpec::Dir(dir) => claude_dir.join(dir).is_dir(),
+    }
+}
+
+/// The tracked paths that belong to one category's repo directory.
+fn tracked_under(tracked: &TrackedPaths, category_root: &Path, repo_root: &Path) -> Vec<String> {
+    let Some(prefix) = repo_relative(repo_root, category_root) else {
+        return Vec::new();
+    };
+    let prefix = format!("{prefix}/");
+    tracked
+        .iter()
+        .filter(|path| path.starts_with(&prefix))
+        .cloned()
+        .collect()
+}
+
+/// Delete the repo copies of files this machine synced before and no longer
+/// has. Returns how many were removed.
+fn remove_from_repo(
+    tracked_before: &TrackedPaths,
+    pushed: &TrackedPaths,
+    category_root: &Path,
+    repo_root: &Path,
+) -> Result<usize> {
+    let mut removed = 0;
+    for gone in tracked_under(tracked_before, category_root, repo_root) {
+        if pushed.contains(&gone) {
+            continue;
+        }
+        let path = repo_root.join(&gone);
+        if path.is_file() {
+            fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// One planned local write during a pull.
@@ -295,24 +428,59 @@ pub struct PullPlan {
     pub creates: Vec<PlannedWrite>,
     /// Union-merge targets whose local file would gain lines.
     pub unions: Vec<PlannedWrite>,
+    /// Local files this machine synced before that the repo no longer has.
+    pub deletes: Vec<PlannedDelete>,
     pub unchanged: usize,
     /// Repo files refused (denied names, unsafe paths).
     pub skipped: usize,
+    /// This machine's path tokens, so applying renders repo bytes the same way
+    /// planning compared them.
+    pub tokens: PathTokens,
+    /// Where to record what this machine holds once the plan is applied.
+    pub claude_dir: PathBuf,
+    pub repo_root: PathBuf,
+    /// The configured external merge tool, offered when a file differs.
+    pub merge_tool: String,
+    /// The repo paths this machine will hold afterwards, for the next pull to
+    /// tell a deletion from a file it never had.
+    pub tracked_after: TrackedPaths,
+    /// Whether any active category mirrors deletions. When none does, the
+    /// record is left untouched rather than emptied.
+    pub tracks_deletions: bool,
+}
+
+/// One planned local deletion during a pull.
+#[derive(Debug, Clone)]
+pub struct PlannedDelete {
+    pub category: CategoryId,
+    /// Absolute path under `~/.claude` to remove.
+    pub local_path: PathBuf,
 }
 
 impl PullPlan {
     /// True when applying the plan would write nothing.
     pub fn is_empty(&self) -> bool {
-        self.overwrites.is_empty() && self.creates.is_empty() && self.unions.is_empty()
+        self.overwrites.is_empty()
+            && self.creates.is_empty()
+            && self.unions.is_empty()
+            && self.deletes.is_empty()
     }
 
     /// Existing local files the caller must snapshot before applying
-    /// (overwritten raw files and union-merged files).
+    /// (overwritten raw files, union-merged files and deletions — a snapshot is
+    /// what makes `undo pull` able to bring a deleted file back).
+    ///
+    /// The record of what this machine last synced is included whenever the
+    /// pull would rewrite it, so undoing a pull restores the files *and* the
+    /// record that describes them.
     pub fn paths_to_snapshot(&self) -> Vec<PathBuf> {
+        let record = tracked::record_path(&self.claude_dir);
         self.overwrites
             .iter()
             .chain(self.unions.iter())
             .map(|w| w.local_path.clone())
+            .chain(self.deletes.iter().map(|d| d.local_path.clone()))
+            .chain((self.tracks_deletions && record.is_file()).then_some(record))
             .collect()
     }
 
@@ -357,6 +525,10 @@ fn collect_repo_files(
         if extension_excluded(desc, &rel) {
             continue;
         }
+        // The marker exists to keep the directory, and belongs to no machine.
+        if rel == Path::new(CATEGORY_MARKER) {
+            continue;
+        }
         if is_unsafe_rel_path(&rel) || is_denied(&rel) {
             log::warn!(
                 "Refusing denied/unsafe artifact from sync repo: {}",
@@ -389,14 +561,14 @@ fn local_destination(
             .find(|entry| Path::new(entry).file_name() == rel.file_name())
             .map(|entry| claude_dir.join(entry)),
         SourceSpec::Dir(dir) => {
-            if desc.dest == DestRoot::SessionTree && filter.use_project_name_only {
-                // Repo path is <project-name>/<rest>; find the matching local
-                // encoded project dir the way session pull does.
+            if desc.dest == DestRoot::SessionTree {
+                // Repo path is <project-dir>/<rest>; resolve the leading
+                // component the way session pull does.
                 let mut parts = rel.components();
-                let name = parts.next()?.as_os_str().to_str()?.to_string();
+                let name = parts.next()?.as_os_str().to_str()?;
                 let projects_dir = claude_dir.join(dir);
                 let local_project =
-                    crate::sync::discovery::find_local_project_by_name(&projects_dir, &name)?;
+                    crate::project_map::local_project_dir(filter, &projects_dir, name)?;
                 return Some(local_project.join(parts.as_path()));
             }
             Some(claude_dir.join(dir).join(rel))
@@ -404,12 +576,47 @@ fn local_destination(
     }
 }
 
+/// The bytes a repo file becomes on this machine before any merge: rendered
+/// back from tokens for config categories, verbatim otherwise.
+fn machine_bytes(
+    desc: &CategoryDescriptor,
+    tokens: &PathTokens,
+    repo_path: &Path,
+) -> Result<Vec<u8>> {
+    let bytes = fs::read(repo_path)
+        .with_context(|| format!("Failed to read artifact {}", repo_path.display()))?;
+    if desc.tokenize_paths {
+        return Ok(tokens.to_machine(&bytes));
+    }
+    Ok(bytes)
+}
+
+/// The registry row for one category.
+fn descriptor(id: CategoryId) -> &'static CategoryDescriptor {
+    REGISTRY
+        .iter()
+        .find(|d| d.id == id)
+        .expect("every CategoryId has a registry row")
+}
+
 /// Classify what a pull would write, without writing. Remote (repo) bytes win
-/// for raw categories; union targets are compared against local ∪ remote.
+/// for raw categories; union targets are compared against local ∪ remote; a
+/// file this machine synced before and the repo no longer has is a deletion.
 pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> Result<PullPlan> {
-    let mut plan = PullPlan::default();
+    let mut plan = PullPlan {
+        tokens: PathTokens::for_claude_dir(claude_dir),
+        claude_dir: claude_dir.to_path_buf(),
+        repo_root: repo_root.to_path_buf(),
+        merge_tool: filter.merge_tool.clone(),
+        tracks_deletions: active_categories(filter).any(|desc| desc.mirror_deletes),
+        ..Default::default()
+    };
+    let tracked_before = tracked::load(claude_dir, repo_root);
 
     for desc in active_categories(filter) {
+        let category_root = category_repo_root(desc, repo_root, filter);
+        let mut present: TrackedPaths = TrackedPaths::new();
+
         for (repo_path, rel) in collect_repo_files(desc, repo_root, filter, &mut plan.skipped) {
             let Some(local_path) = local_destination(desc, claude_dir, &rel, filter) else {
                 log::warn!(
@@ -419,6 +626,11 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                 plan.skipped += 1;
                 continue;
             };
+            if desc.mirror_deletes {
+                if let Some(tracked_path) = repo_relative(repo_root, &repo_path) {
+                    present.insert(tracked_path);
+                }
+            }
             let write = PlannedWrite {
                 category: desc.id,
                 local_path: local_path.clone(),
@@ -440,10 +652,26 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         plan.unchanged += 1;
                     }
                 }
-                MergeStrategy::RawOverwrite => {
+                MergeStrategy::UnionMemoryIndex if is_memory_index(&rel) => {
                     if !local_path.is_file() {
                         plan.creates.push(write);
-                    } else if fs::read(&local_path)? != fs::read(&repo_path)? {
+                        continue;
+                    }
+                    let local_bytes = fs::read(&local_path)?;
+                    let repo_bytes = machine_bytes(desc, &plan.tokens, &repo_path)?;
+                    let (merged, _) = merge_memory_index(&local_bytes, &repo_bytes);
+                    if merged != local_bytes {
+                        plan.unions.push(write);
+                    } else {
+                        plan.unchanged += 1;
+                    }
+                }
+                MergeStrategy::UnionMemoryIndex | MergeStrategy::RawOverwrite => {
+                    if !local_path.is_file() {
+                        plan.creates.push(write);
+                    } else if fs::read(&local_path)?
+                        != machine_bytes(desc, &plan.tokens, &repo_path)?
+                    {
                         plan.overwrites.push(write);
                     } else {
                         plan.unchanged += 1;
@@ -451,15 +679,60 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                 }
             }
         }
+
+        if !desc.mirror_deletes {
+            continue;
+        }
+
+        // Mirror of the push-side guard: a category the repo does not have —
+        // an older or rewound branch — is not "everything was deleted".
+        if !category_root.is_dir() {
+            log::info!(
+                "Category {} is not present in {}; local files are left alone",
+                desc.name,
+                repo_root.display()
+            );
+            plan.tracked_after
+                .extend(tracked_under(&tracked_before, &category_root, repo_root));
+            continue;
+        }
+
+        for gone in tracked_under(&tracked_before, &category_root, repo_root) {
+            if present.contains(&gone) {
+                continue;
+            }
+            let rel = Path::new(&gone)
+                .strip_prefix(repo_relative(repo_root, &category_root).unwrap_or_default())
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            // The same refusal `collect_repo_files` applies: a record must
+            // never point a deletion outside its category.
+            if is_unsafe_rel_path(&rel) || is_denied(&rel) {
+                log::warn!("Refusing denied/unsafe tracked path: {gone}");
+                plan.skipped += 1;
+                continue;
+            }
+            let Some(local_path) = local_destination(desc, claude_dir, &rel, filter) else {
+                continue;
+            };
+            if local_path.is_file() {
+                plan.deletes.push(PlannedDelete {
+                    category: desc.id,
+                    local_path,
+                });
+            }
+        }
+        plan.tracked_after.extend(present);
     }
 
     Ok(plan)
 }
 
-/// Apply a pull plan: create missing files, overwrite differing ones
-/// (remote wins), and union-merge prompt history. Under `interactive` in a
-/// terminal, each overwrite asks for per-file confirmation; declined files
-/// count as skipped.
+/// Apply a pull plan: create missing files, overwrite differing ones (remote
+/// wins), union-merge prompt history and memory indexes, and remove files the
+/// repo no longer has. Under `interactive` in a terminal, each overwrite asks
+/// for per-file confirmation — with the configured merge tool as an option —
+/// and each deletion asks for confirmation; declined files count as skipped.
 pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> {
     use std::collections::HashMap;
 
@@ -468,61 +741,94 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         map: &mut HashMap<CategoryId, CategoryCounts>,
         id: CategoryId,
     ) -> &mut CategoryCounts {
-        map.entry(id).or_insert_with(move || CategoryCounts {
-            category: id,
-            added: 0,
-            modified: 0,
-            unchanged: 0,
-            skipped: 0,
-            merged_entries: 0,
-        })
+        map.entry(id)
+            .or_insert_with(move || CategoryCounts::new(id))
     }
 
     let prompt_overwrites = interactive && crate::interactive_conflict::is_interactive();
 
     for write in &plan.creates {
-        let bytes = fs::read(&write.repo_path)?;
+        let bytes = machine_bytes(descriptor(write.category), &plan.tokens, &write.repo_path)?;
         write_atomic(&write.local_path, &bytes)?;
         counts_for(&mut by_category, write.category).added += 1;
     }
 
     for write in &plan.overwrites {
-        if prompt_overwrites {
-            let file_name = write
-                .local_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| write.local_path.display().to_string());
-            let confirmed = inquire::Confirm::new(&format!(
-                "Overwrite local '{file_name}' with the sync repo version?"
-            ))
-            .with_default(true)
-            .with_help_message("Declined files keep their local content")
-            .prompt()
-            .unwrap_or(false);
-            if !confirmed {
-                counts_for(&mut by_category, write.category).skipped += 1;
-                continue;
+        let bytes = machine_bytes(descriptor(write.category), &plan.tokens, &write.repo_path)?;
+        let bytes = if prompt_overwrites {
+            match crate::merge_tool::resolve_overwrite(&plan.merge_tool, &write.local_path, &bytes)?
+            {
+                Some(resolved) => resolved,
+                None => {
+                    counts_for(&mut by_category, write.category).skipped += 1;
+                    continue;
+                }
             }
-        }
-        let bytes = fs::read(&write.repo_path)?;
+        } else {
+            bytes
+        };
         write_atomic(&write.local_path, &bytes)?;
         counts_for(&mut by_category, write.category).modified += 1;
     }
 
     for write in &plan.unions {
-        let local_text = fs::read_to_string(&write.local_path).unwrap_or_default();
-        let repo_text = fs::read_to_string(&write.repo_path).unwrap_or_default();
-        let (merged, new_lines) = merge_history_lines(&local_text, &repo_text);
-        write_atomic(&write.local_path, merged.as_bytes())?;
+        let desc = descriptor(write.category);
+        let repo_bytes = machine_bytes(desc, &plan.tokens, &write.repo_path)?;
+        let local_bytes = fs::read(&write.local_path).unwrap_or_default();
+        let (merged, new_entries) = match desc.merge {
+            MergeStrategy::UnionMemoryIndex => merge_memory_index(&local_bytes, &repo_bytes),
+            _ => {
+                let (text, lines) = merge_history_lines(
+                    &String::from_utf8_lossy(&local_bytes),
+                    &String::from_utf8_lossy(&repo_bytes),
+                );
+                (text.into_bytes(), lines)
+            }
+        };
+        write_atomic(&write.local_path, &merged)?;
         let counts = counts_for(&mut by_category, write.category);
         counts.modified += 1;
-        counts.merged_entries += new_lines;
+        counts.merged_entries += new_entries;
+    }
+
+    for delete in &plan.deletes {
+        if prompt_overwrites && !confirm_deletion(&delete.local_path) {
+            counts_for(&mut by_category, delete.category).skipped += 1;
+            continue;
+        }
+        if delete.local_path.is_file() {
+            fs::remove_file(&delete.local_path)
+                .with_context(|| format!("Failed to remove {}", delete.local_path.display()))?;
+        }
+        counts_for(&mut by_category, delete.category).deleted += 1;
+    }
+
+    if plan.tracks_deletions {
+        tracked::save(
+            &plan.claude_dir,
+            &plan.repo_root,
+            plan.tracked_after.clone(),
+        )?;
     }
 
     let mut counts: Vec<CategoryCounts> = by_category.into_values().collect();
     counts.sort_by_key(|c| c.category as usize);
     Ok(ArtifactReport { counts })
+}
+
+/// Ask before removing a local file the sync repo no longer has.
+fn confirm_deletion(local_path: &Path) -> bool {
+    let file_name = local_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| local_path.display().to_string());
+    inquire::Confirm::new(&format!(
+        "'{file_name}' was deleted on another machine. Delete it here too?"
+    ))
+    .with_default(true)
+    .with_help_message("Declining keeps the local file; it is pushed back on the next push")
+    .prompt()
+    .unwrap_or(false)
 }
 
 /// Globs for the managed ignore block: defense-in-depth behind the code-level

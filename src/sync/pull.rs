@@ -15,10 +15,7 @@ use crate::report::{save_conflict_report, ConflictReport};
 use crate::scm;
 use crate::undo::Snapshot;
 
-use super::discovery::{
-    claude_home_dir, claude_projects_dir, discover_sessions, find_local_project_by_name,
-    warn_large_files,
-};
+use super::discovery::{claude_home_dir, claude_projects_dir, discover_sessions, warn_large_files};
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
 
@@ -448,55 +445,35 @@ pub fn pull_history(
             continue;
         }
 
-        let (dest_path, relative_path_for_tracking) = if filter.use_project_name_only {
-            // Extract project name and session filename from remote path
-            let remote_relative = Path::new(&remote_session.file_path)
-                .strip_prefix(&remote_projects_dir)
-                .ok()
-                .unwrap_or_else(|| Path::new(&remote_session.file_path));
+        let remote_relative = Path::new(&remote_session.file_path)
+            .strip_prefix(&remote_projects_dir)
+            .ok()
+            .unwrap_or_else(|| Path::new(&remote_session.file_path));
 
-            // Get the project name from the remote path structure
-            let project_name = remote_relative
-                .components()
-                .next()
-                .and_then(|c| c.as_os_str().to_str())
-                .unwrap_or("unknown");
+        let mut remote_parts = remote_relative.components();
+        let repo_project_dir = remote_parts
+            .next()
+            .and_then(|c| c.as_os_str().to_str())
+            .unwrap_or("unknown");
 
-            // Find matching local Claude project directory
-            if let Some(local_project_dir) = find_local_project_by_name(&claude_dir, project_name) {
-                // Get just the session filename
-                if let Some(filename) = remote_relative.file_name() {
-                    let dest = local_project_dir.join(filename);
-                    // Compute relative path for tracking from the destination
-                    let tracking_path = dest
-                        .strip_prefix(&claude_dir)
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|_| remote_relative.to_path_buf());
-                    (dest, tracking_path)
-                } else {
-                    log::warn!(
-                        "Could not extract filename from remote path: {:?}",
-                        remote_relative
-                    );
-                    skipped_no_local_match += 1;
-                    continue; // Skip this session
-                }
-            } else {
-                log::warn!(
-                    "No matching local project found for '{}'. \
-                     Open the project with Claude Code locally first, or disable use_project_name_only.",
-                    project_name
-                );
-                skipped_no_local_match += 1;
-                continue; // Skip this session - no local match
-            }
-        } else {
-            let relative_path = Path::new(&remote_session.file_path)
-                .strip_prefix(&remote_projects_dir)
-                .ok()
-                .unwrap_or_else(|| Path::new(&remote_session.file_path));
-            (claude_dir.join(relative_path), relative_path.to_path_buf())
+        let local_project_dir =
+            crate::project_map::local_project_dir(&filter, &claude_dir, repo_project_dir);
+        let Some(local_project_dir) = local_project_dir else {
+            log::warn!(
+                "No matching local project found for '{}'. \
+                 Open the project with Claude Code locally first, map it under [project_map], \
+                 or disable use_project_name_only.",
+                repo_project_dir
+            );
+            skipped_no_local_match += 1;
+            continue; // Skip this session - no local match
         };
+
+        let dest_path = local_project_dir.join(remote_parts.as_path());
+        let relative_path_for_tracking = dest_path
+            .strip_prefix(&claude_dir)
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|_| remote_relative.to_path_buf());
 
         // Determine operation type based on local state
         let operation = if let Some(local) = local_map.get(&remote_session.session_id) {
@@ -540,12 +517,13 @@ pub fn pull_history(
     let artifact_report = crate::artifacts::engine::apply_pull(&artifact_plan, interactive)?;
     if !artifact_plan.is_empty() {
         println!(
-            "  {} Artifacts: {} created, {} overwritten locally",
+            "  {} Artifacts: {} created, {} overwritten locally, {} deleted locally",
             "✓".green(),
             artifact_report.total_added(),
-            artifact_report.total_modified()
+            artifact_report.total_modified(),
+            artifact_report.total_deleted()
         );
-        if artifact_report.total_modified() > 0 {
+        if artifact_report.total_modified() > 0 || artifact_report.total_deleted() > 0 {
             println!("    {}", "Undo with: claude-code-sync undo pull".dimmed());
         }
     }
@@ -602,10 +580,11 @@ pub fn pull_history(
     }
     if !artifact_report.counts.is_empty() || artifact_plan.unchanged > 0 {
         println!(
-            "  {} Artifacts: {} added, {} modified, {} unchanged",
+            "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged",
             "•".cyan(),
             artifact_report.total_added(),
             artifact_report.total_modified(),
+            artifact_report.total_deleted(),
             artifact_plan.unchanged
         );
     }

@@ -40,6 +40,14 @@ pub fn sync_bidirectional(
     // First, pull remote changes
     pull_history(true, branch, interactive, verbosity)?;
 
+    // Purge between the two, when it is turned on, so the removals travel with
+    // the push below instead of waiting for the next one.
+    let filter = crate::filter::FilterConfig::load()?;
+    if filter.purge_after_sync {
+        let state = SyncState::load()?;
+        crate::handlers::purge::purge_after_sync(&filter, &state.sync_repo_path)?;
+    }
+
     if verbosity != VerbosityLevel::Quiet {
         println!();
         println!("{}", "Step 2: Pushing local changes...".bold());

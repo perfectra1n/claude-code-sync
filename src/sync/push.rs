@@ -52,30 +52,35 @@ pub struct PushReport {
     pub artifacts: crate::artifacts::engine::ArtifactReport,
 }
 
-/// Compute a session's destination path relative to the projects directory,
-/// respecting `use_project_name_only`. Returns None when the session lacks the
-/// `cwd` needed for project-name mapping.
+/// Compute a session's destination path relative to the projects directory: a
+/// mapped project goes under its canonical id, otherwise `use_project_name_only`
+/// and the plain encoded path decide, exactly as before. Returns None when the
+/// session lacks the `cwd` needed for project-name mapping.
 fn compute_relative_path(
     session: &crate::parser::ConversationSession,
     claude_dir: &Path,
     filter: &FilterConfig,
 ) -> Option<PathBuf> {
-    if filter.use_project_name_only {
-        let full_relative = Path::new(&session.file_path)
-            .strip_prefix(claude_dir)
-            .unwrap_or(Path::new(&session.file_path));
+    let full_relative = Path::new(&session.file_path)
+        .strip_prefix(claude_dir)
+        .unwrap_or(Path::new(&session.file_path));
 
+    let mut parts = full_relative.components();
+    let encoded_dir = parts.next()?.as_os_str().to_str()?;
+    if let Some(id) = crate::project_map::canonical_id(&filter.project_map, encoded_dir) {
+        return Some(Path::new(&id).join(parts.as_path()));
+    }
+
+    if filter.use_project_name_only {
+        // The session's own cwd, not the encoded directory: its last segment
+        // is the project's folder name, which a `-` inside that name would
+        // otherwise truncate ("shop-web" -> "web").
         let filename = full_relative.file_name()?;
         let project_name = session.project_name()?;
-        Some(PathBuf::from(project_name).join(filename))
-    } else {
-        Some(
-            Path::new(&session.file_path)
-                .strip_prefix(claude_dir)
-                .unwrap_or(Path::new(&session.file_path))
-                .to_path_buf(),
-        )
+        return Some(PathBuf::from(project_name).join(filename));
     }
+
+    Some(full_relative.to_path_buf())
 }
 
 /// Classify every discovered session against the sync repository's current
@@ -278,10 +283,11 @@ pub fn push_history(
         );
         if !artifact_report.counts.is_empty() {
             println!(
-                "  {} Artifacts: {} added, {} modified, {} unchanged",
+                "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged",
                 "•".cyan(),
                 artifact_report.total_added(),
                 artifact_report.total_modified(),
+                artifact_report.total_deleted(),
                 artifact_report.total_unchanged()
             );
         }

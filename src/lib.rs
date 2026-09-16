@@ -101,6 +101,13 @@ pub mod logger;
 /// and entries without UUIDs (merged by timestamp).
 pub mod merge;
 
+/// External three-way merge for a conflicting file.
+///
+/// Launches the configured `merge_tool` on the local and repo versions and
+/// waits for the merged result, so a conflict can be resolved rather than
+/// having one side discarded.
+pub mod merge_tool;
+
 /// Interactive onboarding flow for first-time setup.
 ///
 /// Guides users through initial configuration including repository setup (clone vs local),
@@ -114,6 +121,21 @@ pub mod onboarding;
 /// Each conversation session contains multiple entries (user messages, assistant responses,
 /// file snapshots, etc.) with metadata like timestamps, UUIDs, and session IDs.
 pub mod parser;
+
+/// Canonical project identity across machines.
+///
+/// Maps a configured id to this machine's absolute path for a project, so a
+/// project checked out elsewhere — or under another name — still syncs as one
+/// project. Also holds the UTF-16 path encoding Claude Code uses to name
+/// `~/.claude/projects/<dir>`.
+pub mod project_map;
+
+/// Retention for conversation transcripts.
+///
+/// Computes which transcripts have aged past the retention window — never
+/// shorter than Claude Code's own `cleanupPeriodDays`, nor than six months —
+/// and removes them from the machine and the sync repository together.
+pub mod purge;
 
 /// Conflict report generation and formatting.
 ///

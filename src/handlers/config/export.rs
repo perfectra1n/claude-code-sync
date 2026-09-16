@@ -63,6 +63,23 @@ pub fn handle_config_export() -> Result<()> {
             "!".yellow()
         );
     }
+    // Both describe THIS machine — the map's entries are local paths, and the
+    // merge tool is a local command — so carrying them elsewhere would point at
+    // things that do not exist there.
+    if !filter.project_map.is_empty() {
+        eprintln!(
+            "{} project_map is per machine and is not exported; map the projects again \
+             with `config --map-project id=/path` on the other machine",
+            "!".yellow()
+        );
+    }
+    if !filter.merge_tool.is_empty() {
+        eprintln!(
+            "{} merge_tool is per machine and is not exported; set it again with \
+             `config --merge-tool \"...\"` on the other machine",
+            "!".yellow()
+        );
+    }
 
     let init_config = InitConfig {
         repo_path,

@@ -123,6 +123,11 @@ pub fn extract_project_name(encoded_path: &str) -> &str {
 /// Scans `~/.claude/projects/` for directories whose encoded name ends with
 /// the specified project name. Returns the path if exactly one match is found.
 ///
+/// The name is compared as a whole encoded segment, not through
+/// [`extract_project_name`]: a folder called `shop-web` encodes to
+/// `…-shop-web`, whose last dash-separated piece is `web`, so comparing
+/// those would never match the name push wrote.
+///
 /// # Returns
 /// - `Some(PathBuf)` if exactly one matching project directory is found
 /// - `None` if no match found or multiple matches (ambiguous)
@@ -131,6 +136,7 @@ pub fn find_local_project_by_name(
     project_name: &str,
 ) -> Option<PathBuf> {
     let entries = std::fs::read_dir(claude_projects_dir).ok()?;
+    let encoded_name = crate::project_map::encode_project_path(Path::new(project_name));
 
     let matches: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
@@ -138,7 +144,7 @@ pub fn find_local_project_by_name(
         .filter(|e| {
             e.file_name()
                 .to_str()
-                .map(|name| extract_project_name(name) == project_name)
+                .map(|name| name == encoded_name || name.ends_with(&format!("-{encoded_name}")))
                 .unwrap_or(false)
         })
         .map(|e| e.path())

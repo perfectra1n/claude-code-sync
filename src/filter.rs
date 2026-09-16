@@ -60,6 +60,30 @@ pub struct FilterConfig {
     /// false so configs from older versions keep their exact behavior.
     #[serde(default)]
     pub sync_artifacts: crate::artifacts::registry::ArtifactToggles,
+
+    /// Canonical project id -> this machine's absolute path for that project.
+    /// A mapped project syncs under its id instead of its encoded path, so it
+    /// stays one project across machines that keep it elsewhere or under
+    /// another name. Unmapped projects are unaffected.
+    #[serde(default)]
+    pub project_map: crate::project_map::ProjectMap,
+
+    /// Delete transcripts older than this many days from both the machine and
+    /// the sync repository. Unset means the default window: the longer of six
+    /// months and this machine's own Claude Code retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purge_older_than_days: Option<u32>,
+
+    /// Purge as part of every `sync`, between the pull and the push, so the
+    /// removals travel with that push. Off by default: purging deletes.
+    #[serde(default)]
+    pub purge_after_sync: bool,
+
+    /// External three-way merge command for a conflicting file, invoked as
+    /// `<command> <local> <remote> <base> <output>` (the JetBrains
+    /// `phpstorm merge` argument order). Empty means the terminal picker only.
+    #[serde(default)]
+    pub merge_tool: String,
 }
 
 fn default_lfs_patterns() -> Vec<String> {
@@ -92,6 +116,10 @@ impl Default for FilterConfig {
             sync_subdirectory: default_sync_subdirectory(),
             use_project_name_only: false,
             sync_artifacts: Default::default(),
+            project_map: Default::default(),
+            purge_older_than_days: None,
+            purge_after_sync: false,
+            merge_tool: String::new(),
         }
     }
 }
@@ -253,12 +281,27 @@ impl FilterConfig {
                 crate::artifacts::registry::ARTIFACTS_SUBDIR
             );
         }
+        // It is joined onto the repository root and then walked, copied into
+        // and — since `purge` — deleted from. Anything that escapes or points
+        // at the root itself would take the rest of the repository with it.
+        let subdirectory = Path::new(&self.sync_subdirectory);
+        let escapes = subdirectory.is_absolute()
+            || subdirectory
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir));
+        if escapes || self.sync_subdirectory == "." {
+            bail!(
+                "sync_subdirectory must be a directory inside the repository, got '{}'",
+                self.sync_subdirectory
+            );
+        }
         if self.max_file_size_bytes == 0 {
             bail!(
                 "max_file_size_bytes cannot be 0: every file would be filtered out \
                  and nothing would ever sync"
             );
         }
+        crate::project_map::validate(&self.project_map)?;
         Ok(())
     }
 }
@@ -295,6 +338,80 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     } else {
         text.contains(pattern)
     }
+}
+
+/// Add or remove `[project_map]` entries. `add` holds `id=/absolute/path`
+/// pairs; `remove` holds ids.
+pub fn update_project_map(add: &[String], remove: &[String]) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+
+    for entry in add {
+        let Some((id, path)) = entry.split_once('=') else {
+            bail!("expected id=/absolute/path, got {entry:?}");
+        };
+        let path = crate::project_map::normalize_project_path(Path::new(path.trim()));
+        config.project_map.insert(id.trim().to_string(), path);
+    }
+    for id in remove {
+        if config.project_map.remove(id.trim()).is_none() {
+            println!("{}", format!("No mapping named {id:?}").yellow());
+        }
+    }
+
+    config.validate()?;
+    config.save()?;
+
+    println!("{}", "Project map:".green());
+    for (id, path) in &config.project_map {
+        println!("  {} -> {}", id.cyan(), path.display());
+    }
+    Ok(())
+}
+
+/// Set the retention window and whether a sync purges.
+pub fn configure_purge(older_than_days: Option<u32>, after_sync: Option<bool>) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+
+    if let Some(days) = older_than_days {
+        if days == 0 {
+            bail!("purge_older_than_days must be at least 1 day");
+        }
+        config.purge_older_than_days = Some(days);
+        println!(
+            "{}",
+            format!("Purge transcripts older than {days} days").green()
+        );
+    }
+    if let Some(after_sync) = after_sync {
+        config.purge_after_sync = after_sync;
+        println!(
+            "{}",
+            format!(
+                "Purge as part of sync: {}",
+                if after_sync { "enabled" } else { "disabled" }
+            )
+            .green()
+        );
+    }
+
+    config.validate()?;
+    config.save()?;
+    Ok(())
+}
+
+/// Set (or clear, when empty) the external merge command.
+pub fn set_merge_tool(command: &str) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+    config.merge_tool = command.trim().to_string();
+    config.validate()?;
+    config.save()?;
+
+    if config.merge_tool.is_empty() {
+        println!("{}", "Merge tool cleared".green());
+    } else {
+        println!("{}", format!("Merge tool: {}", config.merge_tool).green());
+    }
+    Ok(())
 }
 
 /// Update the filter configuration
@@ -538,6 +655,45 @@ pub fn show_config() -> Result<()> {
             "No (full path mode)".yellow()
         }
     );
+
+    println!(
+        "  {}: {}",
+        "Merge tool".cyan(),
+        if config.merge_tool.is_empty() {
+            "none (terminal picker only)".yellow()
+        } else {
+            config.merge_tool.green()
+        }
+    );
+
+    println!(
+        "  {}: {}",
+        "Purge transcripts older than".cyan(),
+        match config.purge_older_than_days {
+            Some(days) => format!("{days} days").green(),
+            None => "default (180 days, or Claude Code's own window if longer)".green(),
+        }
+    );
+    println!(
+        "  {}: {}",
+        "Purge as part of sync".cyan(),
+        if config.purge_after_sync {
+            "Yes".green()
+        } else {
+            "No (run `claude-code-sync purge`)".yellow()
+        }
+    );
+
+    println!("  {}:", "Project map".cyan());
+    if config.project_map.is_empty() {
+        println!(
+            "    {}",
+            "empty (projects sync under their encoded path)".yellow()
+        );
+    }
+    for (id, path) in &config.project_map {
+        println!("    {} -> {}", id.cyan(), path.display());
+    }
 
     println!("  {}:", "Artifact sync".cyan());
     for desc in crate::artifacts::registry::toggleable() {
