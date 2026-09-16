@@ -7,7 +7,7 @@
 //! The window is never shorter than `cleanupPeriodDays`, which is when Claude
 //! Code deletes the transcript anyway, nor shorter than six months.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -36,10 +36,10 @@ pub struct PurgePlan {
     pub retention_days: u32,
     pub cutoff: Option<DateTime<Utc>>,
     pub targets: Vec<PurgeTarget>,
-    /// Transcripts with no timestamp. Never purged: the age is unknown.
+    /// Sessions kept because at least one copy has no readable age.
     pub undated: usize,
-    /// Transcripts that failed to parse, such as one being written right now.
-    /// Never purged.
+    /// Transcript files that failed to parse, such as one being written right
+    /// now. Their session is kept.
     pub unreadable: usize,
 }
 
@@ -101,6 +101,7 @@ fn claude_code_retention_days(claude_dir: &Path) -> u32 {
 }
 
 /// Every copy of one session found across the trees, before deciding its fate.
+#[derive(Default)]
 struct SessionCopies {
     last_activity: Option<DateTime<Utc>>,
     /// Set when any copy has no readable age, which keeps the session.
@@ -138,8 +139,13 @@ pub fn plan(
             let session = match crate::parser::ConversationSession::from_file(&transcript) {
                 Ok(session) => session,
                 Err(error) => {
+                    // The session is kept whole: a copy that cannot be read
+                    // says nothing about the age of the one that can.
                     log::warn!("Skipping unreadable {}: {error}", transcript.display());
                     plan.unreadable += 1;
+                    if let Some(stem) = transcript.file_stem().and_then(|s| s.to_str()) {
+                        by_session.entry(stem.to_string()).or_default().undatable = true;
+                    }
                     continue;
                 }
             };
@@ -149,18 +155,8 @@ pub fn plan(
                 .collect();
             let bytes: u64 = paths.iter().map(|path| path_size(path)).sum();
             let last_activity = last_activity(&session);
-            if last_activity.is_none() {
-                plan.undated += 1;
-            }
 
-            let copies = by_session
-                .entry(session.session_id.clone())
-                .or_insert_with(|| SessionCopies {
-                    last_activity: None,
-                    undatable: false,
-                    paths: Vec::new(),
-                    bytes: 0,
-                });
+            let copies = by_session.entry(session.session_id.clone()).or_default();
             copies.paths.extend(paths);
             copies.bytes += bytes;
             copies.undatable |= last_activity.is_none();
@@ -171,6 +167,7 @@ pub fn plan(
     let now = Utc::now();
     for (session_id, copies) in by_session {
         if copies.undatable {
+            plan.undated += 1;
             continue;
         }
         let Some(last_activity) = copies.last_activity else {
@@ -231,6 +228,21 @@ pub fn open_sync_repo(repo_root: &Path) -> Result<Box<dyn crate::scm::Scm>> {
     Ok(repo)
 }
 
+/// Refuse to purge while the repository holds uncommitted work.
+///
+/// A repo-side transcript that is not committed yet — a push that was declined,
+/// a path an ignore rule covers — would be deleted with no copy in history,
+/// which is the one thing a purge promises not to do.
+pub fn ensure_nothing_uncommitted(repo: &dyn crate::scm::Scm) -> Result<()> {
+    if repo.has_changes()? {
+        bail!(
+            "the sync repository has uncommitted changes; run `claude-code-sync push` \
+             first, so a purge cannot delete a copy that was never committed"
+        );
+    }
+    Ok(())
+}
+
 /// Stage and commit the removals. Returns whether a commit was made.
 pub fn commit_removals(repo: &dyn crate::scm::Scm, plan: &PurgePlan) -> Result<bool> {
     repo.stage_all()?;
@@ -281,16 +293,21 @@ fn sidecars(transcript: &Path) -> Vec<PathBuf> {
         found.push(session_directory);
     }
 
-    let orphaned = format!("{stem}.orphaned-");
-    let superseded = format!("{stem}.jsonl.superseded-");
+    // Every sibling named after this session: `.orphaned-…`, `.superseded-…`,
+    // `.stopoffset`, and whatever Claude Code adds next.
+    let companion = format!("{stem}.");
+    let transcript_name = transcript.file_name();
     let Ok(entries) = std::fs::read_dir(directory) else {
         return found;
     };
     for entry in entries.filter_map(|entry| entry.ok()) {
+        if Some(entry.file_name().as_os_str()) == transcript_name {
+            continue;
+        }
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if name.starts_with(&orphaned) || name.starts_with(&superseded) {
+        if name.starts_with(&companion) {
             found.push(entry.path());
         }
     }

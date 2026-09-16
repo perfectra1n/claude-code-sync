@@ -37,9 +37,10 @@ pub fn handle_purge(older_than_days: Option<u32>, dry_run: bool, assume_yes: boo
         return Ok(());
     }
 
-    // Opened before anything is deleted: a repository that cannot record the
-    // removal must stop the purge while every file is still there.
+    // Opened and checked before anything is deleted: a repository that cannot
+    // record the removal must stop the purge while every file still exists.
     let repo = purge::open_sync_repo(&state.sync_repo_path)?;
+    purge::ensure_nothing_uncommitted(repo.as_ref())?;
 
     let report = purge::apply(&plan)?;
     let committed = purge::commit_removals(repo.as_ref(), &plan);
@@ -66,6 +67,9 @@ pub fn purge_after_sync(filter: &FilterConfig, repo_root: &Path) -> Result<()> {
         return Ok(());
     }
 
+    let repo = purge::open_sync_repo(repo_root)?;
+    purge::ensure_nothing_uncommitted(repo.as_ref())?;
+
     println!(
         "  {} {} transcripts older than {} days...",
         "Purging".cyan(),
@@ -90,11 +94,18 @@ fn describe(plan: &PurgePlan) {
     if let Some(cutoff) = plan.cutoff {
         println!("  {} {}", "Cutoff:".bold(), cutoff.format("%Y-%m-%d"));
     }
-    if plan.undated + plan.unreadable > 0 {
+    if plan.undated > 0 {
         println!(
-            "  {} {} transcripts have no readable date and are never purged",
+            "  {} {} sessions have no readable date and are never purged",
             "•".dimmed(),
-            plan.undated + plan.unreadable
+            plan.undated
+        );
+    }
+    if plan.unreadable > 0 {
+        println!(
+            "  {} {} transcripts could not be read and were left alone",
+            "•".dimmed(),
+            plan.unreadable
         );
     }
     if plan.is_empty() {

@@ -54,6 +54,27 @@ jobs:
             echo "tag=" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Checkout the tag
+        if: steps.pick.outputs.tag != ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pick.outputs.tag }}
+
+      # A hand-pushed tag is the one path where nothing has bumped Cargo.toml,
+      # and a binary whose --version disagrees with its release is worse than
+      # no release at all. Checked once, before any platform builds.
+      - name: Check the crate version matches the tag
+        if: steps.pick.outputs.tag != ''
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          crate_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [ "$crate_version" != "${TAG#v}" ]; then
+            echo "Cargo.toml is $crate_version but the tag is $TAG." >&2
+            echo "Bump the version (and .release-please-manifest.json) in the tagged commit." >&2
+            exit 1
+          fi
+
       # Once, here: five matrix jobs racing to create the same release would
       # leave the losers failed and their platform's assets missing.
       - name: Ensure the release exists
@@ -110,22 +131,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-
-      # A hand-pushed tag is the one path where nothing has bumped Cargo.toml,
-      # and a binary whose --version disagrees with its release is worse than
-      # no release at all.
-      - name: Check the crate version matches the tag
-        shell: bash
-        env:
-          TAG: ${{ needs.release-tag.outputs.tag }}
-        run: |
-          crate_version="$(cargo metadata --no-deps --format-version 1 |
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          if [ "$crate_version" != "${TAG#v}" ]; then
-            echo "Cargo.toml is $crate_version but the tag is $TAG." >&2
-            echo "Bump the version (and .release-please-manifest.json) in the tagged commit." >&2
-            exit 1
-          fi
 
       - name: Add compilation target
         run: rustup target add ${{ matrix.target }}

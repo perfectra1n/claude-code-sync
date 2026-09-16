@@ -74,10 +74,10 @@ fn compute_relative_path(
     if filter.use_project_name_only {
         // The session's own cwd, not the encoded directory: its last segment
         // is the project's folder name, which a `-` inside that name would
-        // otherwise truncate ("shop-web" -> "web").
-        let filename = full_relative.file_name()?;
+        // otherwise truncate ("shop-web" -> "web"). The rest of the path is
+        // kept, so a session's subagent transcripts stay under it.
         let project_name = session.project_name()?;
-        return Some(PathBuf::from(project_name).join(filename));
+        return Some(PathBuf::from(project_name).join(parts.as_path()));
     }
 
     Some(full_relative.to_path_buf())

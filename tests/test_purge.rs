@@ -165,18 +165,52 @@ fn a_subagent_transcript_never_ages_out_on_its_own() {
 
 #[test]
 fn a_session_used_recently_elsewhere_is_not_old_here() {
+    // The same session, stale on one side and recent on the other: whichever
+    // side is fresh keeps both copies.
+    for (local_age, repo_age) in [(400, 3), (3, 400)] {
+        let claude = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        let local = transcript(claude.path(), "-home-user-app", "shared", local_age);
+        let remote = transcript(repo.path(), "-home-user-app", "shared", repo_age);
+
+        let plan = purge::plan(claude.path(), repo.path(), MINIMUM_RETENTION_DAYS).unwrap();
+        purge::apply(&plan).unwrap();
+
+        assert!(plan.is_empty(), "local {local_age}d, repo {repo_age}d");
+        assert!(local.is_file(), "local {local_age}d, repo {repo_age}d");
+        assert!(remote.is_file(), "local {local_age}d, repo {repo_age}d");
+    }
+}
+
+#[test]
+fn an_unreadable_copy_keeps_the_whole_session() {
     let claude = TempDir::new().unwrap();
     let repo = TempDir::new().unwrap();
-    // The same session: stale on this machine, used three days ago on another.
-    let local = transcript(claude.path(), "-home-user-app", "shared", 400);
-    let remote = transcript(repo.path(), "-home-user-app", "shared", 3);
+    let old = transcript(claude.path(), "-home-user-app", "half-written", 400);
+    let mid_write = write_transcript(repo.path(), "-home-user-app", "half-written", "{\"type\"");
 
     let plan = purge::plan(claude.path(), repo.path(), MINIMUM_RETENTION_DAYS).unwrap();
     purge::apply(&plan).unwrap();
 
+    assert_eq!(plan.unreadable, 1);
     assert!(plan.is_empty());
-    assert!(local.is_file(), "the local copy must survive too");
-    assert!(remote.is_file());
+    assert!(old.is_file(), "a copy that cannot be read dates nothing");
+    assert!(mid_write.is_file());
+}
+
+#[test]
+fn a_sessions_companion_files_go_with_it() {
+    let claude = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    let old = transcript(claude.path(), "-home-user-app", "old-session", 400);
+    let project = old.parent().unwrap().to_path_buf();
+    let stopoffset = project.join("old-session.jsonl.stopoffset");
+    fs::write(&stopoffset, "42").unwrap();
+
+    purge_with_window(claude.path(), repo.path(), MINIMUM_RETENTION_DAYS);
+
+    assert!(!old.exists());
+    assert!(!stopoffset.exists());
 }
 
 #[test]
