@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     branches: [main]
+    # Binaries are not committed: every tag builds them and attaches them to
+    # its GitHub release, whether release-please made the tag or a person did.
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -12,6 +15,9 @@ permissions:
 jobs:
   release-please:
     name: Release Please
+    # A tag push is already a release; release-please only opens and lands
+    # release PRs from the branch.
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.rp.outputs.release_created }}
@@ -24,10 +30,46 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  release-tag:
+    name: Resolve Release Tag
+    # `!cancelled()`: release-please is skipped on a tag push, and a skipped
+    # dependency would otherwise skip everything that needs it.
+    if: ${{ !cancelled() }}
+    needs: release-please
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - name: Pick the tag to publish
+        env:
+          RELEASE_PLEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
+        id: pick
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [ "$RELEASE_CREATED" = true ]; then
+            echo "tag=$RELEASE_PLEASE_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Once, here: five matrix jobs racing to create the same release would
+      # leave the losers failed and their platform's assets missing.
+      - name: Ensure the release exists
+        if: steps.pick.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --generate-notes
+
   build-binaries:
     name: Build Release Binaries
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: release-tag
+    if: needs.release-tag.outputs.tag != ''
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -59,7 +101,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release-tag.outputs.tag }}
 
       - name: Install mise
         uses: jdx/mise-action@v4
@@ -68,6 +110,22 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      # A hand-pushed tag is the one path where nothing has bumped Cargo.toml,
+      # and a binary whose --version disagrees with its release is worse than
+      # no release at all.
+      - name: Check the crate version matches the tag
+        shell: bash
+        env:
+          TAG: ${{ needs.release-tag.outputs.tag }}
+        run: |
+          crate_version="$(cargo metadata --no-deps --format-version 1 |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          if [ "$crate_version" != "${TAG#v}" ]; then
+            echo "Cargo.toml is $crate_version but the tag is $TAG." >&2
+            echo "Bump the version (and .release-please-manifest.json) in the tagged commit." >&2
+            exit 1
+          fi
 
       - name: Add compilation target
         run: rustup target add ${{ matrix.target }}
@@ -98,8 +156,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-tag.outputs.tag }}
         run: |
-          gh release upload ${{ needs.release-please.outputs.tag_name }} \
+          gh release upload "$TAG" \
             target/${{ matrix.target }}/release/${{ matrix.asset_name }}.* \
             --clobber
 

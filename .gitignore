@@ -36,6 +36,9 @@ test-backup/
 *.dll
 *.exe
 
+# Locally cross-built binaries (bin/release.sh); releases come from CI
+/dist/
+
 # Documentation build
 /book/
 /docs/_build/
