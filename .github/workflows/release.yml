@@ -90,7 +90,9 @@ jobs:
   build-binaries:
     name: Build Release Binaries
     needs: release-tag
-    if: needs.release-tag.outputs.tag != ''
+    # `!cancelled()` again: a skipped job cascades down the whole chain, and
+    # release-please is skipped on every tag, so without it nothing builds.
+    if: ${{ !cancelled() && needs.release-tag.outputs.tag != '' }}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
