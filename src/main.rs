@@ -79,8 +79,16 @@ enum Commands {
 
     /// Pull and merge history from the sync repository
     Pull {
-        /// Pull from remote before merging
-        #[arg(long, default_value_t = true)]
+        /// Pull from remote before merging; `--fetch-remote false` merges
+        /// only what is already in the local sync repository
+        #[arg(
+            long,
+            value_name = "BOOL",
+            default_value_t = true,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            action = clap::ArgAction::Set,
+        )]
         fetch_remote: bool,
 
         /// Branch to pull from (default: current branch)

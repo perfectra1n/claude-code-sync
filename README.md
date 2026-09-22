@@ -515,7 +515,11 @@ claude-code-sync pull [OPTIONS]
 ```
 
 **Options:**
-- `--fetch-remote`: Pull from remote before merging (default: true)
+- `--fetch-remote <BOOL>`: Pull from remote before merging (default: true).
+  A remote that cannot be reached or whose changes conflict with the local sync
+  repository stops the pull — diverged branches are merged automatically, and a
+  real conflict is reported and undone. Pass `--fetch-remote false` to merge
+  only what is already in the local sync repository.
 - `--branch, -b <BRANCH>`: Branch to pull from (default: current branch)
 
 **Example:**

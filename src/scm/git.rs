@@ -105,6 +105,16 @@ impl GitScm {
         Ok(())
     }
 
+    /// Run a git command and return its raw output, for the callers that read
+    /// a failure's own text instead of turning it into an error.
+    fn git_output(&self, args: &[&str]) -> Result<std::process::Output> {
+        Command::new("git")
+            .args(args)
+            .current_dir(&self.workdir)
+            .output()
+            .with_context(|| format!("Failed to run 'git {}'", args.join(" ")))
+    }
+
     /// Check if a git command succeeds (exit code 0).
     fn git_succeeds(&self, args: &[&str]) -> bool {
         Command::new("git")
@@ -193,23 +203,51 @@ impl Scm for GitScm {
         Ok(())
     }
 
+    /// Fetch and merge the remote branch.
+    ///
+    /// The merge is spelled out rather than left to `git pull`, which since
+    /// git 2.34 refuses to reconcile diverged branches until the machine's
+    /// own `pull.rebase` / `pull.ff` is configured — a setting this tool does
+    /// not own. Merge, not rebase: undo records point at local commit hashes,
+    /// and a rebase rewrites them.
     fn pull(&self, remote: &str, branch: &str) -> Result<()> {
-        let output = Command::new("git")
-            .args(["pull", remote, branch])
-            .current_dir(&self.workdir)
-            .output()
-            .context("Failed to run 'git pull'")?;
+        self.run_git_ok(&["fetch", remote, branch])
+            .with_context(|| format!("Failed to fetch from remote '{remote}'"))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!(
-                "Failed to pull from remote '{}': {}",
-                remote,
-                stderr
-            ));
+        // A repository `init` just created has no commit of its own, and git
+        // refuses to merge into an empty head: take the fetched branch whole.
+        if !self.git_succeeds(&["rev-parse", "--verify", "HEAD"]) {
+            return self
+                .run_git_ok(&["reset", "--hard", "FETCH_HEAD"])
+                .with_context(|| format!("Failed to check out '{remote}/{branch}'"));
         }
 
-        Ok(())
+        let merge = self.git_output(&["merge", "--no-edit", "FETCH_HEAD"])?;
+        if merge.status.success() {
+            return Ok(());
+        }
+
+        // Leave the repository where it was, so the next sync can retry. A
+        // merge git refused to start — uncommitted work in the sync repository,
+        // unrelated histories — has nothing to abort and changed nothing.
+        let merge_started = self.git_succeeds(&["rev-parse", "--verify", "MERGE_HEAD"]);
+        let details = format!(
+            "{}{}",
+            String::from_utf8_lossy(&merge.stdout),
+            String::from_utf8_lossy(&merge.stderr)
+        );
+        let state = if !merge_started {
+            "Nothing was merged; the sync repository is as it was."
+        } else if self.git_succeeds(&["merge", "--abort"]) {
+            "The merge was undone; the sync repository is as it was."
+        } else {
+            "The merge could not be undone; the sync repository needs attention."
+        };
+
+        Err(anyhow!(
+            "Failed to merge '{remote}/{branch}' into the sync repository: {}\n{state}",
+            details.trim()
+        ))
     }
 
     fn reset_soft(&self, commit: &str) -> Result<()> {
@@ -269,6 +307,144 @@ mod tests {
         // Check branch (default is master or main depending on git config)
         let branch = scm.current_branch().unwrap();
         assert!(!branch.is_empty());
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn commit_file(machine: &GitScm, dir: &Path, name: &str, contents: &str) {
+        std::fs::write(dir.join(name), contents).unwrap();
+        machine.stage_all().unwrap();
+        machine.commit(&format!("add {name}")).unwrap();
+    }
+
+    /// Two clones of one bare remote, both already one commit ahead of it in
+    /// their own way: the shape a sync repository takes when two machines
+    /// pushed between pulls.
+    fn two_diverged_machines(shared_file: Option<&str>) -> (TempDir, GitScm, PathBuf, String) {
+        let root = TempDir::new().unwrap();
+        git_in(root.path(), &["init", "--bare", "--quiet", "origin"]);
+
+        let first = root.path().join("first");
+        git_in(root.path(), &["clone", "--quiet", "origin", "first"]);
+        let machine_first = GitScm::open(&first).unwrap();
+        git_in(&first, &["config", "user.name", "First"]);
+        git_in(&first, &["config", "user.email", "first@local"]);
+        commit_file(&machine_first, &first, "shared-start.txt", "start\n");
+        let branch = machine_first.current_branch().unwrap();
+        machine_first.push("origin", &branch).unwrap();
+
+        let second = root.path().join("second");
+        git_in(root.path(), &["clone", "--quiet", "origin", "second"]);
+        let machine_second = GitScm::open(&second).unwrap();
+        git_in(&second, &["config", "user.name", "Second"]);
+        git_in(&second, &["config", "user.email", "second@local"]);
+        let second_file = shared_file.unwrap_or("only-second.txt");
+        commit_file(&machine_second, &second, second_file, "from the second\n");
+        machine_second.push("origin", &branch).unwrap();
+
+        let first_file = shared_file.unwrap_or("only-first.txt");
+        commit_file(&machine_first, &first, first_file, "from the first\n");
+
+        (root, machine_first, first, branch)
+    }
+
+    #[test]
+    fn pull_reconciles_a_repository_that_both_machines_moved() {
+        let (_root, machine, workdir, branch) = two_diverged_machines(None);
+
+        machine.pull("origin", &branch).unwrap();
+
+        assert!(
+            workdir.join("only-second.txt").is_file(),
+            "the other machine's commit is merged in"
+        );
+        assert!(
+            workdir.join("only-first.txt").is_file(),
+            "this machine's own commit survives"
+        );
+        assert!(!machine.has_changes().unwrap(), "the merge is committed");
+    }
+
+    #[test]
+    fn a_conflicting_pull_fails_and_leaves_the_repository_as_it_was() {
+        let (_root, machine, workdir, branch) = two_diverged_machines(Some("both-touched.txt"));
+        let before = machine.current_commit_hash().unwrap();
+
+        let error = machine
+            .pull("origin", &branch)
+            .expect_err("a content conflict cannot be resolved for the user")
+            .to_string();
+
+        assert!(error.contains("both-touched.txt"), "unexpected: {error}");
+        assert_eq!(
+            machine.current_commit_hash().unwrap(),
+            before,
+            "a failed pull moves nothing"
+        );
+        assert!(
+            !machine.has_changes().unwrap(),
+            "no conflict markers are left in the working tree"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("both-touched.txt")).unwrap(),
+            "from the first\n"
+        );
+    }
+
+    #[test]
+    fn the_first_pull_of_a_repository_with_no_commits_checks_the_branch_out() {
+        let (root, _machine, _first, branch) = two_diverged_machines(None);
+
+        // What `init --remote <url>` leaves behind: a repository with a remote
+        // and not a single commit of its own.
+        let fresh = root.path().join("fresh");
+        let machine = GitScm::init(&fresh).unwrap();
+        machine
+            .add_remote("origin", root.path().join("origin").to_str().unwrap())
+            .unwrap();
+
+        machine.pull("origin", &branch).unwrap();
+
+        assert!(
+            fresh.join("shared-start.txt").is_file(),
+            "the remote's history is checked out"
+        );
+    }
+
+    #[test]
+    fn a_pull_git_refuses_to_start_says_the_repository_was_left_alone() {
+        let (_root, machine, workdir, branch) = two_diverged_machines(None);
+
+        // An interrupted push leaves the sync repository dirty, and git will
+        // not begin a merge that would overwrite uncommitted work.
+        std::fs::write(workdir.join("only-second.txt"), "half a push\n").unwrap();
+
+        let error = machine
+            .pull("origin", &branch)
+            .expect_err("a dirty sync repository cannot be merged into")
+            .to_string();
+
+        assert!(
+            error.contains("Nothing was merged; the sync repository is as it was."),
+            "unexpected: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("only-second.txt")).unwrap(),
+            "half a push\n",
+            "the uncommitted work is untouched"
+        );
     }
 
     #[test]
