@@ -174,7 +174,7 @@ fn test_full_push_pull_cycle() {
             fs::create_dir_all(parent).unwrap();
         }
 
-        session.write_to_file(&dest_path).unwrap();
+        session.copy_to(&dest_path).unwrap();
     }
 
     // Commit the push
@@ -202,7 +202,7 @@ fn test_full_push_pull_cycle() {
         let summary = ConversationSummary::new(
             session.session_id.clone(),
             relative_path,
-            session.latest_timestamp(),
+            session.latest_timestamp().map(str::to_string),
             session.message_count(),
             SyncOperation::Added,
         )
@@ -264,7 +264,7 @@ fn test_full_push_pull_cycle() {
             fs::create_dir_all(parent).unwrap();
         }
 
-        session.write_to_file(&dest_path).unwrap();
+        session.copy_to(&dest_path).unwrap();
     }
 
     // Simulate pull by copying modified files from sync repo
@@ -280,25 +280,28 @@ fn test_full_push_pull_cycle() {
             fs::create_dir_all(parent).unwrap();
         }
 
-        session.write_to_file(&dest_path).unwrap();
+        session.copy_to(&dest_path).unwrap();
     }
 
     // Verify files synced correctly
     let machine2_sessions = discover_test_sessions(&machine2_projects).unwrap();
     assert_eq!(machine2_sessions.len(), sync_sessions_after_modify.len());
 
-    // Verify the modification was pulled
-    if let Some(first_modified) = machine2_sessions.iter().find(|s| {
-        sync_sessions_after_modify
-            .first()
-            .map(|orig| &orig.session_id)
-            == Some(&s.session_id)
-    }) {
-        assert!(
-            first_modified.message_count() > original_sessions.first().unwrap().message_count(),
-            "Modified session should have more messages"
-        );
-    }
+    // Verify the modification was pulled. Both sides are looked up by session
+    // id: two walks of two directories do not hand back the same first session.
+    let modified_id = &sync_sessions_after_modify.first().unwrap().session_id;
+    let pulled = machine2_sessions
+        .iter()
+        .find(|session| &session.session_id == modified_id)
+        .expect("the modified session reached the second machine");
+    let before_pull = original_sessions
+        .iter()
+        .find(|session| &session.session_id == modified_id)
+        .expect("the modified session was there before the pull");
+    assert!(
+        pulled.message_count() > before_pull.message_count(),
+        "Modified session should have more messages"
+    );
 
     // Clean up
     std::env::remove_var("HOME");
@@ -518,7 +521,7 @@ fn test_conflict_handling() {
         .join("test")
         .join(format!("{session_id}.jsonl"));
     fs::create_dir_all(sync_file.parent().unwrap()).unwrap();
-    m1_session.write_to_file(&sync_file).unwrap();
+    m1_session.copy_to(&sync_file).unwrap();
 
     // Machine 2: Modify differently (creating conflict)
     let m2_modified = format!(
@@ -555,7 +558,7 @@ fn test_conflict_handling() {
 
     // Copy remote version to renamed path
     let remote_session = remote_sessions.first().unwrap();
-    remote_session.write_to_file(renamed).unwrap();
+    remote_session.copy_to(renamed).unwrap();
 
     // Verify both files exist
     assert!(m2_file.exists(), "Local version should remain");
@@ -702,10 +705,13 @@ fn test_with_real_test_data() {
             !session.session_id.is_empty(),
             "Session ID should not be empty"
         );
-        assert!(!session.entries.is_empty(), "Session should have entries");
         assert!(
-            !session.file_path.is_empty(),
-            "File path should not be empty"
+            !session.load_entries().unwrap().is_empty(),
+            "Session should have entries"
+        );
+        assert!(
+            session.file_path.is_file(),
+            "File path should name the transcript"
         );
 
         // Note: Some sessions might be summary entries with 0 messages, which is valid
@@ -724,7 +730,7 @@ fn test_with_real_test_data() {
         let dest_path = temp_dir
             .path()
             .join(format!("{}.jsonl", session.session_id));
-        session.write_to_file(&dest_path).unwrap();
+        session.copy_to(&dest_path).unwrap();
 
         // Re-read and verify
         let reloaded = ConversationSession::from_file(&dest_path).unwrap();

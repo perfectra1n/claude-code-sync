@@ -70,7 +70,7 @@ fn test_second_push_plan_is_all_unchanged_despite_shared_session_id() {
     // Apply the plan the way push_history does.
     for entry in &plan1.entries {
         let dest = repo_projects.path().join(&entry.relative_path);
-        sessions[entry.session_index].write_to_file(&dest).unwrap();
+        sessions[entry.session_index].copy_to(&dest).unwrap();
     }
 
     // Second push with no local changes: issue #68 reported these as Modified
@@ -96,7 +96,7 @@ fn test_push_plan_detects_real_modification() {
     let plan1 = plan_push(&sessions, claude.path(), repo_projects.path(), &filter).unwrap();
     for entry in &plan1.entries {
         let dest = repo_projects.path().join(&entry.relative_path);
-        sessions[entry.session_index].write_to_file(&dest).unwrap();
+        sessions[entry.session_index].copy_to(&dest).unwrap();
     }
 
     // Append a new message to ONE subagent transcript only.

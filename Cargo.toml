@@ -18,6 +18,9 @@ anyhow = "1.0.102"
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "std", "now"] }
 time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
 walkdir = "2.5"
+# Summarizing a machine's transcripts is CPU-bound and per-file independent;
+# one core took 20 seconds over 12k of them.
+rayon = "1.11"
 colored = "3.1.1"
 dirs = "6.0.0"
 uuid = { version = "1.23.3", features = ["v4", "serde"] }

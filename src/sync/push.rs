@@ -61,9 +61,10 @@ fn compute_relative_path(
     claude_dir: &Path,
     filter: &FilterConfig,
 ) -> Option<PathBuf> {
-    let full_relative = Path::new(&session.file_path)
+    let full_relative = session
+        .file_path
         .strip_prefix(claude_dir)
-        .unwrap_or(Path::new(&session.file_path));
+        .unwrap_or(&session.file_path);
 
     let mut parts = full_relative.components();
     let encoded_dir = parts.next()?.as_os_str().to_str()?;
@@ -238,15 +239,21 @@ pub fn push_history(
         let session = &sessions[entry.session_index];
         let dest_path = projects_dir.join(&entry.relative_path);
 
-        // Write the session file
-        session.write_to_file(&dest_path)?;
+        // An unchanged session is already in the repository, and copying it
+        // again would rewrite bytes git then has to store: a transcript this
+        // tool wrote before it copied verbatim differs byte for byte while
+        // holding the very same conversation.
+        let already_in_repo = entry.operation == SyncOperation::Unchanged && dest_path.exists();
+        if !already_in_repo {
+            session.copy_to(&dest_path)?;
+        }
 
         // Track this session in pushed conversations
         let relative_path_str = entry.relative_path.to_string_lossy().to_string();
         match ConversationSummary::new(
             session.session_id.clone(),
             relative_path_str.clone(),
-            session.latest_timestamp(),
+            session.latest_timestamp().map(str::to_string),
             session.message_count(),
             entry.operation,
         ) {

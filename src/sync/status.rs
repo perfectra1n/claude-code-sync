@@ -119,9 +119,10 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
         println!();
         println!("{}", "Local session files:".bold());
         for session in local_sessions.iter().take(20) {
-            let relative = Path::new(&session.file_path)
+            let relative = session
+                .file_path
                 .strip_prefix(&claude_dir)
-                .unwrap_or(Path::new(&session.file_path));
+                .unwrap_or(&session.file_path);
             println!(
                 "  {} ({} messages)",
                 relative.display(),
@@ -160,10 +161,10 @@ fn sessions_without_local_project(
     let mut skipped = crate::project_map::SkippedByProject::new();
 
     for session in remote_sessions {
-        let session_path = Path::new(&session.file_path);
-        let relative = session_path
+        let relative = session
+            .file_path
             .strip_prefix(remote_projects_dir)
-            .unwrap_or(session_path);
+            .unwrap_or(&session.file_path);
         let Some((project, _)) = crate::project_map::split_project_path(relative) else {
             continue;
         };
@@ -172,7 +173,7 @@ fn sessions_without_local_project(
             skipped
                 .entry(project.to_string())
                 .or_default()
-                .push(session_path.to_path_buf());
+                .push(session.file_path.clone());
         }
     }
 

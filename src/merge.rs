@@ -95,14 +95,22 @@ pub struct MergeStats {
 
 /// Smart merger for combining conversation sessions
 pub struct SmartMerger<'a> {
-    local: &'a ConversationSession,
-    remote: &'a ConversationSession,
+    local: &'a [ConversationEntry],
+    remote: &'a [ConversationEntry],
     stats: MergeStats,
 }
 
+/// The user and assistant messages among a transcript's entries.
+fn count_messages(entries: &[ConversationEntry]) -> usize {
+    entries
+        .iter()
+        .filter(|entry| entry.entry_type == "user" || entry.entry_type == "assistant")
+        .count()
+}
+
 impl<'a> SmartMerger<'a> {
-    /// Creates a new smart merger for the given sessions
-    pub fn new(local: &'a ConversationSession, remote: &'a ConversationSession) -> Self {
+    /// Creates a new smart merger for the given sessions' messages
+    pub fn new(local: &'a [ConversationEntry], remote: &'a [ConversationEntry]) -> Self {
         SmartMerger {
             local,
             remote,
@@ -113,22 +121,22 @@ impl<'a> SmartMerger<'a> {
     /// Performs the smart merge and returns the result
     pub fn merge(&mut self) -> Result<MergeResult> {
         // Count initial messages
-        self.stats.local_messages = self.local.message_count();
-        self.stats.remote_messages = self.remote.message_count();
+        self.stats.local_messages = count_messages(self.local);
+        self.stats.remote_messages = count_messages(self.remote);
 
         // Build UUID maps for both sessions
-        let local_map = self.build_uuid_map(&self.local.entries);
-        let remote_map = self.build_uuid_map(&self.remote.entries);
+        let local_map = self.build_uuid_map(self.local);
+        let remote_map = self.build_uuid_map(self.remote);
 
         // Detect and resolve edits (same UUID, different content)
         let resolved_edits = self.detect_and_resolve_edits(&local_map, &remote_map)?;
 
         // Separate entries into UUID-tracked and non-UUID entries
         let (local_uuid_entries, local_non_uuid): (Vec<_>, Vec<_>) =
-            self.local.entries.iter().partition(|e| e.uuid.is_some());
+            self.local.iter().partition(|e| e.uuid.is_some());
 
         let (remote_uuid_entries, remote_non_uuid): (Vec<_>, Vec<_>) =
-            self.remote.entries.iter().partition(|e| e.uuid.is_some());
+            self.remote.iter().partition(|e| e.uuid.is_some());
 
         // Combine all UUID entries from both sides
         let mut all_uuid_entries: Vec<&ConversationEntry> = Vec::new();
@@ -595,7 +603,12 @@ pub fn merge_conversations(
         ));
     }
 
-    let mut merger = SmartMerger::new(local, remote);
+    // The messages are read back here, for this one session: discovery keeps
+    // none of them, and a merge needs both sides in full.
+    let local_entries = local.load_entries()?;
+    let remote_entries = remote.load_entries()?;
+
+    let mut merger = SmartMerger::new(&local_entries, &remote_entries);
     merger.merge()
 }
 
@@ -640,19 +653,9 @@ mod tests {
             create_test_entry("4", Some("3"), "2025-01-01T00:03:00Z"),
         ];
 
-        let local = ConversationSession {
-            session_id: "test-session".to_string(),
-            entries: local_entries,
-            file_path: "local.jsonl".to_string(),
-        };
-
-        let remote = ConversationSession {
-            session_id: "test-session".to_string(),
-            entries: remote_entries,
-            file_path: "remote.jsonl".to_string(),
-        };
-
-        let result = merge_conversations(&local, &remote).unwrap();
+        let result = SmartMerger::new(&local_entries, &remote_entries)
+            .merge()
+            .unwrap();
 
         // Should have all 4 messages (local 1,2 are duplicates of remote 1,2)
         assert_eq!(
@@ -682,19 +685,9 @@ mod tests {
             create_test_entry("4", Some("2"), "2025-01-01T00:02:30Z"),
         ];
 
-        let local = ConversationSession {
-            session_id: "test-session".to_string(),
-            entries: local_entries,
-            file_path: "local.jsonl".to_string(),
-        };
-
-        let remote = ConversationSession {
-            session_id: "test-session".to_string(),
-            entries: remote_entries,
-            file_path: "remote.jsonl".to_string(),
-        };
-
-        let result = merge_conversations(&local, &remote).unwrap();
+        let result = SmartMerger::new(&local_entries, &remote_entries)
+            .merge()
+            .unwrap();
 
         // Should detect branch (message 2 has two children: 3 and 4)
         assert!(
@@ -730,19 +723,9 @@ mod tests {
         let mut remote_entry = create_test_entry("1", None, "2025-01-01T00:01:00Z");
         remote_entry.message = Some(json!({"text": "Remote version (newer)"}));
 
-        let local = ConversationSession {
-            session_id: "test-session".to_string(),
-            entries: vec![local_entry],
-            file_path: "local.jsonl".to_string(),
-        };
-
-        let remote = ConversationSession {
-            session_id: "test-session".to_string(),
-            entries: vec![remote_entry],
-            file_path: "remote.jsonl".to_string(),
-        };
-
-        let result = merge_conversations(&local, &remote).unwrap();
+        let result = SmartMerger::new(&[local_entry], &[remote_entry])
+            .merge()
+            .unwrap();
 
         // Should detect and resolve one edit
         assert_eq!(result.stats.edits_resolved, 1);

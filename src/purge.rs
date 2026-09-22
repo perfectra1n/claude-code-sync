@@ -9,6 +9,7 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
+use rayon::prelude::*;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -135,8 +136,20 @@ pub fn plan(
         std::collections::BTreeMap::new();
 
     for transcripts_root in [claude_projects_dir, repo_projects_dir] {
-        for transcript in transcripts(transcripts_root) {
-            let session = match crate::parser::ConversationSession::from_file(&transcript) {
+        // Summarizing is the whole cost of planning a purge, and every file is
+        // independent: read them across the cores, then fold the results in the
+        // order the walk found them.
+        let summarized: Vec<(PathBuf, Result<crate::parser::ConversationSession>)> =
+            transcripts(transcripts_root)
+                .into_par_iter()
+                .map(|transcript| {
+                    let summary = crate::parser::ConversationSession::from_file(&transcript);
+                    (transcript, summary)
+                })
+                .collect();
+
+        for (transcript, summary) in summarized {
+            let session = match summary {
                 Ok(session) => session,
                 Err(error) => {
                     // The session is kept whole: a copy that cannot be read
@@ -317,7 +330,7 @@ fn sidecars(transcript: &Path) -> Vec<PathBuf> {
 /// Timestamp of the session's last message, in UTC.
 fn last_activity(session: &crate::parser::ConversationSession) -> Option<DateTime<Utc>> {
     let stamp = session.latest_timestamp()?;
-    DateTime::parse_from_rfc3339(&stamp)
+    DateTime::parse_from_rfc3339(stamp)
         .ok()
         .map(|dated| dated.with_timezone(&Utc))
 }

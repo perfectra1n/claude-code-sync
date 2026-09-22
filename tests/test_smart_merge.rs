@@ -1,6 +1,17 @@
 use claude_code_sync::merge::merge_conversations;
-use claude_code_sync::parser::{ConversationEntry, ConversationSession};
+use claude_code_sync::parser::{write_entries_to_file, ConversationEntry, ConversationSession};
 use serde_json::json;
+use tempfile::TempDir;
+
+/// A session is a summary of a transcript on disk, so these tests write the
+/// messages out and let sync read them back the way a real merge does.
+fn session_of(name: &str, entries: Vec<ConversationEntry>) -> (TempDir, ConversationSession) {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(format!("{name}.jsonl"));
+    write_entries_to_file(&path, &entries).unwrap();
+    let session = ConversationSession::from_file(&path).unwrap();
+    (dir, session)
+}
 
 /// Helper to create a test entry
 fn create_entry(
@@ -26,26 +37,24 @@ fn create_entry(
 #[test]
 fn test_simple_extension() {
     // Local: A -> B
-    let local = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "local.jsonl".to_string(),
-        entries: vec![
+    let (_local_dir, local) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Message A"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Message B"),
         ],
-    };
+    );
 
     // Remote: A -> B -> C -> D (extended conversation)
-    let remote = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "remote.jsonl".to_string(),
-        entries: vec![
+    let (_remote_dir, remote) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Message A"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Message B"),
             create_entry("C", Some("B"), "2025-01-01T00:02:00Z", "Message C"),
             create_entry("D", Some("C"), "2025-01-01T00:03:00Z", "Message D"),
         ],
-    };
+    );
 
     let result = merge_conversations(&local, &remote).unwrap();
 
@@ -70,10 +79,9 @@ fn test_simple_extension() {
 #[test]
 fn test_conversation_branch() {
     // Local: A -> B -> C
-    let local = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "local.jsonl".to_string(),
-        entries: vec![
+    let (_local_dir, local) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Message A"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Message B"),
             create_entry(
@@ -83,13 +91,12 @@ fn test_conversation_branch() {
                 "Message C - local branch",
             ),
         ],
-    };
+    );
 
     // Remote: A -> B -> D (different branch from B)
-    let remote = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "remote.jsonl".to_string(),
-        entries: vec![
+    let (_remote_dir, remote) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Message A"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Message B"),
             create_entry(
@@ -99,7 +106,7 @@ fn test_conversation_branch() {
                 "Message D - remote branch",
             ),
         ],
-    };
+    );
 
     let result = merge_conversations(&local, &remote).unwrap();
 
@@ -124,28 +131,26 @@ fn test_conversation_branch() {
 #[test]
 fn test_edited_message_resolution() {
     // Local: A with old timestamp
-    let local = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "local.jsonl".to_string(),
-        entries: vec![create_entry(
+    let (_local_dir, local) = session_of(
+        "test",
+        vec![create_entry(
             "A",
             None,
             "2025-01-01T00:00:00Z",
             "Original message",
         )],
-    };
+    );
 
     // Remote: A with newer timestamp (edited)
-    let remote = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "remote.jsonl".to_string(),
-        entries: vec![create_entry(
+    let (_remote_dir, remote) = session_of(
+        "test",
+        vec![create_entry(
             "A",
             None,
             "2025-01-01T00:05:00Z",
             "Edited message",
         )],
-    };
+    );
 
     let result = merge_conversations(&local, &remote).unwrap();
 
@@ -166,26 +171,24 @@ fn test_edited_message_resolution() {
 fn test_non_overlapping_additions() {
     // Local adds C, Remote adds D
     // Local: A -> B -> C
-    let local = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "local.jsonl".to_string(),
-        entries: vec![
+    let (_local_dir, local) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Message A"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Message B"),
             create_entry("C", Some("B"), "2025-01-01T00:02:00Z", "Local addition"),
         ],
-    };
+    );
 
     // Remote: A -> B -> D
-    let remote = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "remote.jsonl".to_string(),
-        entries: vec![
+    let (_remote_dir, remote) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Message A"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Message B"),
             create_entry("D", Some("B"), "2025-01-01T00:02:30Z", "Remote addition"),
         ],
-    };
+    );
 
     let result = merge_conversations(&local, &remote).unwrap();
 
@@ -214,19 +217,11 @@ fn test_real_conversation_data() {
 
     // Simulate a scenario where one machine has the first half of messages
     // and another has extended it
-    let midpoint = session.entries.len() / 2;
+    let entries = session.load_entries().unwrap();
+    let midpoint = entries.len() / 2;
 
-    let local = ConversationSession {
-        session_id: session.session_id.clone(),
-        file_path: "local.jsonl".to_string(),
-        entries: session.entries[..midpoint].to_vec(),
-    };
-
-    let remote = ConversationSession {
-        session_id: session.session_id.clone(),
-        file_path: "remote.jsonl".to_string(),
-        entries: session.entries.clone(),
-    };
+    let (_local_dir, local) = session_of(&session.session_id, entries[..midpoint].to_vec());
+    let (_remote_dir, remote) = session_of(&session.session_id, entries.clone());
 
     let result = merge_conversations(&local, &remote).unwrap();
 
@@ -236,7 +231,7 @@ fn test_real_conversation_data() {
     // Should have all messages from the full session
     assert_eq!(
         result.merged_entries.len(),
-        session.entries.len(),
+        entries.len(),
         "Should preserve all messages from extended conversation"
     );
 }
@@ -252,10 +247,9 @@ fn test_complex_branching_scenario() {
     //             \
     //              D2
 
-    let local = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "local.jsonl".to_string(),
-        entries: vec![
+    let (_local_dir, local) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Root"),
             create_entry("B1", Some("A"), "2025-01-01T00:01:00Z", "Branch 1 from A"),
             create_entry(
@@ -265,12 +259,11 @@ fn test_complex_branching_scenario() {
                 "Continuation of B1",
             ),
         ],
-    };
+    );
 
-    let remote = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "remote.jsonl".to_string(),
-        entries: vec![
+    let (_remote_dir, remote) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "Root"),
             create_entry("B2", Some("A"), "2025-01-01T00:01:30Z", "Branch 2 from A"),
             create_entry(
@@ -286,7 +279,7 @@ fn test_complex_branching_scenario() {
                 "Further continuation",
             ),
         ],
-    };
+    );
 
     let result = merge_conversations(&local, &remote).unwrap();
 
@@ -333,17 +326,8 @@ fn test_no_conflicts_when_identical() {
         create_entry("C", Some("B"), "2025-01-01T00:02:00Z", "Message C"),
     ];
 
-    let local = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "local.jsonl".to_string(),
-        entries: entries.clone(),
-    };
-
-    let remote = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "remote.jsonl".to_string(),
-        entries: entries.clone(),
-    };
+    let (_local_dir, local) = session_of("test", entries.clone());
+    let (_remote_dir, remote) = session_of("test", entries.clone());
 
     let result = merge_conversations(&local, &remote).unwrap();
 
@@ -366,10 +350,9 @@ fn test_no_conflicts_when_identical() {
 #[test]
 fn test_mixed_uuid_and_non_uuid_entries() {
     // Test merging with both UUID-tracked messages and non-UUID system events
-    let local = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "local.jsonl".to_string(),
-        entries: vec![
+    let (_local_dir, local) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "User message"),
             ConversationEntry {
                 entry_type: "file-history-snapshot".to_string(),
@@ -385,17 +368,16 @@ fn test_mixed_uuid_and_non_uuid_entries() {
             },
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Assistant response"),
         ],
-    };
+    );
 
-    let remote = ConversationSession {
-        session_id: "test".to_string(),
-        file_path: "remote.jsonl".to_string(),
-        entries: vec![
+    let (_remote_dir, remote) = session_of(
+        "test",
+        vec![
             create_entry("A", None, "2025-01-01T00:00:00Z", "User message"),
             create_entry("B", Some("A"), "2025-01-01T00:01:00Z", "Assistant response"),
             create_entry("C", Some("B"), "2025-01-01T00:02:00Z", "Continuation"),
         ],
-    };
+    );
 
     let result = merge_conversations(&local, &remote).unwrap();
 

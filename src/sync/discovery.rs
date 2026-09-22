@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -29,33 +30,35 @@ pub(crate) fn claude_projects_dir() -> Result<PathBuf> {
     Ok(claude_home_dir()?.join("projects"))
 }
 
-/// Discover all conversation sessions in Claude Code history
+/// Discover all conversation sessions in Claude Code history.
+///
+/// Summarizing a transcript is pure CPU and independent per file, so the walk
+/// only gathers paths and the parsing runs across every core. Results keep the
+/// order the walk found them in, and each file is still streamed one line at a
+/// time, so the memory a machine needs does not grow with its history.
 pub fn discover_sessions(
     base_path: &Path,
     filter: &FilterConfig,
 ) -> Result<Vec<ConversationSession>> {
-    let mut sessions = Vec::new();
-
-    for entry in WalkDir::new(base_path)
+    let transcripts: Vec<PathBuf> = WalkDir::new(base_path)
         .follow_links(false)
         .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.into_path())
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("jsonl"))
+        .filter(|path| filter.should_include(path))
+        .collect();
 
-        if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-            if !filter.should_include(path) {
-                continue;
+    let sessions = transcripts
+        .par_iter()
+        .filter_map(|path| match ConversationSession::from_file(path) {
+            Ok(session) => Some(session),
+            Err(e) => {
+                log::warn!("Failed to parse {}: {}", path.display(), e);
+                None
             }
-
-            match ConversationSession::from_file(path) {
-                Ok(session) => sessions.push(session),
-                Err(e) => {
-                    log::warn!("Failed to parse {}: {}", path.display(), e);
-                }
-            }
-        }
-    }
+        })
+        .collect();
 
     Ok(sessions)
 }
