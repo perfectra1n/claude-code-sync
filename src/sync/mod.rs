@@ -21,6 +21,30 @@ use colored::Colorize;
 /// Maximum number of conversations to display per project in summary
 const MAX_CONVERSATIONS_TO_DISPLAY: usize = 10;
 
+/// Write the union-merge rules into the sync repository and commit them.
+///
+/// Two machines that both appended between syncs leave git with a conflict in
+/// a transcript or in the prompt history, which stops the pull. The rules tell
+/// git to keep both sides' lines instead. A repository with other pending work
+/// is left alone: staging everything would sweep that work into this commit,
+/// and a push commits the rules along with it anyway.
+pub(crate) fn commit_union_merge_rules(
+    repo: &dyn crate::scm::Scm,
+    repo_path: &std::path::Path,
+) -> Result<()> {
+    if repo.has_changes()? {
+        return Ok(());
+    }
+    if !crate::scm::attributes::ensure_union_merge(repo_path)? {
+        return Ok(());
+    }
+
+    repo.stage_all()?;
+    repo.commit("Merge append-only files by keeping both sides")?;
+
+    Ok(())
+}
+
 /// Bidirectional sync: pull remote changes, then push local changes
 pub fn sync_bidirectional(
     commit_message: Option<&str>,

@@ -84,6 +84,19 @@ fn compute_relative_path(
     Some(full_relative.to_path_buf())
 }
 
+/// Whether applying this plan entry still has to write the transcript.
+///
+/// An unchanged session already sits in the repository, and copying it again
+/// would rewrite bytes git then has to store for no change: a transcript an
+/// older version wrote is normalized JSON, byte for byte different from the
+/// verbatim copy made today while holding the very same conversation.
+pub fn needs_copy(entry: &PlannedSessionPush, dest_path: &Path) -> bool {
+    if entry.operation != SyncOperation::Unchanged {
+        return true;
+    }
+    !dest_path.exists()
+}
+
 /// Classify every discovered session against the sync repository's current
 /// contents without writing anything. Sessions are keyed by their identity
 /// (filename stem), so sibling files sharing an interior sessionId — subagent
@@ -172,6 +185,8 @@ pub fn push_history(
             .context("Failed to set up Git LFS")?;
     }
 
+    crate::scm::attributes::ensure_union_merge(&state.sync_repo_path)?;
+
     let claude_dir = claude_projects_dir()?;
 
     // Get the current branch name for operation record
@@ -239,12 +254,7 @@ pub fn push_history(
         let session = &sessions[entry.session_index];
         let dest_path = projects_dir.join(&entry.relative_path);
 
-        // An unchanged session is already in the repository, and copying it
-        // again would rewrite bytes git then has to store: a transcript this
-        // tool wrote before it copied verbatim differs byte for byte while
-        // holding the very same conversation.
-        let already_in_repo = entry.operation == SyncOperation::Unchanged && dest_path.exists();
-        if !already_in_repo {
+        if needs_copy(entry, &dest_path) {
             session.copy_to(&dest_path)?;
         }
 

@@ -3,6 +3,7 @@
 //! Provides a unified interface for Git and Mercurial using CLI commands.
 //! Backend selection is controlled via the `Backend` enum.
 
+pub mod attributes;
 mod git;
 mod hg;
 pub mod lfs;

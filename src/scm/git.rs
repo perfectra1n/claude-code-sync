@@ -216,7 +216,16 @@ impl Scm for GitScm {
 
         // A repository `init` just created has no commit of its own, and git
         // refuses to merge into an empty head: take the fetched branch whole.
+        // Only when there is nothing to lose — checking it out is a hard reset,
+        // and work staged but never committed would go with it.
         if !self.git_succeeds(&["rev-parse", "--verify", "HEAD"]) {
+            if self.has_changes()? {
+                return Err(anyhow!(
+                    "Failed to check out '{remote}/{branch}': the sync repository has no commit \
+                     of its own yet, and taking the remote's history would discard the files \
+                     waiting in it. Run `claude-code-sync push` first."
+                ));
+            }
             return self
                 .run_git_ok(&["reset", "--hard", "FETCH_HEAD"])
                 .with_context(|| format!("Failed to check out '{remote}/{branch}'"));
@@ -341,6 +350,7 @@ mod tests {
         let machine_first = GitScm::open(&first).unwrap();
         git_in(&first, &["config", "user.name", "First"]);
         git_in(&first, &["config", "user.email", "first@local"]);
+        crate::scm::attributes::ensure_union_merge(&first).unwrap();
         commit_file(&machine_first, &first, "shared-start.txt", "start\n");
         let branch = machine_first.current_branch().unwrap();
         machine_first.push("origin", &branch).unwrap();
@@ -401,6 +411,20 @@ mod tests {
             std::fs::read_to_string(workdir.join("both-touched.txt")).unwrap(),
             "from the first\n"
         );
+    }
+
+    #[test]
+    fn a_log_both_machines_wrote_to_is_merged_rather_than_refused() {
+        // A transcript and the prompt history only ever grow, so both sides'
+        // lines are kept instead of stopping the pull with a conflict.
+        let (_root, machine, workdir, branch) = two_diverged_machines(Some("history.jsonl"));
+
+        machine.pull("origin", &branch).unwrap();
+
+        let merged = std::fs::read_to_string(workdir.join("history.jsonl")).unwrap();
+        assert!(merged.contains("from the first"), "kept: {merged}");
+        assert!(merged.contains("from the second"), "kept: {merged}");
+        assert!(!merged.contains("<<<<"), "no conflict markers: {merged}");
     }
 
     #[test]
