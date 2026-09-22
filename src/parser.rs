@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// Represents a single line/entry in the JSONL conversation file
@@ -116,6 +116,10 @@ pub struct ConversationSession {
     message_count: usize,
     content_hash: String,
     project_name: Option<String>,
+
+    /// How much of the file the summary covers: the offset just past the last
+    /// message read. Anything after it arrived while the file was being read.
+    summarized_bytes: u64,
 }
 
 impl ConversationSession {
@@ -129,7 +133,7 @@ impl ConversationSession {
         let mut first_cwd: Option<String> = None;
         let mut hasher = ContentHasher::new();
 
-        for_each_entry(path, |entry| {
+        let summarized_bytes = for_each_entry(path, |entry| {
             // Remember the first interior sessionId, used only as a fallback below.
             if entry_session_id.is_none() {
                 if let Some(ref sid) = entry.session_id {
@@ -146,7 +150,7 @@ impl ConversationSession {
                 }
             }
 
-            if entry.entry_type == "user" || entry.entry_type == "assistant" {
+            if is_message(&entry) {
                 message_count += 1;
             }
 
@@ -193,6 +197,7 @@ impl ConversationSession {
             message_count,
             content_hash: hasher.finish(),
             project_name,
+            summarized_bytes,
         })
     }
 
@@ -210,6 +215,11 @@ impl ConversationSession {
 
     /// Copy the transcript verbatim to another path, creating its directory.
     /// Byte-for-byte: a re-serialized transcript is a rewritten transcript.
+    ///
+    /// The copy holds exactly the messages this summary was taken from.
+    /// Claude Code appends to a live session while sync runs, and a message
+    /// that arrived since — possibly half-written — would make the copy parse
+    /// differently, or not at all. It travels with the next sync instead.
     pub fn copy_to<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let path = path.as_ref();
 
@@ -232,7 +242,7 @@ impl ConversationSession {
             )
         })?;
 
-        drop_incomplete_last_line(path)
+        trim_to_summarized_length(path, self.summarized_bytes)
             .with_context(|| format!("Failed to finish copying to {}", path.display()))?;
 
         Ok(())
@@ -262,8 +272,11 @@ impl ConversationSession {
 /// The largest line buffer a parse keeps between lines, 1 MB.
 const MAX_RETAINED_LINE_BUFFER: usize = 1024 * 1024;
 
-/// How much of a file's tail is read at a time when looking for its last line.
-const TAIL_SCAN_CHUNK: usize = 64 * 1024;
+/// Whether an entry is a message, as opposed to a snapshot, a summary or
+/// whatever else Claude Code records in a transcript.
+pub fn is_message(entry: &ConversationEntry) -> bool {
+    entry.entry_type == "user" || entry.entry_type == "assistant"
+}
 
 /// Whether two paths name the same file on disk.
 fn is_same_file(source: &Path, destination: &Path) -> bool {
@@ -273,61 +286,61 @@ fn is_same_file(source: &Path, destination: &Path) -> bool {
     source == destination
 }
 
-/// Cut a freshly copied transcript back to its last complete line.
-///
-/// Claude Code appends to a session while sync runs, so the copy can catch a
-/// message half-written. A transcript with a torn last line fails to parse,
-/// and a copy that fails to parse is silently dropped on every other machine;
-/// the missing message arrives with the next sync instead.
-fn drop_incomplete_last_line(path: &Path) -> Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
+/// Cut a freshly copied transcript back to the messages that were summarized,
+/// dropping whatever was appended to the original while it was being read.
+fn trim_to_summarized_length(path: &Path, summarized_bytes: u64) -> Result<()> {
+    let copied_bytes = std::fs::metadata(path)?.len();
+    if copied_bytes <= summarized_bytes {
+        return Ok(());
+    }
+
+    // The copy carries the original's permissions, and a read-only transcript
+    // would leave a destination neither this run nor the next one can write.
+    let permissions = std::fs::metadata(path)?.permissions();
+    if permissions.readonly() {
+        allow_writing(path, permissions)?;
+    }
+
+    std::fs::OpenOptions::new()
         .write(true)
-        .open(path)?;
-    let size = file.metadata()?.len();
-    if size == 0 {
-        return Ok(());
-    }
+        .open(path)?
+        .set_len(summarized_bytes)?;
 
-    file.seek(SeekFrom::End(-1))?;
-    let mut last_byte = [0u8; 1];
-    file.read_exact(&mut last_byte)?;
-    if last_byte[0] == b'\n' {
-        return Ok(());
-    }
-
-    let complete_bytes = last_line_end(&mut file, size)?;
-    file.set_len(complete_bytes)?;
     Ok(())
 }
 
-/// The offset just past the file's last newline, or 0 if it has none.
-fn last_line_end(file: &mut File, size: u64) -> Result<u64> {
-    let mut buffer = vec![0u8; TAIL_SCAN_CHUNK];
-    let mut scanned_from = size;
+/// Give the file's owner permission to write it, leaving the rest alone.
+#[cfg(unix)]
+fn allow_writing(path: &Path, permissions: std::fs::Permissions) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
 
-    while scanned_from > 0 {
-        let chunk = TAIL_SCAN_CHUNK.min(scanned_from as usize);
-        let chunk_start = scanned_from - chunk as u64;
-        file.seek(SeekFrom::Start(chunk_start))?;
-        file.read_exact(&mut buffer[..chunk])?;
+    let mut permissions = permissions;
+    permissions.set_mode(permissions.mode() | 0o200);
+    std::fs::set_permissions(path, permissions)?;
 
-        if let Some(offset) = buffer[..chunk].iter().rposition(|byte| *byte == b'\n') {
-            return Ok(chunk_start + offset as u64 + 1);
-        }
-        scanned_from = chunk_start;
-    }
+    Ok(())
+}
 
-    Ok(0)
+/// Clear the file's read-only flag.
+#[cfg(not(unix))]
+fn allow_writing(path: &Path, permissions: std::fs::Permissions) -> Result<()> {
+    let mut permissions = permissions;
+    permissions.set_readonly(false);
+    std::fs::set_permissions(path, permissions)?;
+
+    Ok(())
 }
 
 /// The content hash of a transcript: FNV-1a over the serialized messages.
 ///
 /// Written out here rather than taken from `std::collections::hash_map::
 /// DefaultHasher`, whose value std explicitly does not keep stable across Rust
-/// releases — a compiler upgrade would shift every hash at once and report
-/// every conversation on every machine as changed. FNV-1a is nine lines, needs
-/// no dependency, and is pinned by `the_content_hash_never_changes`.
+/// releases: a hashing rule nobody can state is one nobody can test, and this
+/// one decides whether a conversation counts as changed. FNV-1a is nine lines,
+/// needs no dependency, is measurably faster on the many small writes
+/// serialization produces, and is pinned by `the_content_hash_never_changes`.
+///
+/// The hash is always 16 hex digits, which is what the conflict screen prints.
 ///
 /// Bytes are fed in as they are serialized, so hashing a message never builds
 /// its JSON text in memory first: a message can be megabytes, and every core
@@ -388,7 +401,10 @@ fn hash_entry(entry: &ConversationEntry, hasher: &mut ContentHasher) {
 /// Parse a JSONL transcript line by line, handing each entry to `visit` and
 /// dropping it again unless the caller keeps it. The entry is handed over by
 /// value, so a caller that wants to keep it never copies it.
-fn for_each_entry<F>(path: &Path, mut visit: F) -> Result<()>
+///
+/// Returns the offset just past the last message read, which is how much of
+/// the file the caller has actually seen.
+fn for_each_entry<F>(path: &Path, mut visit: F) -> Result<u64>
 where
     F: FnMut(ConversationEntry) -> Result<()>,
 {
@@ -401,6 +417,8 @@ where
     // reads it allocates once instead of once per message.
     let mut line = String::new();
     let mut line_num = 0;
+    let mut read_bytes = 0u64;
+    let mut parsed_bytes = 0u64;
 
     loop {
         line.clear();
@@ -417,6 +435,7 @@ where
             break;
         }
         line_num += 1;
+        read_bytes += bytes_read as u64;
 
         if line.trim().is_empty() {
             continue;
@@ -431,9 +450,10 @@ where
         })?;
 
         visit(entry)?;
+        parsed_bytes = read_bytes;
     }
 
-    Ok(())
+    Ok(parsed_bytes)
 }
 
 /// Write conversation entries to a JSONL file, creating its directory. Used
@@ -528,6 +548,71 @@ mod tests {
         session.copy_to(&session_path).unwrap();
 
         assert_eq!(std::fs::read(&session_path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_last_message_written_without_a_newline_still_travels() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_path = temp_dir.path().join("no-trailing-newline.jsonl");
+        let mut file = File::create(&session_path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","uuid":"1","timestamp":"2025-01-01T00:00:00Z"}}"#
+        )
+        .unwrap();
+        write!(
+            file,
+            r#"{{"type":"assistant","uuid":"2","timestamp":"2025-01-01T00:01:00Z"}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let session = ConversationSession::from_file(&session_path).unwrap();
+        assert_eq!(session.message_count(), 2);
+
+        let copy_path = temp_dir
+            .path()
+            .join("copy")
+            .join("no-trailing-newline.jsonl");
+        session.copy_to(&copy_path).unwrap();
+
+        assert_eq!(
+            std::fs::read(&copy_path).unwrap(),
+            std::fs::read(&session_path).unwrap(),
+            "a complete last message is not a half-written one"
+        );
+    }
+
+    #[test]
+    fn a_read_only_transcript_can_still_be_copied() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_path = temp_dir.path().join("read-only.jsonl");
+        let mut file = File::create(&session_path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","uuid":"1","timestamp":"2025-01-01T00:00:00Z"}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let mut permissions = std::fs::metadata(&session_path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&session_path, permissions).unwrap();
+
+        let session = ConversationSession::from_file(&session_path).unwrap();
+        let copy_path = temp_dir.path().join("copy").join("read-only.jsonl");
+        session.copy_to(&copy_path).unwrap();
+
+        assert_eq!(
+            ConversationSession::from_file(&copy_path)
+                .unwrap()
+                .content_hash(),
+            session.content_hash()
+        );
     }
 
     #[test]
@@ -664,6 +749,31 @@ mod tests {
     }
 
     #[test]
+    fn the_first_working_directory_names_the_project() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_path = temp_dir.path().join("two-cwds.jsonl");
+        let mut file = File::create(&session_path).unwrap();
+        writeln!(file, r#"{{"type":"user","uuid":"1"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","uuid":"2","cwd":"/home/me/first"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","uuid":"3","cwd":"/home/me/second"}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let session = ConversationSession::from_file(&session_path).unwrap();
+
+        assert_eq!(session.project_name(), Some("first"));
+    }
+
+    #[test]
     fn test_project_name_no_cwd() {
         let (_dir, session) = session_from_line(r#"{"type":"user","uuid":"1"}"#);
 
@@ -680,6 +790,11 @@ mod tests {
         // compiler moves this value, every conversation on every machine looks
         // modified at once and the next push rewrites the whole repository.
         assert_eq!(session.content_hash(), "65439596bed5d900");
+        assert_eq!(
+            session.content_hash().len(),
+            16,
+            "the conflict screen prints the first 16 digits of it"
+        );
     }
 
     #[test]

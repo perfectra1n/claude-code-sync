@@ -8,7 +8,7 @@ use std::path::Path;
 
 use claude_code_sync::filter::FilterConfig;
 use claude_code_sync::sync::discovery::discover_sessions;
-use claude_code_sync::sync::push::plan_push;
+use claude_code_sync::sync::push::{needs_copy, plan_push};
 use tempfile::TempDir;
 
 const PARENT_SESSION_ID: &str = "56d02190-2a2d-4a55-9ec1-38e34fb25e84";
@@ -83,6 +83,50 @@ fn test_second_push_plan_is_all_unchanged_despite_shared_session_id() {
         "second push must modify nothing (issue #68)"
     );
     assert_eq!(plan2.unchanged, 3, "all three files are unchanged");
+}
+
+/// An upgrade must not rewrite the whole repository: every transcript an older
+/// version wrote is normalized JSON, which differs byte for byte from the
+/// verbatim copy made today even though the conversation is identical.
+#[test]
+fn an_unchanged_session_is_left_in_the_repository_as_it_is() {
+    let claude = TempDir::new().unwrap();
+    let repo_projects = TempDir::new().unwrap();
+    seed_claude_projects(claude.path());
+    let filter = FilterConfig::default();
+
+    let sessions = discover_sessions(claude.path(), &filter).unwrap();
+    let plan = plan_push(&sessions, claude.path(), repo_projects.path(), &filter).unwrap();
+
+    // Fill the repository the way every version before 0.4.3 did.
+    for entry in &plan.entries {
+        let dest = repo_projects.path().join(&entry.relative_path);
+        let entries = sessions[entry.session_index].load_entries().unwrap();
+        claude_code_sync::parser::write_entries_to_file(&dest, &entries).unwrap();
+    }
+    let normalized: Vec<Vec<u8>> = plan
+        .entries
+        .iter()
+        .map(|entry| fs::read(repo_projects.path().join(&entry.relative_path)).unwrap())
+        .collect();
+
+    let sessions = discover_sessions(claude.path(), &filter).unwrap();
+    let plan = plan_push(&sessions, claude.path(), repo_projects.path(), &filter).unwrap();
+    assert_eq!(plan.unchanged, 3, "normalizing does not change a session");
+
+    for entry in &plan.entries {
+        let dest = repo_projects.path().join(&entry.relative_path);
+        if needs_copy(entry, &dest) {
+            sessions[entry.session_index].copy_to(&dest).unwrap();
+        }
+    }
+
+    let after: Vec<Vec<u8>> = plan
+        .entries
+        .iter()
+        .map(|entry| fs::read(repo_projects.path().join(&entry.relative_path)).unwrap())
+        .collect();
+    assert_eq!(after, normalized, "an unchanged session is not rewritten");
 }
 
 #[test]

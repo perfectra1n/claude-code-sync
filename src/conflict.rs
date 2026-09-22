@@ -256,6 +256,25 @@ impl Conflict {
         Ok(())
     }
 
+    /// Work out what a smart merge would produce, without writing anything.
+    ///
+    /// The interactive resolver asks about every conflict before it applies
+    /// any answer, so it needs the statistics to show while the user can still
+    /// change their mind, or cancel and keep every file as it was.
+    pub fn preview_smart_merge(
+        &mut self,
+        local_session: &ConversationSession,
+        remote_session: &ConversationSession,
+    ) -> Result<()> {
+        let merge_result = merge::merge_conversations(local_session, remote_session)?;
+
+        self.resolution = ConflictResolution::SmartMerge {
+            stats: merge_result.stats,
+        };
+
+        Ok(())
+    }
+
     /// Resolve the conflict by keeping both versions
     pub fn resolve_keep_both(&mut self, conflict_suffix: &str) -> Result<PathBuf> {
         let remote_file_name = self

@@ -104,7 +104,7 @@ pub struct SmartMerger<'a> {
 fn count_messages(entries: &[ConversationEntry]) -> usize {
     entries
         .iter()
-        .filter(|entry| entry.entry_type == "user" || entry.entry_type == "assistant")
+        .filter(|entry| crate::parser::is_message(entry))
         .count()
 }
 

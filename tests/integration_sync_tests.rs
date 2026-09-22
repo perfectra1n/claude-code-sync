@@ -235,11 +235,13 @@ fn test_full_push_pull_cycle() {
     assert_eq!(sync_sessions.len(), original_sessions.len());
 
     // Modify a conversation file in sync repo (simulate remote change)
-    if let Some(first_session) = sync_sessions.first() {
+    let modified_id = sync_sessions.first().unwrap().session_id.clone();
+    {
+        let first_session = sync_sessions.first().unwrap();
         let session_path = projects_dir.join(&first_session.file_path);
         let content = fs::read_to_string(&session_path).unwrap();
         let modified_content = format!("{}\n{{\"type\":\"user\",\"uuid\":\"test-uuid\",\"sessionId\":\"{}\",\"timestamp\":\"2025-10-18T00:00:00Z\"}}\n",
-            content.trim(), first_session.session_id);
+            content.trim(), modified_id);
         fs::write(&session_path, modified_content).unwrap();
 
         // Commit the modification
@@ -287,9 +289,10 @@ fn test_full_push_pull_cycle() {
     let machine2_sessions = discover_test_sessions(&machine2_projects).unwrap();
     assert_eq!(machine2_sessions.len(), sync_sessions_after_modify.len());
 
-    // Verify the modification was pulled. Both sides are looked up by session
-    // id: two walks of two directories do not hand back the same first session.
-    let modified_id = &sync_sessions_after_modify.first().unwrap().session_id;
+    // Verify the modification was pulled. Every side is looked up by the id of
+    // the session that was actually modified: two walks of two directories do
+    // not hand back the same first session.
+    let modified_id = &modified_id;
     let pulled = machine2_sessions
         .iter()
         .find(|session| &session.session_id == modified_id)

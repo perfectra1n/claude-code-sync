@@ -223,7 +223,7 @@ pub fn resolve_conflicts_interactive_with_sessions(
                         local_map.get(&conflict.session_id),
                         remote_map.get(&conflict.session_id),
                     ) {
-                        match conflict.smart_merge_into_local_file(local_session, remote_session) {
+                        match conflict.preview_smart_merge(local_session, remote_session) {
                             Ok(()) => {
                                 if let ConflictResolution::SmartMerge { ref stats, .. } =
                                     conflict.resolution
@@ -346,7 +346,20 @@ pub fn apply_resolutions(
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut renames = Vec::new();
 
-    // Smart merged conversations were written when they were merged.
+    for conflict in &result.smart_merge {
+        let local = ConversationSession::from_file(&conflict.local_file)?;
+        let remote = ConversationSession::from_file(&conflict.remote_file)?;
+
+        conflict
+            .clone()
+            .smart_merge_into_local_file(&local, &remote)?;
+
+        println!(
+            "  {} Wrote smart merged conversation: {}",
+            "✓".cyan(),
+            conflict.local_file.display()
+        );
+    }
 
     // Handle "keep remote" - overwrite local with remote
     for conflict in &result.keep_remote {
