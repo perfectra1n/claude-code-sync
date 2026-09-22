@@ -534,6 +534,10 @@ pub struct PullPlan {
     pub unchanged: usize,
     /// Repo files refused (denied names, unsafe paths).
     pub skipped: usize,
+    /// Repo files whose project this machine has no destination for, grouped
+    /// by the project directory they came from, so the caller can warn once
+    /// per project instead of once per file.
+    pub unmapped_projects: crate::project_map::SkippedByProject,
     /// This machine's path tokens, so applying renders repo bytes the same way
     /// planning compared them.
     pub tokens: PathTokens,
@@ -644,15 +648,24 @@ fn collect_repo_files(
     files
 }
 
+/// Why a repo file has no local destination. The caller reports the two cases
+/// differently: an unmapped project is one warning for all of its files, an
+/// unrestorable path is a refusal worth its own line.
+enum SkipReason {
+    /// This machine has no directory for the named sync-repo project.
+    UnmappedProject(String),
+    /// Nothing in the category can receive this path.
+    NotRestorable,
+}
+
 /// Map a category-relative repo path back to its absolute local destination
-/// under `~/.claude`. Returns None when no destination can be determined
-/// (name-only attachments whose project has no unambiguous local match).
+/// under `~/.claude`, or the reason it has none.
 fn local_destination(
     desc: &CategoryDescriptor,
     claude_dir: &Path,
     rel: &Path,
     filter: &FilterConfig,
-) -> Option<PathBuf> {
+) -> Result<PathBuf, SkipReason> {
     match desc.source {
         // File lists are stored flat in the repo; restore to the listed
         // location whose file name matches. An unlisted name has NO valid
@@ -661,19 +674,21 @@ fn local_destination(
         SourceSpec::Files(list) => list
             .iter()
             .find(|entry| Path::new(entry).file_name() == rel.file_name())
-            .map(|entry| claude_dir.join(entry)),
+            .map(|entry| claude_dir.join(entry))
+            .ok_or(SkipReason::NotRestorable),
         SourceSpec::Dir(dir) => {
             if desc.dest == DestRoot::SessionTree {
                 // Repo path is <project-dir>/<rest>; resolve the leading
                 // component the way session pull does.
-                let mut parts = rel.components();
-                let name = parts.next()?.as_os_str().to_str()?;
+                let split = crate::project_map::split_project_path(rel);
+                let (project, inside_project) = split.ok_or(SkipReason::NotRestorable)?;
                 let projects_dir = claude_dir.join(dir);
                 let local_project =
-                    crate::project_map::local_project_dir(filter, &projects_dir, name)?;
-                return Some(local_project.join(parts.as_path()));
+                    crate::project_map::local_project_dir(filter, &projects_dir, project)
+                        .ok_or_else(|| SkipReason::UnmappedProject(project.to_string()))?;
+                return Ok(local_project.join(inside_project));
             }
-            Some(claude_dir.join(dir).join(rel))
+            Ok(claude_dir.join(dir).join(rel))
         }
     }
 }
@@ -720,13 +735,25 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
         let mut present: TrackedPaths = TrackedPaths::new();
 
         for (repo_path, rel) in collect_repo_files(desc, repo_root, filter, &mut plan.skipped) {
-            let Some(local_path) = local_destination(desc, claude_dir, &rel, filter) else {
-                log::warn!(
-                    "Skipping {} (no unambiguous local project for name-only mode)",
-                    repo_path.display()
-                );
-                plan.skipped += 1;
-                continue;
+            let local_path = match local_destination(desc, claude_dir, &rel, filter) {
+                Ok(local_path) => local_path,
+                Err(SkipReason::UnmappedProject(project)) => {
+                    plan.skipped += 1;
+                    plan.unmapped_projects
+                        .entry(project)
+                        .or_default()
+                        .push(repo_path);
+                    continue;
+                }
+                Err(SkipReason::NotRestorable) => {
+                    plan.skipped += 1;
+                    log::warn!(
+                        "Skipping {} (not a file the {} category restores)",
+                        repo_path.display(),
+                        desc.name
+                    );
+                    continue;
+                }
             };
             if desc.mirror_deletes {
                 if let Some(tracked_path) = repo_relative(repo_root, &repo_path) {
@@ -820,7 +847,7 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                 plan.skipped += 1;
                 continue;
             }
-            let Some(local_path) = local_destination(desc, claude_dir, &rel, filter) else {
+            let Ok(local_path) = local_destination(desc, claude_dir, &rel, filter) else {
                 continue;
             };
             if local_path.is_file() {

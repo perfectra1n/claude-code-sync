@@ -79,6 +79,12 @@ pub struct FilterConfig {
     #[serde(default)]
     pub purge_after_sync: bool,
 
+    /// Warn once per file a pull cannot place, the way older versions did.
+    /// Off by default: one unmapped project fills the terminal with a line per
+    /// file, all of them saying the same thing.
+    #[serde(default)]
+    pub warn_each_skipped_file: bool,
+
     /// External three-way merge command for a conflicting file, invoked as
     /// `<command> <local> <remote> <base> <output>` (the JetBrains
     /// `phpstorm merge` argument order). Empty means the terminal picker only.
@@ -119,6 +125,7 @@ impl Default for FilterConfig {
             project_map: Default::default(),
             purge_older_than_days: None,
             purge_after_sync: false,
+            warn_each_skipped_file: false,
             merge_tool: String::new(),
         }
     }
@@ -399,6 +406,28 @@ pub fn configure_purge(older_than_days: Option<u32>, after_sync: Option<bool>) -
     Ok(())
 }
 
+/// Choose between one warning per pull and one per file a pull cannot place.
+pub fn set_warn_each_skipped_file(each_file: bool) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+    config.warn_each_skipped_file = each_file;
+    config.validate()?;
+    config.save()?;
+
+    println!(
+        "{}",
+        format!(
+            "Skipped files: {}",
+            if each_file {
+                "one warning each"
+            } else {
+                "one combined warning"
+            }
+        )
+        .green()
+    );
+    Ok(())
+}
+
 /// Set (or clear, when empty) the external merge command.
 pub fn set_merge_tool(command: &str) -> Result<()> {
     let mut config = FilterConfig::load()?;
@@ -658,6 +687,16 @@ pub fn show_config() -> Result<()> {
 
     println!(
         "  {}: {}",
+        "Warn for each skipped file".cyan(),
+        if config.warn_each_skipped_file {
+            "Yes (a line per file)".green()
+        } else {
+            "No (one combined warning)".yellow()
+        }
+    );
+
+    println!(
+        "  {}: {}",
         "Merge tool".cyan(),
         if config.merge_tool.is_empty() {
             "none (terminal picker only)".yellow()
@@ -716,6 +755,30 @@ pub fn show_config() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warn_each_skipped_file_survives_a_toml_round_trip() {
+        let config = FilterConfig {
+            warn_each_skipped_file: true,
+            ..Default::default()
+        };
+
+        let serialized = toml::to_string(&config).unwrap();
+        let reloaded: FilterConfig = toml::from_str(&serialized).unwrap();
+
+        assert!(reloaded.warn_each_skipped_file);
+        assert!(
+            !FilterConfig::default().warn_each_skipped_file,
+            "combined warnings are the default"
+        );
+    }
+
+    #[test]
+    fn a_config_written_before_the_key_existed_still_loads() {
+        let older_config: FilterConfig = toml::from_str("max_file_size_bytes = 1024").unwrap();
+
+        assert!(!older_config.warn_each_skipped_file);
+    }
 
     #[test]
     fn test_validate_rejects_zero_max_file_size() {

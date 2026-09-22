@@ -184,9 +184,14 @@ are plain directory names, paths must be absolute and spelled exactly as the
 project's own path (a trailing slash encodes differently), and two ids pointing
 at one directory are refused.
 
-A machine that has not mapped an id yet skips those files with a warning rather
-than writing them to a directory Claude Code would never read; run
-`--map-project` there and pull again.
+A machine that has not mapped an id yet skips those files rather than writing
+them to a directory Claude Code would never read; run `--map-project` there and
+pull again. All of a pull's misses are reported in one warning that names every
+unmapped project and how many files it holds. To get a line per file instead:
+
+```bash
+claude-code-sync config --warn-each-skipped-file true
+```
 
 ### Machine-neutral paths in config files
 
@@ -895,6 +900,9 @@ purge_older_than_days = 365
 
 # Purge as part of every sync, between the pull and the push
 purge_after_sync = false
+
+# Warn once per file a pull cannot place, instead of one combined warning
+warn_each_skipped_file = false
 
 # External three-way merge command offered when a pulled file differs
 merge_tool = "phpstorm merge"

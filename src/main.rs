@@ -211,6 +211,11 @@ enum Commands {
         #[arg(long, value_name = "ID")]
         unmap_project: Vec<String>,
 
+        /// Warn once per file a pull cannot place, instead of one combined
+        /// warning naming every project with no local match
+        #[arg(long, value_name = "BOOL")]
+        warn_each_skipped_file: Option<bool>,
+
         /// External three-way merge command offered when a file differs,
         /// e.g. "phpstorm merge". Pass an empty string to clear it.
         #[arg(long)]
@@ -604,6 +609,7 @@ fn main() -> Result<()> {
             disable_artifacts,
             map_project,
             unmap_project,
+            warn_each_skipped_file,
             merge_tool,
             purge_older_than,
             purge_after_sync,
@@ -628,6 +634,7 @@ fn main() -> Result<()> {
             let has_any_flag = has_filter_flag
                 || !map_project.is_empty()
                 || !unmap_project.is_empty()
+                || warn_each_skipped_file.is_some()
                 || merge_tool.is_some()
                 || purge_older_than.is_some()
                 || purge_after_sync.is_some()
@@ -652,6 +659,9 @@ fn main() -> Result<()> {
                 // invocation does not silently drop all but the first.
                 if !map_project.is_empty() || !unmap_project.is_empty() {
                     filter::update_project_map(&map_project, &unmap_project)?;
+                }
+                if let Some(each_file) = warn_each_skipped_file {
+                    filter::set_warn_each_skipped_file(each_file)?;
                 }
                 if let Some(command) = merge_tool {
                     filter::set_merge_tool(&command)?;

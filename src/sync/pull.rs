@@ -434,6 +434,7 @@ pub fn pull_history(
     let mut modified_count = 0;
     let mut unchanged_count = 0;
     let mut skipped_no_local_match = 0;
+    let mut skipped_by_project = crate::project_map::SkippedByProject::new();
 
     for remote_session in &remote_sessions {
         // Skip if conflicts were detected
@@ -450,26 +451,27 @@ pub fn pull_history(
             .ok()
             .unwrap_or_else(|| Path::new(&remote_session.file_path));
 
-        let mut remote_parts = remote_relative.components();
-        let repo_project_dir = remote_parts
-            .next()
-            .and_then(|c| c.as_os_str().to_str())
-            .unwrap_or("unknown");
+        let split = crate::project_map::split_project_path(remote_relative);
+        let Some((repo_project_dir, inside_project)) = split else {
+            log::warn!(
+                "Skipping {} (not a transcript inside a project directory)",
+                remote_session.file_path
+            );
+            continue;
+        };
 
         let local_project_dir =
             crate::project_map::local_project_dir(&filter, &claude_dir, repo_project_dir);
         let Some(local_project_dir) = local_project_dir else {
-            log::warn!(
-                "No matching local project found for '{}'. \
-                 Open the project with Claude Code locally first, map it under [project_map], \
-                 or disable use_project_name_only.",
-                repo_project_dir
-            );
             skipped_no_local_match += 1;
+            skipped_by_project
+                .entry(repo_project_dir.to_string())
+                .or_default()
+                .push(PathBuf::from(&remote_session.file_path));
             continue; // Skip this session - no local match
         };
 
-        let dest_path = local_project_dir.join(remote_parts.as_path());
+        let dest_path = local_project_dir.join(inside_project);
         let relative_path_for_tracking = dest_path
             .strip_prefix(&claude_dir)
             .map(|p| p.to_path_buf())
@@ -510,6 +512,14 @@ pub fn pull_history(
     }
 
     println!("  {} Merged {} sessions", "✓".green(), merged_count);
+
+    crate::project_map::merge_skipped(&mut skipped_by_project, &artifact_plan.unmapped_projects);
+    for line in crate::project_map::skipped_project_warnings(
+        &skipped_by_project,
+        filter.warn_each_skipped_file,
+    ) {
+        log::warn!("{line}");
+    }
 
     // ============================================================================
     // APPLY ARTIFACT PULL PLAN (remote wins; snapshot already covers changes)
@@ -571,9 +581,9 @@ pub fn pull_history(
         format!("{unchanged_count}").dimmed(),
     );
     println!("{stats_msg}");
-    if filter.use_project_name_only && skipped_no_local_match > 0 {
+    if skipped_no_local_match > 0 {
         println!(
-            "  {} Skipped (no local match): {}",
+            "  {} Skipped sessions (no local match): {}",
             "!".yellow(),
             skipped_no_local_match
         );

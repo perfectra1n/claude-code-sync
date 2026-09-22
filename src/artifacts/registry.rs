@@ -434,6 +434,13 @@ mod tests {
                 "{} mirrors deletions, so its source must be a directory",
                 d.name
             );
+            assert_eq!(
+                d.dest,
+                DestRoot::Artifacts,
+                "{} mirrors deletions, so every tracked path must resolve to a \
+                 destination — a session-tree category can have none",
+                d.name
+            );
         }
     }
 

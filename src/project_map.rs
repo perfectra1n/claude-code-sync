@@ -119,6 +119,76 @@ pub fn local_project_dir(
     None
 }
 
+/// Files a pull has no local project for, grouped by the sync-repo directory
+/// name they came from.
+pub type SkippedByProject = BTreeMap<String, Vec<PathBuf>>;
+
+/// Split a path relative to the sync repo's projects directory into the
+/// project directory it belongs to and the path inside that project. A file
+/// lying beside the project directories belongs to no project, and nothing on
+/// this machine can take it.
+pub fn split_project_path(relative: &Path) -> Option<(&str, &Path)> {
+    let mut parts = relative.components();
+    let project = parts.next()?.as_os_str().to_str()?;
+    let inside_project = parts.as_path();
+    if inside_project.as_os_str().is_empty() {
+        return None;
+    }
+    Some((project, inside_project))
+}
+
+/// Fold one set of misses into another, so a project whose sessions and whose
+/// attachments were both skipped is reported once rather than twice.
+pub fn merge_skipped(into: &mut SkippedByProject, more: &SkippedByProject) {
+    for (project, files) in more {
+        into.entry(project.clone())
+            .or_default()
+            .extend(files.iter().cloned());
+    }
+}
+
+/// What to do about a project this machine cannot place, in both warning modes.
+const MAPPING_REMEDY: &str = "Map each one: claude-code-sync config --map-project <id>=<path>.";
+
+/// The warning lines for files no local project claims: one line naming every
+/// project by default, one line per file when `each_file` is set.
+///
+/// A project this machine has not mapped holds every file it ever had, and a
+/// line each buries the one remedy under hundreds of repetitions of it.
+pub fn skipped_project_warnings(skipped: &SkippedByProject, each_file: bool) -> Vec<String> {
+    if skipped.is_empty() {
+        return Vec::new();
+    }
+
+    if each_file {
+        let mut lines: Vec<String> = skipped
+            .iter()
+            .flat_map(|(project, files)| {
+                files.iter().map(move |file| {
+                    format!(
+                        "Skipping {} (no local project for '{project}')",
+                        file.display()
+                    )
+                })
+            })
+            .collect();
+        lines.push(MAPPING_REMEDY.to_string());
+        return lines;
+    }
+
+    let total_files: usize = skipped.values().map(Vec::len).sum();
+    let project_list: Vec<String> = skipped
+        .iter()
+        .map(|(project, files)| format!("{project} ({})", files.len()))
+        .collect();
+
+    vec![format!(
+        "Skipped {total_files} file(s) with no local project: {}. {MAPPING_REMEDY} \
+         A line per file: config --warn-each-skipped-file true.",
+        project_list.join(", ")
+    )]
+}
+
 /// Whether a directory name is an encoded project path. Encoding an absolute
 /// path puts a dash where its root is: `/home/user/app` becomes
 /// `-home-user-app`, `C:\src\app` becomes `C--src-app`.
@@ -266,6 +336,86 @@ mod tests {
             .into_iter()
             .collect();
         assert!(validate(&map).is_err());
+    }
+
+    fn skipped(entries: &[(&str, &[&str])]) -> SkippedByProject {
+        entries
+            .iter()
+            .map(|(project, files)| {
+                let paths = files.iter().map(PathBuf::from).collect();
+                ((*project).to_string(), paths)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_miss_is_combined_into_one_warning() {
+        let misses = skipped(&[
+            (
+                "shop",
+                &["/repo/projects/shop/a.png", "/repo/projects/shop/b.png"],
+            ),
+            ("blog", &["/repo/projects/blog/c.png"]),
+        ]);
+
+        let lines = skipped_project_warnings(&misses, false);
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "one warning, however many files were missed"
+        );
+        assert!(lines[0].contains("Skipped 3 file(s)"));
+        assert!(lines[0].contains("blog (1)"));
+        assert!(lines[0].contains("shop (2)"));
+        assert!(
+            lines[0].contains("--map-project"),
+            "the remedy stays visible"
+        );
+    }
+
+    #[test]
+    fn each_file_gets_its_own_warning_when_asked() {
+        let misses = skipped(&[
+            (
+                "shop",
+                &["/repo/projects/shop/a.png", "/repo/projects/shop/b.png"],
+            ),
+            ("blog", &["/repo/projects/blog/c.png"]),
+        ]);
+
+        let lines = skipped_project_warnings(&misses, true);
+
+        assert_eq!(lines.len(), 4, "one line per skipped file, plus the remedy");
+        assert_eq!(
+            lines[0],
+            "Skipping /repo/projects/blog/c.png (no local project for 'blog')"
+        );
+        assert!(
+            lines[3].contains("--map-project"),
+            "the remedy stays visible in per-file mode too"
+        );
+    }
+
+    #[test]
+    fn a_projects_sessions_and_attachments_share_one_warning() {
+        let mut skipped_sessions = skipped(&[("shop", &["/repo/projects/shop/sess-1.jsonl"])]);
+        let skipped_attachments = skipped(&[("shop", &["/repo/projects/shop/diagram.png"])]);
+
+        merge_skipped(&mut skipped_sessions, &skipped_attachments);
+        let lines = skipped_project_warnings(&skipped_sessions, false);
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("Skipped 2 file(s)"));
+        assert!(lines[0].contains("shop (2)"), "named once, counted twice");
+    }
+
+    #[test]
+    fn nothing_skipped_warns_about_nothing() {
+        let nothing = SkippedByProject::new();
+
+        assert!(skipped_project_warnings(&nothing, false).is_empty());
+        assert!(skipped_project_warnings(&nothing, true).is_empty());
     }
 
     #[test]
