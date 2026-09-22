@@ -478,6 +478,72 @@ fn test_undo_push_resets_repo() {
     );
 }
 
+/// Pair each local transcript with the repository copy that sits at the same
+/// place, which is what a pull does before it detects conflicts.
+fn pair_by_location<'a>(
+    local_sessions: &'a [ConversationSession],
+    local_root: &Path,
+    remote_sessions: &'a [ConversationSession],
+    remote_root: &Path,
+) -> Vec<(&'a ConversationSession, &'a ConversationSession)> {
+    remote_sessions
+        .iter()
+        .filter_map(|remote| {
+            let relative = remote.file_path.strip_prefix(remote_root).ok()?;
+            let local = local_sessions
+                .iter()
+                .find(|local| local.file_path == local_root.join(relative))?;
+            Some((local, remote))
+        })
+        .collect()
+}
+
+#[test]
+fn a_session_id_shared_by_two_projects_is_not_a_conflict() {
+    use claude_code_sync::conflict::ConflictDetector;
+
+    // Resuming a session in another directory leaves two transcripts with one
+    // id. Pairing them by that id merged two unrelated conversations into each
+    // other on every sync.
+    let local_dir = TempDir::new().unwrap();
+    let remote_dir = TempDir::new().unwrap();
+    let session_file = "e9ab1c40-0000-4000-8000-000000000001.jsonl";
+
+    for (root, project, marker) in [
+        (local_dir.path(), "first-project", "one"),
+        (local_dir.path(), "second-project", "two"),
+        (remote_dir.path(), "first-project", "one"),
+        (remote_dir.path(), "second-project", "two"),
+    ] {
+        let path = root.join(project).join(session_file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"user\",\"uuid\":\"{marker}\",\"sessionId\":\"shared\",\"timestamp\":\"2025-01-01T00:00:00Z\"}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let local_sessions = discover_test_sessions(local_dir.path()).unwrap();
+    let remote_sessions = discover_test_sessions(remote_dir.path()).unwrap();
+    assert_eq!(local_sessions.len(), 2);
+
+    let mut detector = ConflictDetector::new();
+    detector.detect(&pair_by_location(
+        &local_sessions,
+        local_dir.path(),
+        &remote_sessions,
+        remote_dir.path(),
+    ));
+
+    assert!(
+        !detector.has_conflicts(),
+        "each transcript matches its own copy"
+    );
+}
+
 #[test]
 fn test_conflict_handling() {
     use claude_code_sync::conflict::ConflictDetector;
@@ -539,7 +605,12 @@ fn test_conflict_handling() {
     let remote_sessions = discover_test_sessions(&sync_projects).unwrap();
 
     let mut detector = ConflictDetector::new();
-    detector.detect(&local_sessions, &remote_sessions);
+    detector.detect(&pair_by_location(
+        &local_sessions,
+        &m2_projects,
+        &remote_sessions,
+        &sync_projects,
+    ));
 
     // Verify conflict was detected
     assert!(detector.has_conflicts(), "Should detect conflict");

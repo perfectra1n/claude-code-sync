@@ -346,11 +346,11 @@ impl ConflictDetector {
     /// ```
     /// # use claude_code_sync::conflict::ConflictDetector;
     /// # use claude_code_sync::parser::ConversationSession;
-    /// # fn example(local_sessions: Vec<ConversationSession>, remote_sessions: Vec<ConversationSession>) {
+    /// # fn example(paired: Vec<(&ConversationSession, &ConversationSession)>) {
     /// let mut detector = ConflictDetector::new();
     ///
-    /// // Detect conflicts between local and remote sessions
-    /// detector.detect(&local_sessions, &remote_sessions);
+    /// // Each local transcript with the repository copy it belongs to
+    /// detector.detect(&paired);
     ///
     /// if detector.has_conflicts() {
     ///     println!("Found {} conflicts", detector.conflict_count());
@@ -373,28 +373,23 @@ impl ConflictDetector {
         }
     }
 
-    /// Compare local and remote sessions and detect conflicts
-    pub fn detect(
-        &mut self,
-        local_sessions: &[ConversationSession],
-        remote_sessions: &[ConversationSession],
-    ) {
-        // Build a map of session_id -> local session
-        let local_map: std::collections::HashMap<_, _> = local_sessions
-            .iter()
-            .map(|s| (s.session_id.clone(), s))
-            .collect();
+    /// Record a conflict for every pair of transcripts that hold the same
+    /// conversation in different states.
+    ///
+    /// The caller pairs a local transcript with the repository copy that
+    /// belongs to it — the file one would overwrite the other. Never pair by
+    /// the interior session id: a session resumed in a second project leaves
+    /// two different transcripts carrying one id, and merging those mixes two
+    /// conversations into each other on every sync.
+    pub fn detect(&mut self, pairs: &[(&ConversationSession, &ConversationSession)]) {
+        for (local, remote) in pairs {
+            if local.content_hash() == remote.content_hash() {
+                continue;
+            }
 
-        // Check each remote session against local
-        for remote in remote_sessions {
-            if let Some(local) = local_map.get(&remote.session_id) {
-                // Session exists in both - check for conflicts
-                if local.content_hash() != remote.content_hash() {
-                    let conflict = Conflict::new(local, remote);
-                    if conflict.is_real_conflict() {
-                        self.conflicts.push(conflict);
-                    }
-                }
+            let conflict = Conflict::new(local, remote);
+            if conflict.is_real_conflict() {
+                self.conflicts.push(conflict);
             }
         }
     }
@@ -487,7 +482,7 @@ mod tests {
         let remote_session = create_test_session(&remote_dir, "session-1", 6);
 
         let mut detector = ConflictDetector::new();
-        detector.detect(&[local_session], &[remote_session]);
+        detector.detect(&[(&local_session, &remote_session)]);
 
         assert!(detector.has_conflicts());
         assert_eq!(detector.conflict_count(), 1);
@@ -506,7 +501,7 @@ mod tests {
         let remote_session = create_test_session(&remote_dir, "session-1", 5);
 
         let mut detector = ConflictDetector::new();
-        detector.detect(&[local_session], &[remote_session]);
+        detector.detect(&[(&local_session, &remote_session)]);
 
         assert!(!detector.has_conflicts());
     }

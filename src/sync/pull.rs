@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use inquire::Confirm;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::conflict::ConflictDetector;
 use crate::filter::FilterConfig;
@@ -10,6 +10,7 @@ use crate::history::{
     ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
 };
 use crate::interactive_conflict;
+use crate::parser::ConversationSession;
 use crate::report::{save_conflict_report, ConflictReport};
 use crate::scm;
 use crate::undo::Snapshot;
@@ -17,6 +18,31 @@ use crate::undo::Snapshot;
 use super::discovery::{claude_home_dir, claude_projects_dir, discover_sessions, warn_large_files};
 use super::state::SyncState;
 use super::MAX_CONVERSATIONS_TO_DISPLAY;
+
+/// The file in `~/.claude/projects` a transcript in the sync repository
+/// belongs to, or `None` when this machine has no project for it.
+///
+/// This is the identity a pull pairs on. Two transcripts that share an
+/// interior session id — a session resumed in another project, and every
+/// subagent of a session — are different conversations living in different
+/// files, and only the file says which copy is which.
+fn local_destination(
+    remote_session: &ConversationSession,
+    remote_projects_dir: &Path,
+    claude_dir: &Path,
+    filter: &FilterConfig,
+) -> Option<PathBuf> {
+    let remote_relative = remote_session
+        .file_path
+        .strip_prefix(remote_projects_dir)
+        .ok()?;
+    let (repo_project_dir, inside_project) =
+        crate::project_map::split_project_path(remote_relative)?;
+    let local_project_dir =
+        crate::project_map::local_project_dir(filter, claude_dir, repo_project_dir)?;
+
+    Some(local_project_dir.join(inside_project))
+}
 
 /// Pull and merge history from sync repository
 pub fn pull_history(
@@ -86,8 +112,22 @@ pub fn pull_history(
     if verbosity != VerbosityLevel::Quiet {
         println!("  {} conflicts...", "Detecting".cyan());
     }
+    let local_by_path: HashMap<&Path, &ConversationSession> = local_sessions
+        .iter()
+        .map(|session| (session.file_path.as_path(), session))
+        .collect();
+    let paired: Vec<(&ConversationSession, &ConversationSession)> = remote_sessions
+        .iter()
+        .filter_map(|remote| {
+            let destination =
+                local_destination(remote, &remote_projects_dir, &claude_dir, &filter)?;
+            let local = local_by_path.get(destination.as_path())?;
+            Some((*local, remote))
+        })
+        .collect();
+
     let mut detector = ConflictDetector::new();
-    detector.detect(&local_sessions, &remote_sessions);
+    detector.detect(&paired);
 
     // ============================================================================
     // ARTIFACT PULL PLAN (read-only, so the snapshot below can cover it)
@@ -225,24 +265,21 @@ pub fn pull_history(
         // ============================================================================
         println!("  {} smart merge...", "Attempting".cyan());
 
-        let local_map: HashMap<_, _> = local_sessions
+        let remote_by_path: HashMap<&Path, &ConversationSession> = remote_sessions
             .iter()
-            .map(|s| (s.session_id.clone(), s))
-            .collect();
-
-        let remote_map: HashMap<_, _> = remote_sessions
-            .iter()
-            .map(|s| (s.session_id.clone(), s))
+            .map(|session| (session.file_path.as_path(), session))
             .collect();
 
         let mut smart_merge_success_count = 0;
         let mut smart_merge_failed_conflicts = Vec::new();
 
         for conflict in detector.conflicts_mut() {
-            // Find local and remote sessions
+            // The two transcripts this conflict is between, by their own paths:
+            // an interior session id is shared by every subagent of a session,
+            // and by a session resumed in another project.
             if let (Some(local_session), Some(remote_session)) = (
-                local_map.get(&conflict.session_id),
-                remote_map.get(&conflict.session_id),
+                local_by_path.get(conflict.local_file.as_path()),
+                remote_by_path.get(conflict.remote_file.as_path()),
             ) {
                 // Try smart merge
                 match conflict.smart_merge_into_local_file(local_session, remote_session) {
@@ -409,11 +446,6 @@ pub fn pull_history(
     // MERGE NON-CONFLICTING SESSIONS
     // ============================================================================
     println!("  {} non-conflicting sessions...", "Merging".cyan());
-    let local_map: HashMap<_, _> = local_sessions
-        .iter()
-        .map(|s| (s.session_id.clone(), s))
-        .collect();
-
     let mut merged_count = 0;
     let mut added_count = 0;
     let mut modified_count = 0;
@@ -422,48 +454,46 @@ pub fn pull_history(
     let mut skipped_by_project = crate::project_map::SkippedByProject::new();
 
     for remote_session in &remote_sessions {
-        // Skip if conflicts were detected
-        if detector
-            .conflicts()
-            .iter()
-            .any(|c| c.session_id == remote_session.session_id)
-        {
-            continue;
-        }
-
         let remote_relative = remote_session
             .file_path
             .strip_prefix(&remote_projects_dir)
             .unwrap_or(&remote_session.file_path);
 
-        let split = crate::project_map::split_project_path(remote_relative);
-        let Some((repo_project_dir, inside_project)) = split else {
-            log::warn!(
-                "Skipping {} (not a transcript inside a project directory)",
-                remote_session.file_path.display()
-            );
+        let destination =
+            local_destination(remote_session, &remote_projects_dir, &claude_dir, &filter);
+        let Some(dest_path) = destination else {
+            match crate::project_map::split_project_path(remote_relative) {
+                Some((repo_project_dir, _)) => {
+                    skipped_no_local_match += 1;
+                    skipped_by_project
+                        .entry(repo_project_dir.to_string())
+                        .or_default()
+                        .push(remote_session.file_path.clone());
+                }
+                None => log::warn!(
+                    "Skipping {} (not a transcript inside a project directory)",
+                    remote_session.file_path.display()
+                ),
+            }
             continue;
         };
 
-        let local_project_dir =
-            crate::project_map::local_project_dir(&filter, &claude_dir, repo_project_dir);
-        let Some(local_project_dir) = local_project_dir else {
-            skipped_no_local_match += 1;
-            skipped_by_project
-                .entry(repo_project_dir.to_string())
-                .or_default()
-                .push(remote_session.file_path.clone());
-            continue; // Skip this session - no local match
-        };
+        // A conflicting transcript is merged above, not overwritten here.
+        if detector
+            .conflicts()
+            .iter()
+            .any(|conflict| conflict.local_file == dest_path)
+        {
+            continue;
+        }
 
-        let dest_path = local_project_dir.join(inside_project);
         let relative_path_for_tracking = dest_path
             .strip_prefix(&claude_dir)
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|_| remote_relative.to_path_buf());
 
         // Determine operation type based on local state
-        let operation = if let Some(local) = local_map.get(&remote_session.session_id) {
+        let operation = if let Some(local) = local_by_path.get(dest_path.as_path()) {
             if local.content_hash() == remote_session.content_hash() {
                 unchanged_count += 1;
                 SyncOperation::Unchanged
