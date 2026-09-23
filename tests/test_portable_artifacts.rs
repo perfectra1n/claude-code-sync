@@ -5,8 +5,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use claude_code_sync::artifacts::engine::{apply_pull, plan_pull, push_artifacts};
-use claude_code_sync::artifacts::registry::ArtifactToggles;
+use claude_code_sync::artifacts::engine::{
+    apply_pull, plan_pull, push_artifacts, ArtifactChange, ArtifactChangeKind,
+};
+use claude_code_sync::artifacts::registry::{ArtifactToggles, CategoryId};
 use claude_code_sync::artifacts::tracked;
 use claude_code_sync::filter::FilterConfig;
 use tempfile::TempDir;
@@ -214,6 +216,64 @@ fn a_skill_deleted_on_another_machine_is_removed_here_on_pull() {
     assert!(
         snapshotted.contains(&machine_b.path().join("skills/gone/SKILL.md")),
         "a deletion is snapshotted so undo can restore it"
+    );
+}
+
+fn build_skill_change(kind: ArtifactChangeKind, path: &str) -> ArtifactChange {
+    ArtifactChange {
+        category: CategoryId::Skills,
+        kind,
+        path: PathBuf::from(path),
+    }
+}
+
+#[test]
+fn a_push_lists_each_skill_it_added_modified_and_deleted() {
+    let repo = TempDir::new().unwrap();
+    let claude = TempDir::new().unwrap();
+    write(&claude.path().join("skills/keep/SKILL.md"), "# keep\n");
+    write(&claude.path().join("skills/edit/SKILL.md"), "# edit\n");
+    write(&claude.path().join("skills/drop/SKILL.md"), "# drop\n");
+    push_artifacts(claude.path(), repo.path(), &all_on_filter()).unwrap();
+
+    write(&claude.path().join("skills/edit/SKILL.md"), "# edited\n");
+    write(&claude.path().join("skills/new/SKILL.md"), "# new\n");
+    fs::remove_dir_all(claude.path().join("skills/drop")).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &all_on_filter()).unwrap();
+
+    let mut changes = report.changes.clone();
+    changes.sort_by(|left, right| left.path.cmp(&right.path));
+    assert_eq!(
+        changes,
+        vec![
+            build_skill_change(ArtifactChangeKind::Deleted, "drop/SKILL.md"),
+            build_skill_change(ArtifactChangeKind::Modified, "edit/SKILL.md"),
+            build_skill_change(ArtifactChangeKind::Added, "new/SKILL.md"),
+        ]
+    );
+}
+
+#[test]
+fn a_pull_lists_each_skill_it_created_and_deleted_here() {
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    write(&machine_a.path().join("skills/gone/SKILL.md"), "# gone\n");
+    push_artifacts(machine_a.path(), repo.path(), &all_on_filter()).unwrap();
+    sync_both_ways(machine_b.path(), repo.path(), &all_on_filter());
+
+    fs::remove_dir_all(machine_a.path().join("skills/gone")).unwrap();
+    write(&machine_a.path().join("skills/fresh/SKILL.md"), "# fresh\n");
+    push_artifacts(machine_a.path(), repo.path(), &all_on_filter()).unwrap();
+    let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
+    let report = apply_pull(&plan, false).unwrap();
+
+    assert_eq!(
+        report.changes,
+        vec![
+            build_skill_change(ArtifactChangeKind::Added, "fresh/SKILL.md"),
+            build_skill_change(ArtifactChangeKind::Deleted, "gone/SKILL.md"),
+        ]
     );
 }
 
