@@ -844,6 +844,7 @@ mod tests {
         assert!(config.include_patterns.is_empty());
         assert!(config.exclude_patterns.is_empty());
         assert!(!config.exclude_attachments);
+        assert_eq!(config.max_file_size_bytes, 10 * 1024 * 1024);
     }
 
     #[test]
