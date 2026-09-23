@@ -96,10 +96,29 @@ impl CategoryCounts {
     }
 }
 
+/// How one artifact file changed during a push or pull.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+/// One file a push or pull actually added, modified or deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactChange {
+    pub category: CategoryId,
+    pub kind: ArtifactChangeKind,
+    /// Path relative to the category's root, e.g. `my-skill/SKILL.md`.
+    pub path: PathBuf,
+}
+
 /// Outcome of one artifact push or pull across all enabled categories.
 #[derive(Debug, Clone, Default)]
 pub struct ArtifactReport {
     pub counts: Vec<CategoryCounts>,
+    /// Every file written or removed, in the order it happened.
+    pub changes: Vec<ArtifactChange>,
 }
 
 impl ArtifactReport {
@@ -115,6 +134,15 @@ impl ArtifactReport {
     pub fn total_deleted(&self) -> usize {
         self.counts.iter().map(|c| c.deleted).sum()
     }
+
+    fn record(&mut self, category: CategoryId, kind: ArtifactChangeKind, path: &Path) {
+        self.changes.push(ArtifactChange {
+            category,
+            kind,
+            path: path.to_path_buf(),
+        });
+    }
+
     /// True when nothing was copied, merged, or even inspected.
     #[allow(dead_code)] // used via the library target; the bin compiles this module separately
     pub fn is_empty(&self) -> bool {
@@ -361,9 +389,11 @@ pub fn push_artifacts(
                     if !existed {
                         write_atomic(&dest, merged.as_bytes(), &file.abs)?;
                         counts.added += 1;
+                        report.record(desc.id, ArtifactChangeKind::Added, &file.rel);
                     } else if merged != repo_text {
                         write_atomic(&dest, merged.as_bytes(), &file.abs)?;
                         counts.modified += 1;
+                        report.record(desc.id, ArtifactChangeKind::Modified, &file.rel);
                     } else {
                         counts.unchanged += 1;
                     }
@@ -390,13 +420,16 @@ pub fn push_artifacts(
                     if !existed {
                         write_atomic(&dest, &src_bytes, &file.abs)?;
                         counts.added += 1;
+                        report.record(desc.id, ArtifactChangeKind::Added, &file.rel);
                     } else if fs::read(&dest)? != src_bytes {
                         write_atomic(&dest, &src_bytes, &file.abs)?;
                         counts.modified += 1;
+                        report.record(desc.id, ArtifactChangeKind::Modified, &file.rel);
                     } else {
                         let realigned = align_executable_bit(&dest, &file.abs);
                         if realigned {
                             counts.modified += 1;
+                            report.record(desc.id, ArtifactChangeKind::Modified, &file.rel);
                         } else {
                             counts.unchanged += 1;
                         }
@@ -412,8 +445,12 @@ pub fn push_artifacts(
         if desc.mirror_deletes {
             if source_is_present(desc, claude_dir) {
                 mark_category_synced(&category_root)?;
-                counts.deleted +=
+                let removed =
                     remove_from_repo(&tracked_before, &pushed, &category_root, repo_root)?;
+                counts.deleted += removed.len();
+                for path in &removed {
+                    report.record(desc.id, ArtifactChangeKind::Deleted, path);
+                }
                 tracked_now.extend(pushed);
             } else {
                 // A category this machine does not have says nothing about
@@ -484,14 +521,15 @@ fn tracked_under(tracked: &TrackedPaths, category_root: &Path, repo_root: &Path)
 }
 
 /// Delete the repo copies of files this machine synced before and no longer
-/// has. Returns how many were removed.
+/// has. Returns the removed paths, relative to the category root.
 fn remove_from_repo(
     tracked_before: &TrackedPaths,
     pushed: &TrackedPaths,
     category_root: &Path,
     repo_root: &Path,
-) -> Result<usize> {
-    let mut removed = 0;
+) -> Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+    let category_prefix = repo_relative(repo_root, category_root).unwrap_or_default();
     for gone in tracked_under(tracked_before, category_root, repo_root) {
         if pushed.contains(&gone) {
             continue;
@@ -500,7 +538,11 @@ fn remove_from_repo(
         if path.is_file() {
             fs::remove_file(&path)
                 .with_context(|| format!("Failed to remove {}", path.display()))?;
-            removed += 1;
+            let category_relative = Path::new(&gone)
+                .strip_prefix(&category_prefix)
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            removed.push(category_relative);
         }
     }
     Ok(removed)
@@ -514,6 +556,8 @@ pub struct PlannedWrite {
     pub local_path: PathBuf,
     /// Absolute source inside the sync repository.
     pub repo_path: PathBuf,
+    /// Path relative to the category's root, as reported to the user.
+    pub category_path: PathBuf,
 }
 
 /// Read-only classification of an artifact pull, computed BEFORE any write so
@@ -560,6 +604,8 @@ pub struct PlannedDelete {
     pub category: CategoryId,
     /// Absolute path under `~/.claude` to remove.
     pub local_path: PathBuf,
+    /// Path relative to the category's root, as reported to the user.
+    pub category_path: PathBuf,
 }
 
 impl PullPlan {
@@ -709,7 +755,7 @@ fn machine_bytes(
 }
 
 /// The registry row for one category.
-fn descriptor(id: CategoryId) -> &'static CategoryDescriptor {
+pub(crate) fn descriptor(id: CategoryId) -> &'static CategoryDescriptor {
     REGISTRY
         .iter()
         .find(|d| d.id == id)
@@ -764,6 +810,7 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                 category: desc.id,
                 local_path: local_path.clone(),
                 repo_path: repo_path.clone(),
+                category_path: rel.clone(),
             };
 
             match desc.merge {
@@ -854,6 +901,7 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                 plan.deletes.push(PlannedDelete {
                     category: desc.id,
                     local_path,
+                    category_path: rel,
                 });
             }
         }
@@ -880,12 +928,18 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             .or_insert_with(move || CategoryCounts::new(id))
     }
 
+    let mut report = ArtifactReport::default();
     let prompt_overwrites = interactive && crate::interactive_conflict::is_interactive();
 
     for write in &plan.creates {
         let bytes = machine_bytes(descriptor(write.category), &plan.tokens, &write.repo_path)?;
         write_atomic(&write.local_path, &bytes, &write.repo_path)?;
         counts_for(&mut by_category, write.category).added += 1;
+        report.record(
+            write.category,
+            ArtifactChangeKind::Added,
+            &write.category_path,
+        );
     }
 
     for write in &plan.overwrites {
@@ -904,6 +958,11 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         };
         write_atomic(&write.local_path, &bytes, &write.repo_path)?;
         counts_for(&mut by_category, write.category).modified += 1;
+        report.record(
+            write.category,
+            ArtifactChangeKind::Modified,
+            &write.category_path,
+        );
     }
 
     for write in &plan.unions {
@@ -924,6 +983,11 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         let counts = counts_for(&mut by_category, write.category);
         counts.modified += 1;
         counts.merged_entries += new_entries;
+        report.record(
+            write.category,
+            ArtifactChangeKind::Modified,
+            &write.category_path,
+        );
     }
 
     for write in &plan.mode_fixes {
@@ -934,6 +998,11 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         let realigned = align_executable_bit(&write.local_path, &write.repo_path);
         if realigned {
             counts_for(&mut by_category, write.category).modified += 1;
+            report.record(
+                write.category,
+                ArtifactChangeKind::Modified,
+                &write.category_path,
+            );
         }
     }
 
@@ -947,6 +1016,11 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 .with_context(|| format!("Failed to remove {}", delete.local_path.display()))?;
         }
         counts_for(&mut by_category, delete.category).deleted += 1;
+        report.record(
+            delete.category,
+            ArtifactChangeKind::Deleted,
+            &delete.category_path,
+        );
     }
 
     if plan.tracks_deletions {
@@ -957,9 +1031,9 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         )?;
     }
 
-    let mut counts: Vec<CategoryCounts> = by_category.into_values().collect();
-    counts.sort_by_key(|c| c.category as usize);
-    Ok(ArtifactReport { counts })
+    report.counts = by_category.into_values().collect();
+    report.counts.sort_by_key(|c| c.category as usize);
+    Ok(report)
 }
 
 /// Ask before making a local file runnable, since a hook runs on its own.

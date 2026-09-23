@@ -679,6 +679,8 @@ pub fn pull_history(
         }
     }
 
+    super::print_artifact_changes(&artifact_report);
+
     println!("\n{}", "Pull complete!".green().bold());
 
     // Clean up old snapshots automatically

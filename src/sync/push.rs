@@ -505,6 +505,8 @@ pub fn push_history(
         }
     }
 
+    super::print_artifact_changes(&artifact_report);
+
     if verbosity == VerbosityLevel::Quiet {
         println!("Push complete");
     } else {
