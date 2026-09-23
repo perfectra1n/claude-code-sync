@@ -46,7 +46,13 @@ pub fn discover_sessions(
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.into_path())
         .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("jsonl"))
-        .filter(|path| filter.should_include(path))
+        .filter(|path| {
+            let included = filter.should_include(path);
+            if !included {
+                warn_oversized(path, filter.max_file_size_bytes);
+            }
+            included
+        })
         .collect();
 
     let sessions = transcripts
@@ -61,6 +67,35 @@ pub fn discover_sessions(
         .collect();
 
     Ok(sessions)
+}
+
+/// Say that a conversation was left out for being over the size limit.
+///
+/// The filter drops it silently, so without this the conversation simply never
+/// appears in the sync repository and nothing ever explains why.
+fn warn_oversized(path: &Path, max_file_size_bytes: u64) {
+    let size = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => return,
+    };
+
+    if size <= max_file_size_bytes {
+        return;
+    }
+
+    let size_mb = size as f64 / (1024.0 * 1024.0);
+    let limit_mb = max_file_size_bytes as f64 / (1024.0 * 1024.0);
+    println!(
+        "  {} Skipping {} ({:.1} MB, over the {:.1} MB max_file_size_bytes limit)",
+        "⚠️ ".yellow().bold(),
+        path.display(),
+        size_mb,
+        limit_mb
+    );
+    println!(
+        "     {}",
+        "Raise it with `claude-code-sync config` to sync this conversation".dimmed()
+    );
 }
 
 /// Check for large conversation files and emit warnings
