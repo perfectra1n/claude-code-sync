@@ -2,24 +2,28 @@
 class ClaudeCodeSync < Formula
   desc "Sync Claude Code conversation history with git repositories"
   homepage "https://github.com/perfectra1n/claude-code-sync"
-  version "0.3.3"
+  version "0.4.0"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.3.3/claude-code-sync-macos-aarch64.tar.gz"
-      sha256 "c94c25c39570d16e22c4bee902226e15f890c2f5327602dd258d98b63dce58aa"
+      url "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.4.0/claude-code-sync-macos-aarch64.tar.gz"
+      sha256 "4c7f8248a246a61d758e49e34acecbd4f72ab882c2454626effbc7b168ea09b2"
     end
     on_intel do
-      url "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.3.3/claude-code-sync-macos-x86_64.tar.gz"
-      sha256 "2829b620828dcb198e2ae853c576af9ecaab210c04bd4bcfc50063ad738310a5"
+      url "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.4.0/claude-code-sync-macos-x86_64.tar.gz"
+      sha256 "04c737886dfe45fbf763b5b501e47f86f610bd26e317335298644bd810c56039"
     end
   end
 
   on_linux do
+    on_arm do
+      url "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.4.0/claude-code-sync-linux-aarch64-musl.tar.gz"
+      sha256 "0405dd38d3683e760baec90b921cbea637fc03ad5a5bedd1387d7cbfe20212b3"
+    end
     on_intel do
-      url "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.3.3/claude-code-sync-linux-x86_64-musl.tar.gz"
-      sha256 "ac67e4bafff4ccffdd3e80fa148f1afa29e2b4ec2c4d5bbb52a16d1f81f32ff5"
+      url "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.4.0/claude-code-sync-linux-x86_64-musl.tar.gz"
+      sha256 "9519c617161cb4e30fa8f5698edb31731857bb7b1aae4d5ac57ed468ffd3cc9a"
     end
   end
 

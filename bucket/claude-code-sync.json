@@ -1,12 +1,16 @@
 {
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Sync Claude Code conversation history with git repositories",
   "homepage": "https://github.com/perfectra1n/claude-code-sync",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.3.3/claude-code-sync-windows-x86_64.exe.zip",
-      "hash": "262ff22ea54332a2af6ff27b917e53aa0a270ad7a9992ac7053e711bd9c7a992"
+      "url": "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.4.0/claude-code-sync-windows-x86_64.exe.zip",
+      "hash": "f9eb79a581ecbf32413288d650034dfb2b6436afe4c00813847b3a87dc0a2ecd"
+    },
+    "arm64": {
+      "url": "https://github.com/perfectra1n/claude-code-sync/releases/download/v0.4.0/claude-code-sync-windows-aarch64.exe.zip",
+      "hash": "da4569f1601ca50f78e73cbecc3c831bffef28b8cb51313d66827ee7aa068e4e"
     }
   },
   "bin": "claude-code-sync.exe",
