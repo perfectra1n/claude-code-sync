@@ -99,6 +99,54 @@ jobs:
     with:
       tag: ${{ needs.release-tag.outputs.tag }}
 
+  update-packaging:
+    name: Bump Homebrew Formula and Scoop Manifest
+    needs: [release-tag, build-binaries]
+    # Only once every platform's assets and checksums are on the release.
+    if: ${{ !cancelled() && needs.build-binaries.result == 'success' && needs.release-tag.outputs.tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # main, not the tag: the bump is committed on top of the release.
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Regenerate manifests from the release checksums
+        env:
+          TAG: ${{ needs.release-tag.outputs.tag }}
+        # A hand-pushed tag can be older than what main already ships; never
+        # roll the manifests back to it.
+        run: |
+          current="$(jq -r .version bucket/claude-code-sync.json)"
+          newest="$(printf '%s\n%s\n' "$current" "${TAG#v}" | sort -V | tail -n 1)"
+          if [ "$newest" != "${TAG#v}" ]; then
+            echo "Manifests already at $current, newer than $TAG; leaving them alone"
+            exit 0
+          fi
+          scripts/update-packaging.sh "$TAG"
+
+      # `ci:` is a hidden changelog section, so release-please does not treat
+      # this commit as release-worthy (chore: would open another release PR).
+      # Pushes made with GITHUB_TOKEN do not trigger workflows, so no CI loop.
+      - name: Commit and push
+        env:
+          TAG: ${{ needs.release-tag.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula bucket
+          if git diff --cached --quiet; then
+            echo "Manifests already up to date"
+            exit 0
+          fi
+          git commit -m "ci(packaging): bump Homebrew formula and Scoop manifest to $TAG"
+          # Something may have merged to main while the binaries were building.
+          git pull --rebase origin main
+          git push origin HEAD:main
+
   publish-crate:
     name: Publish to crates.io
     needs: [release-please, build-binaries]
