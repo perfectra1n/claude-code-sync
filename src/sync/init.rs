@@ -23,7 +23,7 @@ pub fn init_from_onboarding(
         scm::init(repo_path)?
     };
 
-    crate::scm::attributes::ensure_union_merge(repo_path)?;
+    crate::scm::attributes::ensure_sync_attributes(repo_path)?;
 
     // Add remote if specified
     let has_remote = if let Some(url) = remote_url {
@@ -86,7 +86,7 @@ pub fn init_sync_repo(repo_path: &Path, remote_url: Option<&str>) -> Result<()> 
         scm::init(repo_path)?
     };
 
-    crate::scm::attributes::ensure_union_merge(repo_path)?;
+    crate::scm::attributes::ensure_sync_attributes(repo_path)?;
 
     // Add remote if specified
     let has_remote = if let Some(url) = remote_url {

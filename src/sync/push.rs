@@ -185,7 +185,7 @@ pub fn push_history(
             .context("Failed to set up Git LFS")?;
     }
 
-    crate::scm::attributes::ensure_union_merge(&state.sync_repo_path)?;
+    crate::scm::attributes::ensure_sync_attributes(&state.sync_repo_path)?;
 
     let claude_dir = claude_projects_dir()?;
 

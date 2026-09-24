@@ -87,26 +87,29 @@ fn describe_change_counts(counts: &CategoryCounts) -> String {
         .join(", ")
 }
 
-/// Write the union-merge rules into the sync repository and commit them.
+/// Write the `.gitattributes` sync rules into the sync repository and commit
+/// them.
 ///
 /// Two machines that both appended between syncs leave git with a conflict in
 /// a transcript or in the prompt history, which stops the pull. The rules tell
-/// git to keep both sides' lines instead. A repository with other pending work
-/// is left alone: staging everything would sweep that work into this commit,
-/// and a push commits the rules along with it anyway.
-pub(crate) fn commit_union_merge_rules(
+/// git to keep both sides' lines instead, and to write text files with LF.
+/// A repository with other pending work is left alone: staging everything
+/// would sweep that work into this commit, and a push commits the rules along
+/// with it anyway.
+pub(crate) fn commit_sync_attributes(
     repo: &dyn crate::scm::Scm,
     repo_path: &std::path::Path,
 ) -> Result<()> {
     if repo.has_changes()? {
         return Ok(());
     }
-    if !crate::scm::attributes::ensure_union_merge(repo_path)? {
+    if !crate::scm::attributes::ensure_sync_attributes(repo_path)? {
         return Ok(());
     }
 
     repo.stage_all()?;
-    repo.commit("Merge append-only files by keeping both sides")?;
+    repo.stage_renormalized()?;
+    repo.commit("Store text files with LF and merge append-only files")?;
 
     Ok(())
 }
@@ -174,7 +177,44 @@ mod tests {
     use crate::scm;
     use serial_test::serial;
     use std::path::Path;
+    use std::process::Command;
     use tempfile::TempDir;
+
+    fn git_output(dir: &Path, args: &[&str]) -> Vec<u8> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    }
+
+    #[test]
+    fn adding_the_rules_converts_a_hook_stored_with_crlf_to_lf() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo_path = repo_dir.path();
+        let repo = scm::init(repo_path).unwrap();
+        git_output(repo_path, &["config", "user.name", "Old"]);
+        git_output(repo_path, &["config", "user.email", "old@local"]);
+        git_output(repo_path, &["config", "core.autocrlf", "false"]);
+        std::fs::write(repo_path.join("hook.sh"), "#!/bin/sh\r\necho hi\r\n").unwrap();
+        std::fs::write(repo_path.join(".gitattributes"), "*.jsonl merge=union\n").unwrap();
+        repo.stage_all().unwrap();
+        repo.commit("written by an older version").unwrap();
+
+        commit_sync_attributes(repo.as_ref(), repo_path).unwrap();
+
+        let stored_hook = git_output(repo_path, &["show", "HEAD:hook.sh"]);
+        let commit_count = git_output(repo_path, &["rev-list", "--count", "HEAD"]);
+        assert_eq!(stored_hook, b"#!/bin/sh\necho hi\n");
+        assert_eq!(commit_count, b"2\n");
+    }
 
     #[test]
     #[serial]

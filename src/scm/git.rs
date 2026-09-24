@@ -136,7 +136,11 @@ impl Scm for GitScm {
     }
 
     fn stage_all(&self) -> Result<()> {
-        self.run_git_ok(&["add", "-A"])
+        self.run_git_ok(&["-c", "core.safecrlf=false", "add", "-A"])
+    }
+
+    fn stage_renormalized(&self) -> Result<()> {
+        self.run_git_ok(&["-c", "core.safecrlf=false", "add", "--renormalize", "."])
     }
 
     fn commit(&self, message: &str) -> Result<()> {
@@ -338,6 +342,10 @@ mod tests {
         machine.commit(&format!("add {name}")).unwrap();
     }
 
+    fn use_git_for_windows_line_endings(dir: &Path) {
+        git_in(dir, &["config", "core.autocrlf", "true"]);
+    }
+
     /// Two clones of one bare remote, both already one commit ahead of it in
     /// their own way: the shape a sync repository takes when two machines
     /// pushed between pulls.
@@ -350,7 +358,8 @@ mod tests {
         let machine_first = GitScm::open(&first).unwrap();
         git_in(&first, &["config", "user.name", "First"]);
         git_in(&first, &["config", "user.email", "first@local"]);
-        crate::scm::attributes::ensure_union_merge(&first).unwrap();
+        use_git_for_windows_line_endings(&first);
+        crate::scm::attributes::ensure_sync_attributes(&first).unwrap();
         commit_file(&machine_first, &first, "shared-start.txt", "start\n");
         let branch = machine_first.current_branch().unwrap();
         machine_first.push("origin", &branch).unwrap();
@@ -360,8 +369,9 @@ mod tests {
         let machine_second = GitScm::open(&second).unwrap();
         git_in(&second, &["config", "user.name", "Second"]);
         git_in(&second, &["config", "user.email", "second@local"]);
+        use_git_for_windows_line_endings(&second);
         let second_file = shared_file.unwrap_or("only-second.txt");
-        commit_file(&machine_second, &second, second_file, "from the second\n");
+        commit_file(&machine_second, &second, second_file, "from the second\r\n");
         machine_second.push("origin", &branch).unwrap();
 
         let first_file = shared_file.unwrap_or("only-first.txt");
@@ -376,12 +386,14 @@ mod tests {
 
         machine.pull("origin", &branch).unwrap();
 
-        assert!(
-            workdir.join("only-second.txt").is_file(),
-            "the other machine's commit is merged in"
+        let only_second = std::fs::read_to_string(workdir.join("only-second.txt")).unwrap();
+        let only_first = std::fs::read_to_string(workdir.join("only-first.txt")).unwrap();
+        assert_eq!(
+            only_second, "from the second\n",
+            "the other machine's commit is merged in, with LF line endings"
         );
-        assert!(
-            workdir.join("only-first.txt").is_file(),
+        assert_eq!(
+            only_first, "from the first\n",
             "this machine's own commit survives"
         );
         assert!(!machine.has_changes().unwrap(), "the merge is committed");
@@ -425,6 +437,8 @@ mod tests {
         assert!(merged.contains("from the first"), "kept: {merged}");
         assert!(merged.contains("from the second"), "kept: {merged}");
         assert!(!merged.contains("<<<<"), "no conflict markers: {merged}");
+        let has_carriage_return = merged.contains('\r');
+        assert!(!has_carriage_return, "LF line endings only: {merged:?}");
     }
 
     #[test]
@@ -435,15 +449,17 @@ mod tests {
         // and not a single commit of its own.
         let fresh = root.path().join("fresh");
         let machine = GitScm::init(&fresh).unwrap();
+        use_git_for_windows_line_endings(&fresh);
         machine
             .add_remote("origin", root.path().join("origin").to_str().unwrap())
             .unwrap();
 
         machine.pull("origin", &branch).unwrap();
 
-        assert!(
-            fresh.join("shared-start.txt").is_file(),
-            "the remote's history is checked out"
+        let shared_start = std::fs::read_to_string(fresh.join("shared-start.txt")).unwrap();
+        assert_eq!(
+            shared_start, "start\n",
+            "the remote's history is checked out with LF line endings"
         );
     }
 

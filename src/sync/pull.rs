@@ -68,7 +68,7 @@ pub fn pull_history(
         .or_else(|| repo.current_branch().ok())
         .unwrap_or_else(|| "main".to_string());
 
-    super::commit_union_merge_rules(repo.as_ref(), &state.sync_repo_path)?;
+    super::commit_sync_attributes(repo.as_ref(), &state.sync_repo_path)?;
 
     // Fetch from remote if configured
     if fetch_remote && state.has_remote {

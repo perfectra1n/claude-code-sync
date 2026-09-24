@@ -11,15 +11,21 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-/// The append-only files, and what git should do when both sides grew them.
-const UNION_MERGE_RULES: &[&str] = &["*.jsonl merge=union", "MEMORY.md merge=union"];
+const SYNC_ATTRIBUTE_RULES: &[&str] = &[
+    "* text=auto eol=lf",
+    "*.pdf binary",
+    "*.bat text eol=crlf",
+    "*.cmd text eol=crlf",
+    "*.jsonl merge=union",
+    "MEMORY.md merge=union",
+];
 
-/// Write the union-merge rules into the repository's `.gitattributes`.
+/// Write the sync rules into the repository's `.gitattributes`.
 ///
 /// Returns whether anything was added, so a caller can commit only a real
 /// change.
-pub fn ensure_union_merge(repo_path: &Path) -> Result<bool> {
-    let rules: Vec<String> = UNION_MERGE_RULES.iter().map(|s| s.to_string()).collect();
+pub fn ensure_sync_attributes(repo_path: &Path) -> Result<bool> {
+    let rules: Vec<String> = SYNC_ATTRIBUTE_RULES.iter().map(|s| s.to_string()).collect();
     ensure_lines(&repo_path.join(".gitattributes"), &rules)
 }
 
@@ -58,16 +64,17 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn the_union_rules_are_written_once() {
+    fn the_sync_rules_are_written_once() {
         let repo = TempDir::new().unwrap();
 
-        assert!(ensure_union_merge(repo.path()).unwrap());
+        assert!(ensure_sync_attributes(repo.path()).unwrap());
         let written = fs::read_to_string(repo.path().join(".gitattributes")).unwrap();
+        assert!(written.contains("* text=auto eol=lf"));
         assert!(written.contains("*.jsonl merge=union"));
         assert!(written.contains("MEMORY.md merge=union"));
 
         assert!(
-            !ensure_union_merge(repo.path()).unwrap(),
+            !ensure_sync_attributes(repo.path()).unwrap(),
             "a second run has nothing to add"
         );
         assert_eq!(
@@ -82,7 +89,7 @@ mod tests {
         let attributes = repo.path().join(".gitattributes");
         fs::write(&attributes, "*.png filter=lfs diff=lfs merge=lfs -text").unwrap();
 
-        assert!(ensure_union_merge(repo.path()).unwrap());
+        assert!(ensure_sync_attributes(repo.path()).unwrap());
 
         let written = fs::read_to_string(&attributes).unwrap();
         assert!(written.starts_with("*.png filter=lfs"));

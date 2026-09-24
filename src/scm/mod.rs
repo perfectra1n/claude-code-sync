@@ -61,6 +61,9 @@ pub trait Scm: Send + Sync {
     /// Stage all changes (add and remove).
     fn stage_all(&self) -> Result<()>;
 
+    /// Restage every tracked file under the current line-ending rules.
+    fn stage_renormalized(&self) -> Result<()>;
+
     /// Commit staged changes with a message.
     fn commit(&self, message: &str) -> Result<()>;
 
