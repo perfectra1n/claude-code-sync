@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/perfectra1n/claude-code-sync/compare/v0.3.3...v0.4.0) (2026-09-24)
+
+
+### Features
+
+* one-line installers, package-manager channels, ARM64 builds and self-update ([#98](https://github.com/perfectra1n/claude-code-sync/issues/98)) ([0278e84](https://github.com/perfectra1n/claude-code-sync/commit/0278e84103025edfe8c0223186249cba341fba1e))
+
 ## [0.3.3](https://github.com/perfectra1n/claude-code-sync/compare/v0.3.2...v0.3.3) (2026-07-13)
 
 
