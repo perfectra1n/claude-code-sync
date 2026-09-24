@@ -75,7 +75,7 @@ jobs:
             exit 1
           fi
 
-      # Once, here: five matrix jobs racing to create the same release would
+      # Once, here: the matrix jobs racing to create the same release would
       # leave the losers failed and their platform's assets missing.
       - name: Ensure the release exists
         if: steps.pick.outputs.tag != ''
@@ -93,81 +93,11 @@ jobs:
     # `!cancelled()` again: a skipped job cascades down the whole chain, and
     # release-please is skipped on every tag, so without it nothing builds.
     if: ${{ !cancelled() && needs.release-tag.outputs.tag != '' }}
-    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-linux-x86_64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-linux-x86_64-musl
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-macos-aarch64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: claude-code-sync.exe
-            asset_name: claude-code-sync-windows-x86_64.exe
-    steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.release-tag.outputs.tag }}
-
-      - name: Install mise
-        uses: jdx/mise-action@v4
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Add compilation target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Install musl tools (Linux musl only)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-
-      - name: Build release binary
-        run: mise run build-release -- --target ${{ matrix.target }}
-
-      - name: Package binary with checksum
-        shell: bash
-        run: |
-          cd target/${{ matrix.target }}/release
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            7z a ${{ matrix.asset_name }}.zip ${{ matrix.artifact_name }}
-            sha256sum ${{ matrix.asset_name }}.zip > ${{ matrix.asset_name }}.zip.sha256
-          else
-            strip ${{ matrix.artifact_name }}
-            tar czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
-            shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
-          fi
-
-      - name: Upload release assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release-tag.outputs.tag }}
-        run: |
-          gh release upload "$TAG" \
-            target/${{ matrix.target }}/release/${{ matrix.asset_name }}.* \
-            --clobber
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.release-tag.outputs.tag }}
 
   publish-crate:
     name: Publish to crates.io
