@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -118,13 +118,14 @@ pub enum ConflictResolution {
     /// If smart merge fails (e.g., due to corrupted data or circular references),
     /// the system will fall back to another resolution strategy.
     ///
+    /// The merged conversation is on disk by the time this is set, and only the
+    /// statistics are kept: holding every merged message until the pull ends is
+    /// what made a machine with a lot of diverged history run out of memory.
+    ///
     /// # Fields
     ///
-    /// * `merged_entries` - The result of merging both conversations
     /// * `stats` - Statistics about the merge operation
     SmartMerge {
-        /// The merged conversation entries
-        merged_entries: Vec<crate::parser::ConversationEntry>,
         /// Statistics about the merge operation
         stats: merge::MergeStats,
     },
@@ -205,22 +206,24 @@ impl Conflict {
     pub fn new(local: &ConversationSession, remote: &ConversationSession) -> Self {
         Conflict {
             session_id: local.session_id.clone(),
-            local_file: PathBuf::from(&local.file_path),
-            remote_file: PathBuf::from(&remote.file_path),
-            local_timestamp: local.latest_timestamp(),
-            remote_timestamp: remote.latest_timestamp(),
+            local_file: local.file_path.clone(),
+            remote_file: remote.file_path.clone(),
+            local_timestamp: local.latest_timestamp().map(str::to_string),
+            remote_timestamp: remote.latest_timestamp().map(str::to_string),
             local_message_count: local.message_count(),
             remote_message_count: remote.message_count(),
-            local_hash: local.content_hash(),
-            remote_hash: remote.content_hash(),
+            local_hash: local.content_hash().to_string(),
+            remote_hash: remote.content_hash().to_string(),
             resolution: ConflictResolution::Pending,
         }
     }
 
-    /// Attempts to resolve the conflict using smart merge
+    /// Combines both versions and writes the result over the local transcript.
     ///
     /// This method tries to intelligently combine local and remote versions
-    /// by analyzing message UUIDs, timestamps, and parent relationships.
+    /// by analyzing message UUIDs, timestamps, and parent relationships. The
+    /// merged messages are written straight out and dropped: the resolution
+    /// keeps the statistics only.
     ///
     /// # Arguments
     ///
@@ -230,8 +233,35 @@ impl Conflict {
     /// # Returns
     ///
     /// Returns `Ok(())` if the smart merge succeeds, or an error if it fails.
-    /// On success, the conflict resolution is set to `SmartMerge` with the merged entries.
-    pub fn try_smart_merge(
+    /// On success, the conflict resolution is set to `SmartMerge`.
+    pub fn smart_merge_into_local_file(
+        &mut self,
+        local_session: &ConversationSession,
+        remote_session: &ConversationSession,
+    ) -> Result<()> {
+        let merge_result = merge::merge_conversations(local_session, remote_session)?;
+
+        crate::parser::write_entries_to_file(&self.local_file, &merge_result.merged_entries)
+            .with_context(|| {
+                format!(
+                    "Failed to write smart merged file: {}",
+                    self.local_file.display()
+                )
+            })?;
+
+        self.resolution = ConflictResolution::SmartMerge {
+            stats: merge_result.stats,
+        };
+
+        Ok(())
+    }
+
+    /// Work out what a smart merge would produce, without writing anything.
+    ///
+    /// The interactive resolver asks about every conflict before it applies
+    /// any answer, so it needs the statistics to show while the user can still
+    /// change their mind, or cancel and keep every file as it was.
+    pub fn preview_smart_merge(
         &mut self,
         local_session: &ConversationSession,
         remote_session: &ConversationSession,
@@ -239,7 +269,6 @@ impl Conflict {
         let merge_result = merge::merge_conversations(local_session, remote_session)?;
 
         self.resolution = ConflictResolution::SmartMerge {
-            merged_entries: merge_result.merged_entries,
             stats: merge_result.stats,
         };
 
@@ -317,11 +346,11 @@ impl ConflictDetector {
     /// ```
     /// # use claude_code_sync::conflict::ConflictDetector;
     /// # use claude_code_sync::parser::ConversationSession;
-    /// # fn example(local_sessions: Vec<ConversationSession>, remote_sessions: Vec<ConversationSession>) {
+    /// # fn example(paired: Vec<(&ConversationSession, &ConversationSession)>) {
     /// let mut detector = ConflictDetector::new();
     ///
-    /// // Detect conflicts between local and remote sessions
-    /// detector.detect(&local_sessions, &remote_sessions);
+    /// // Each local transcript with the repository copy it belongs to
+    /// detector.detect(&paired);
     ///
     /// if detector.has_conflicts() {
     ///     println!("Found {} conflicts", detector.conflict_count());
@@ -344,28 +373,23 @@ impl ConflictDetector {
         }
     }
 
-    /// Compare local and remote sessions and detect conflicts
-    pub fn detect(
-        &mut self,
-        local_sessions: &[ConversationSession],
-        remote_sessions: &[ConversationSession],
-    ) {
-        // Build a map of session_id -> local session
-        let local_map: std::collections::HashMap<_, _> = local_sessions
-            .iter()
-            .map(|s| (s.session_id.clone(), s))
-            .collect();
+    /// Record a conflict for every pair of transcripts that hold the same
+    /// conversation in different states.
+    ///
+    /// The caller pairs a local transcript with the repository copy that
+    /// belongs to it — the file one would overwrite the other. Never pair by
+    /// the interior session id: a session resumed in a second project leaves
+    /// two different transcripts carrying one id, and merging those mixes two
+    /// conversations into each other on every sync.
+    pub fn detect(&mut self, pairs: &[(&ConversationSession, &ConversationSession)]) {
+        for (local, remote) in pairs {
+            if local.content_hash() == remote.content_hash() {
+                continue;
+            }
 
-        // Check each remote session against local
-        for remote in remote_sessions {
-            if let Some(local) = local_map.get(&remote.session_id) {
-                // Session exists in both - check for conflicts
-                if local.content_hash() != remote.content_hash() {
-                    let conflict = Conflict::new(local, remote);
-                    if conflict.is_real_conflict() {
-                        self.conflicts.push(conflict);
-                    }
-                }
+            let conflict = Conflict::new(local, remote);
+            if conflict.is_real_conflict() {
+                self.conflicts.push(conflict);
             }
         }
     }
@@ -418,7 +442,12 @@ mod tests {
     use super::*;
     use crate::parser::ConversationEntry;
 
-    fn create_test_session(session_id: &str, message_count: usize) -> ConversationSession {
+    /// A real transcript on disk, because a session is now a summary of one.
+    fn create_test_session(
+        dir: &tempfile::TempDir,
+        session_id: &str,
+        message_count: usize,
+    ) -> ConversationSession {
         let mut entries = Vec::new();
 
         for i in 0..message_count {
@@ -440,20 +469,20 @@ mod tests {
             });
         }
 
-        ConversationSession {
-            session_id: session_id.to_string(),
-            entries,
-            file_path: format!("/test/{session_id}.jsonl"),
-        }
+        let path = dir.path().join(format!("{session_id}.jsonl"));
+        crate::parser::write_entries_to_file(&path, &entries).unwrap();
+        ConversationSession::from_file(&path).unwrap()
     }
 
     #[test]
     fn test_conflict_detection() {
-        let local_session = create_test_session("session-1", 5);
-        let remote_session = create_test_session("session-1", 6);
+        let local_dir = tempfile::TempDir::new().unwrap();
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        let local_session = create_test_session(&local_dir, "session-1", 5);
+        let remote_session = create_test_session(&remote_dir, "session-1", 6);
 
         let mut detector = ConflictDetector::new();
-        detector.detect(&[local_session], &[remote_session]);
+        detector.detect(&[(&local_session, &remote_session)]);
 
         assert!(detector.has_conflicts());
         assert_eq!(detector.conflict_count(), 1);
@@ -466,11 +495,13 @@ mod tests {
 
     #[test]
     fn test_no_conflict_same_content() {
-        let local_session = create_test_session("session-1", 5);
-        let remote_session = create_test_session("session-1", 5);
+        let local_dir = tempfile::TempDir::new().unwrap();
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        let local_session = create_test_session(&local_dir, "session-1", 5);
+        let remote_session = create_test_session(&remote_dir, "session-1", 5);
 
         let mut detector = ConflictDetector::new();
-        detector.detect(&[local_session], &[remote_session]);
+        detector.detect(&[(&local_session, &remote_session)]);
 
         assert!(!detector.has_conflicts());
     }

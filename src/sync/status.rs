@@ -56,9 +56,16 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     println!("  Local: {}", local_sessions.len().to_string().cyan());
 
     let remote_projects_dir = state.sync_repo_path.join(&filter.sync_subdirectory);
+    let mut skipped_by_project = crate::project_map::SkippedByProject::new();
     if remote_projects_dir.exists() {
         let remote_sessions = discover_sessions(&remote_projects_dir, &filter)?;
         println!("  Sync repo: {}", remote_sessions.len().to_string().cyan());
+        skipped_by_project = sessions_without_local_project(
+            &filter,
+            &claude_dir,
+            &remote_projects_dir,
+            &remote_sessions,
+        );
     }
 
     // Artifact categories: enabled state and local-vs-repo drift
@@ -68,6 +75,7 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
         let claude_home = super::discovery::claude_home_dir()?;
         let plan =
             crate::artifacts::engine::plan_pull(&claude_home, &state.sync_repo_path, &filter)?;
+        crate::project_map::merge_skipped(&mut skipped_by_project, &plan.unmapped_projects);
         for desc in crate::artifacts::registry::REGISTRY {
             if !crate::artifacts::engine::is_category_enabled(desc, &filter) {
                 println!("  {}: {}", desc.name, "disabled".dimmed());
@@ -78,6 +86,7 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
                 .iter()
                 .chain(plan.creates.iter())
                 .chain(plan.unions.iter())
+                .chain(plan.mode_fixes.iter())
                 .filter(|w| w.category == desc.id)
                 .count();
             if differing == 0 {
@@ -98,14 +107,22 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
         );
     }
 
+    for line in crate::project_map::skipped_project_warnings(
+        &skipped_by_project,
+        filter.warn_each_skipped_file,
+    ) {
+        log::warn!("{line}");
+    }
+
     // Show files if requested
     if show_files {
         println!();
         println!("{}", "Local session files:".bold());
         for session in local_sessions.iter().take(20) {
-            let relative = Path::new(&session.file_path)
+            let relative = session
+                .file_path
                 .strip_prefix(&claude_dir)
-                .unwrap_or(Path::new(&session.file_path));
+                .unwrap_or(&session.file_path);
             println!(
                 "  {} ({} messages)",
                 relative.display(),
@@ -130,4 +147,35 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The sync-repo transcripts a pull could not place on this machine, grouped
+/// by the project they came from. `status` reports the same misses a pull
+/// would warn about, so the two agree before anything is written.
+fn sessions_without_local_project(
+    filter: &FilterConfig,
+    claude_dir: &Path,
+    remote_projects_dir: &Path,
+    remote_sessions: &[crate::parser::ConversationSession],
+) -> crate::project_map::SkippedByProject {
+    let mut skipped = crate::project_map::SkippedByProject::new();
+
+    for session in remote_sessions {
+        let relative = session
+            .file_path
+            .strip_prefix(remote_projects_dir)
+            .unwrap_or(&session.file_path);
+        let Some((project, _)) = crate::project_map::split_project_path(relative) else {
+            continue;
+        };
+        let local_project = crate::project_map::local_project_dir(filter, claude_dir, project);
+        if local_project.is_none() {
+            skipped
+                .entry(project.to_string())
+                .or_default()
+                .push(session.file_path.clone());
+        }
+    }
+
+    skipped
 }

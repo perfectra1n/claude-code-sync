@@ -206,6 +206,10 @@ impl Scm for HgScm {
         Ok(())
     }
 
+    fn stage_renormalized(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn commit(&self, message: &str) -> Result<()> {
         self.run_hg(&["commit", "-m", message])?;
         Ok(())

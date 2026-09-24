@@ -60,6 +60,36 @@ pub struct FilterConfig {
     /// false so configs from older versions keep their exact behavior.
     #[serde(default)]
     pub sync_artifacts: crate::artifacts::registry::ArtifactToggles,
+
+    /// Canonical project id -> this machine's absolute path for that project.
+    /// A mapped project syncs under its id instead of its encoded path, so it
+    /// stays one project across machines that keep it elsewhere or under
+    /// another name. Unmapped projects are unaffected.
+    #[serde(default)]
+    pub project_map: crate::project_map::ProjectMap,
+
+    /// Delete transcripts older than this many days from both the machine and
+    /// the sync repository. Unset means the default window: the longer of six
+    /// months and this machine's own Claude Code retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purge_older_than_days: Option<u32>,
+
+    /// Purge as part of every `sync`, between the pull and the push, so the
+    /// removals travel with that push. Off by default: purging deletes.
+    #[serde(default)]
+    pub purge_after_sync: bool,
+
+    /// Warn once per file a pull cannot place, the way older versions did.
+    /// Off by default: one unmapped project fills the terminal with a line per
+    /// file, all of them saying the same thing.
+    #[serde(default)]
+    pub warn_each_skipped_file: bool,
+
+    /// External three-way merge command for a conflicting file, invoked as
+    /// `<command> <local> <remote> <base> <output>` (the JetBrains
+    /// `phpstorm merge` argument order). Empty means the terminal picker only.
+    #[serde(default)]
+    pub merge_tool: String,
 }
 
 fn default_lfs_patterns() -> Vec<String> {
@@ -92,6 +122,11 @@ impl Default for FilterConfig {
             sync_subdirectory: default_sync_subdirectory(),
             use_project_name_only: false,
             sync_artifacts: Default::default(),
+            project_map: Default::default(),
+            purge_older_than_days: None,
+            purge_after_sync: false,
+            warn_each_skipped_file: false,
+            merge_tool: String::new(),
         }
     }
 }
@@ -253,12 +288,27 @@ impl FilterConfig {
                 crate::artifacts::registry::ARTIFACTS_SUBDIR
             );
         }
+        // It is joined onto the repository root and then walked, copied into
+        // and — since `purge` — deleted from. Anything that escapes or points
+        // at the root itself would take the rest of the repository with it.
+        let subdirectory = Path::new(&self.sync_subdirectory);
+        let escapes = subdirectory.is_absolute()
+            || subdirectory
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir));
+        if escapes || self.sync_subdirectory == "." {
+            bail!(
+                "sync_subdirectory must be a directory inside the repository, got '{}'",
+                self.sync_subdirectory
+            );
+        }
         if self.max_file_size_bytes == 0 {
             bail!(
                 "max_file_size_bytes cannot be 0: every file would be filtered out \
                  and nothing would ever sync"
             );
         }
+        crate::project_map::validate(&self.project_map)?;
         Ok(())
     }
 }
@@ -295,6 +345,105 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     } else {
         text.contains(pattern)
     }
+}
+
+/// Add or remove `[project_map]` entries. `add` holds `id=/absolute/path`
+/// pairs; `remove` holds ids.
+pub fn update_project_map(add: &[String], remove: &[String]) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+
+    for entry in add {
+        let Some((id, path)) = entry.split_once('=') else {
+            bail!("expected id=/absolute/path, got {entry:?}");
+        };
+        let path = crate::project_map::normalize_project_path(Path::new(path.trim()));
+        config.project_map.insert(id.trim().to_string(), path);
+    }
+    for id in remove {
+        if config.project_map.remove(id.trim()).is_none() {
+            println!("{}", format!("No mapping named {id:?}").yellow());
+        }
+    }
+
+    config.validate()?;
+    config.save()?;
+
+    println!("{}", "Project map:".green());
+    for (id, path) in &config.project_map {
+        println!("  {} -> {}", id.cyan(), path.display());
+    }
+    Ok(())
+}
+
+/// Set the retention window and whether a sync purges.
+pub fn configure_purge(older_than_days: Option<u32>, after_sync: Option<bool>) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+
+    if let Some(days) = older_than_days {
+        if days < crate::purge::MINIMUM_RETENTION_DAYS {
+            bail!(
+                "purge_older_than_days must be at least {} days",
+                crate::purge::MINIMUM_RETENTION_DAYS
+            );
+        }
+        config.purge_older_than_days = Some(days);
+        println!(
+            "{}",
+            format!("Purge transcripts older than {days} days").green()
+        );
+    }
+    if let Some(after_sync) = after_sync {
+        config.purge_after_sync = after_sync;
+        println!(
+            "{}",
+            format!(
+                "Purge as part of sync: {}",
+                if after_sync { "enabled" } else { "disabled" }
+            )
+            .green()
+        );
+    }
+
+    config.validate()?;
+    config.save()?;
+    Ok(())
+}
+
+/// Choose between one warning per pull and one per file a pull cannot place.
+pub fn set_warn_each_skipped_file(each_file: bool) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+    config.warn_each_skipped_file = each_file;
+    config.validate()?;
+    config.save()?;
+
+    println!(
+        "{}",
+        format!(
+            "Skipped files: {}",
+            if each_file {
+                "one warning each"
+            } else {
+                "one combined warning"
+            }
+        )
+        .green()
+    );
+    Ok(())
+}
+
+/// Set (or clear, when empty) the external merge command.
+pub fn set_merge_tool(command: &str) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+    config.merge_tool = command.trim().to_string();
+    config.validate()?;
+    config.save()?;
+
+    if config.merge_tool.is_empty() {
+        println!("{}", "Merge tool cleared".green());
+    } else {
+        println!("{}", format!("Merge tool: {}", config.merge_tool).green());
+    }
+    Ok(())
 }
 
 /// Update the filter configuration
@@ -434,18 +583,26 @@ pub fn update_config(
 /// Resolve a comma-separated list of category names (or `all`) and flip their
 /// toggles. Unknown names abort before anything is persisted.
 fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -> Result<()> {
-    use crate::artifacts::registry::{find_by_name, ArtifactToggles};
+    use crate::artifacts::registry::{find_by_name, ArtifactToggles, CategoryId};
 
     let verb = if value { "Enabled" } else { "Disabled" };
 
     for name in names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         if name == "all" {
-            config.sync_artifacts = if value {
-                ArtifactToggles::all_enabled()
+            if value {
+                // Keep hooks as they were: `all` never switches them on.
+                let hooks = config.sync_artifacts.is_enabled(CategoryId::Hooks);
+                config.sync_artifacts = ArtifactToggles::all_but_hooks();
+                config.sync_artifacts.set_enabled(CategoryId::Hooks, hooks);
+                println!(
+                    "{}",
+                    "Enabled all artifact categories (hooks only by name: --enable-artifacts hooks)"
+                        .green()
+                );
             } else {
-                ArtifactToggles::default()
-            };
-            println!("{}", format!("{verb} all artifact categories").green());
+                config.sync_artifacts = ArtifactToggles::default();
+                println!("{}", format!("{verb} all artifact categories").green());
+            }
             continue;
         }
         if name == "attachments" {
@@ -463,6 +620,15 @@ fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -
         };
         config.sync_artifacts.set_enabled(desc.id, value);
         println!("{}", format!("{verb} artifact category: {name}").green());
+        if value && desc.id == CategoryId::Hooks {
+            println!(
+                "{}",
+                "Warning: hooks run code. Every machine syncing this repository will run \
+                 whatever scripts it holds; enable this only for a repository you control."
+                    .yellow()
+                    .bold()
+            );
+        }
     }
 
     Ok(())
@@ -539,6 +705,55 @@ pub fn show_config() -> Result<()> {
         }
     );
 
+    println!(
+        "  {}: {}",
+        "Warn for each skipped file".cyan(),
+        if config.warn_each_skipped_file {
+            "Yes (a line per file)".green()
+        } else {
+            "No (one combined warning)".yellow()
+        }
+    );
+
+    println!(
+        "  {}: {}",
+        "Merge tool".cyan(),
+        if config.merge_tool.is_empty() {
+            "none (terminal picker only)".yellow()
+        } else {
+            config.merge_tool.green()
+        }
+    );
+
+    println!(
+        "  {}: {}",
+        "Purge transcripts older than".cyan(),
+        match config.purge_older_than_days {
+            Some(days) => format!("{days} days").green(),
+            None => "default (180 days, or Claude Code's own window if longer)".green(),
+        }
+    );
+    println!(
+        "  {}: {}",
+        "Purge as part of sync".cyan(),
+        if config.purge_after_sync {
+            "Yes".green()
+        } else {
+            "No (run `claude-code-sync purge`)".yellow()
+        }
+    );
+
+    println!("  {}:", "Project map".cyan());
+    if config.project_map.is_empty() {
+        println!(
+            "    {}",
+            "empty (projects sync under their encoded path)".yellow()
+        );
+    }
+    for (id, path) in &config.project_map {
+        println!("    {} -> {}", id.cyan(), path.display());
+    }
+
     println!("  {}:", "Artifact sync".cyan());
     for desc in crate::artifacts::registry::toggleable() {
         let state = if config.sync_artifacts.is_enabled(desc.id) {
@@ -559,7 +774,50 @@ pub fn show_config() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn enabling_all_artifacts_leaves_hooks_to_be_named() {
+        use crate::artifacts::registry::CategoryId;
+
+        let mut config = FilterConfig::default();
+        apply_artifact_toggles(&mut config, "all", true).unwrap();
+        assert!(config.sync_artifacts.is_enabled(CategoryId::Skills));
+        assert!(!config.sync_artifacts.is_enabled(CategoryId::Hooks));
+
+        apply_artifact_toggles(&mut config, "hooks", true).unwrap();
+        assert!(config.sync_artifacts.is_enabled(CategoryId::Hooks));
+        apply_artifact_toggles(&mut config, "all", true).unwrap();
+        assert!(
+            config.sync_artifacts.is_enabled(CategoryId::Hooks),
+            "`all` does not switch hooks back off either"
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn warn_each_skipped_file_survives_a_toml_round_trip() {
+        let config = FilterConfig {
+            warn_each_skipped_file: true,
+            ..Default::default()
+        };
+
+        let serialized = toml::to_string(&config).unwrap();
+        let reloaded: FilterConfig = toml::from_str(&serialized).unwrap();
+
+        assert!(reloaded.warn_each_skipped_file);
+        assert!(
+            !FilterConfig::default().warn_each_skipped_file,
+            "combined warnings are the default"
+        );
+    }
+
+    #[test]
+    fn a_config_written_before_the_key_existed_still_loads() {
+        let older_config: FilterConfig = toml::from_str("max_file_size_bytes = 1024").unwrap();
+
+        assert!(!older_config.warn_each_skipped_file);
+    }
 
     #[test]
     fn test_validate_rejects_zero_max_file_size() {
@@ -625,6 +883,7 @@ mod tests {
         assert!(config.include_patterns.is_empty());
         assert!(config.exclude_patterns.is_empty());
         assert!(!config.exclude_attachments);
+        assert_eq!(config.max_file_size_bytes, 10 * 1024 * 1024);
     }
 
     #[test]

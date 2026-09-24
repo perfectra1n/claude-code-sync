@@ -23,7 +23,12 @@ cargo doc --open --no-deps --all-features
 | Feature | Description |
 |---------|-------------|
 | **Smart Merge** | Automatically combines non-conflicting conversation changes |
-| **Artifact Sync** | Carry settings, skills, agents, commands, plugin manifests, plans, todos, and prompt history across machines |
+| **Artifact Sync** | Carry settings, skills, agents, commands, rules, hooks, plugin manifests, plans, todos, and prompt history across machines |
+| **Project Map** | Pin a project to its path per machine, so renamed or relocated checkouts stay one project |
+| **Neutral Paths** | Synced config files store `__HOME__` / `__CLAUDE_DIR__` instead of this machine's absolute paths |
+| **Deletion Mirroring** | Deleting a skill, agent, command, rule or hook propagates, guarded so a fresh machine can never wipe the repo |
+| **External Merge Tool** | Resolve a differing file in a real three-way merge window instead of picking a side |
+| **Transcript Retention** | `purge` old conversations from the machine and the repo together, never sooner than Claude Code would |
 | **Secrets Guard** | Hardcoded never-sync denylist plus a managed ignore block in the sync repo |
 | **Bidirectional Sync** | Pull and push changes in one command with `sync` |
 | **Interactive Onboarding** | First-time setup wizard guides you through configuration |
@@ -72,6 +77,8 @@ carries the rest of `~/.claude` across machines, per category:
 | `skills` | `~/.claude/skills/` | Custom skills, recursively |
 | `agents` | `~/.claude/agents/` | Custom subagent definitions |
 | `commands` | `~/.claude/commands/` | Custom slash commands |
+| `rules` | `~/.claude/rules/` | Shared rule files projects import |
+| `hooks` | `~/.claude/hooks/` | The scripts `settings.json` points at; they arrive executable |
 | `plugins` | `installed_plugins.json`, `known_marketplaces.json` | Only the manifests — plugin caches never sync |
 | `plans` | `~/.claude/plans/` | Plan-mode documents (may contain sensitive prose) |
 | `todos` | `~/.claude/todos/` | Session task lists (churny; consider leaving off) |
@@ -79,10 +86,10 @@ carries the rest of `~/.claude` across machines, per category:
 | attachments | non-`.jsonl` files in `~/.claude/projects/` | Images, PDFs, and per-project `memory/` dirs; governed by `--exclude-attachments`, not a toggle |
 
 Enable categories per machine (all default **off** for existing configs; the
-first-run wizard pre-selects them for new setups):
+first-run wizard pre-selects them for new setups, except `hooks`):
 
 ```bash
-# Enable everything
+# Enable everything except hooks
 claude-code-sync config --enable-artifacts all
 
 # Or pick categories
@@ -91,6 +98,26 @@ claude-code-sync config --enable-artifacts settings,skills,agents,commands,plugi
 # Turn one off again
 claude-code-sync config --disable-artifacts todos
 ```
+
+`hooks` is only ever switched on by name, never by `all` or the wizard's
+defaults (see below):
+`claude-code-sync config --enable-artifacts hooks`.
+
+Of a file's permissions only the executable bit travels — it is the one git
+records — and it travels on its own: a `chmod +x` with no content change is
+still a change to sync. It is only ever granted, never taken away, so a
+repository written before this existed cannot disarm a script here, and a
+`chmod -x` has to be repeated per machine. Nothing else about a mode is copied:
+a pull never widens a local file, and a file a pull creates starts private.
+Carrying the bit at all depends on `core.fileMode` being true in the sync
+repository, which is git's default everywhere except Windows checkouts.
+
+**Hooks are executed code.** Unlike skills and rules, which are text the model
+reads, everything under `~/.claude/hooks/` runs automatically, and the
+`settings.json` that registers a hook syncs alongside it. An interactive pull
+confirms making a file executable, but a file the repository adds is still
+written without a prompt, so enable this category only for a repository you
+control.
 
 ### What is NEVER synced
 
@@ -110,8 +137,8 @@ block in the repo's `.gitignore` (or `.hgignore`) as defense in depth.
   .gitignore              # managed never-sync guard block
   projects/               # conversation transcripts + attachments
   artifacts/
-    settings/  memory/  skills/  agents/  commands/
-    plugins/   plans/   todos/   prompt-history/
+    settings/  memory/  skills/  agents/  commands/  rules/
+    hooks/     plugins/ plans/   todos/   prompt-history/
 ```
 
 ### Conflict policy and undo
@@ -127,6 +154,156 @@ history only ever grows.
 > **Note (Git LFS):** if your `lfs_patterns` include `*.jsonl`, the repo copy
 > of `history.jsonl` is LFS-tracked; content is materialized on checkout, so
 > union merging still works.
+
+## Machines that do not look alike
+
+### Project map: machines that keep projects elsewhere
+
+Claude Code names a project directory after its absolute path, so the same
+project is `-home-user-work-app` on one machine and `-Users-someone-src-app-renamed`
+on another. `use_project_name_only` collapses that to the folder name, which
+loses renames and gives up whenever two checkouts share a name.
+
+Map the project once per machine instead:
+
+```bash
+# on the Linux box
+claude-code-sync config --map-project app=/home/user/work/app
+
+# on the Mac, where the same project lives elsewhere and is named differently
+claude-code-sync config --map-project app=/Users/someone/src/app-renamed
+
+# drop a mapping
+claude-code-sync config --unmap-project app
+```
+
+The repo then stores that project under `projects/app/`, and each machine
+materializes it back into its own directory. Unmapped projects are untouched:
+they keep `use_project_name_only` or their encoded path, exactly as before. Ids
+are plain directory names, paths must be absolute and spelled exactly as the
+project's own path (a trailing slash encodes differently), and two ids pointing
+at one directory are refused.
+
+A machine that has not mapped an id yet skips those files rather than writing
+them to a directory Claude Code would never read; run `--map-project` there and
+pull again. All of a pull's misses are reported in one warning that names every
+unmapped project and how many files it holds. To get a line per file instead:
+
+```bash
+claude-code-sync config --warn-each-skipped-file true
+```
+
+### Machine-neutral paths in config files
+
+Config categories (`settings`, `plugins`) are stored with this machine's
+absolute paths replaced by `__CLAUDE_DIR__` and `__HOME__`, and rendered back on
+pull. A hook command, a status line, anything that names a path travels
+correctly — the rewrite is not tied to any particular key, so new settings need
+no new code. Only text files are touched; other categories are stored verbatim.
+
+### Deletions that actually propagate
+
+Each machine records which artifact paths it last synced (in
+`~/.claude/.claude-code-sync-tracked.json`, per sync repo, never itself synced).
+A file that machine received before and no longer has is a deletion: push
+removes it from the repo, pull removes it locally. This applies to the curated
+directories only — `skills`, `agents`, `commands`, `rules`, `hooks` — never to
+transcripts, attachments, plans, todos or prompt history.
+
+Three guards keep it from destroying anything:
+
+- A machine with no record deletes nothing, so a fresh clone can never wipe the repo.
+- A category whose directory is missing locally is skipped on push: "I do not
+  have `skills/`" says nothing about what the other machines hold.
+- A category the repo does not have at all is skipped on pull, so an older
+  branch cannot read as "everything was deleted". Deleting the *last* file of a
+  category still propagates: each synced category keeps a `.synced` marker in
+  the repo, because git does not track empty directories and the category would
+  otherwise disappear along with its last file.
+
+`undo push` also forgets this machine's record for that repository, since the
+repo has just been rewound underneath it; the next sync re-learns.
+
+Deleted files are snapshotted first, so `claude-code-sync undo pull` brings them
+back, and `pull --interactive` asks before each one.
+
+### Memory indexes merge instead of overwriting
+
+`MEMORY.md` files inside a project's `memory/` directory are union-merged by
+link target in both directions, the way prompt history is. A machine that knows
+about fewer memories can no longer orphan the ones another machine wrote. Your
+file keeps its own shape — headings, blank lines, prose and entry order stay put
+— and entries the other side has and yours does not are appended. Only entry
+lines travel: a heading or a note you write reaches the other machine only if
+your file is the one that created its copy.
+
+### Purging old transcripts
+
+Syncing keeps every conversation forever, on every machine and in the repo.
+`purge` removes the ones past a retention window from **both** sides at once —
+removing them only here would bring them back on the next pull, and only in the
+repo would send them back up from the next machine that still has them:
+
+```bash
+claude-code-sync purge --dry-run      # what would go, and how much space
+claude-code-sync purge                # asks first
+claude-code-sync purge --yes          # for scripts; required outside a terminal
+claude-code-sync purge --older-than 365
+```
+
+The default window is the **longer of six months and this machine's own Claude
+Code retention** (`cleanupPeriodDays` in `~/.claude/settings.json`, 30 days by
+default) — Claude Code deletes those transcripts by itself anyway, so the sync
+repo is never the shorter-lived copy. That is also the minimum: a window of your
+own can only be longer. Set one, and let a sync do it for you, with:
+
+```bash
+claude-code-sync config --purge-older-than 365
+claude-code-sync config --purge-after-sync true   # runs between pull and push
+```
+
+A transcript's age is its **last message**, not the file's timestamp: a
+conversation pulled onto a new machine today is still as old as it was. A
+transcript with no readable timestamp is never purged. Each removal takes what
+Claude Code keeps beside it — the session's `subagents/` and `tool-results/`
+directories and any superseded or orphaned copies — and lands in the repo as its
+own commit, so `git` still has everything until the history itself is rewritten.
+
+### External merge tool
+
+When a pulled file differs from the local one, `pull --interactive` offers to
+open a real three-way merge instead of only choosing a side:
+
+```bash
+claude-code-sync config --merge-tool "phpstorm merge"
+```
+
+The tool is invoked as `<merge_tool> <local> <remote> <base> <output>` (the
+JetBrains argument order); whatever it writes to `<output>` is what lands. The
+base pane is empty — an artifact has no recorded common ancestor. Set
+`CLAUDE_CODE_SYNC_MERGE_TIMEOUT_SECONDS` to change the 15-minute wait, or pass
+an empty string to `--merge-tool` to go back to the terminal picker.
+
+### Binaries per tag
+
+Pushing a tag builds every platform on its own runner and attaches the archives
+and checksums to that tag's GitHub release:
+
+```bash
+git tag v0.4.0 && git push origin v0.4.0
+```
+
+A tag release-please creates works the same way; a tag you push by hand gets a
+release created for it with generated notes. Grab the asset for your platform
+from the [releases page](https://github.com/perfectra1n/claude-code-sync/releases).
+
+To build all of them locally instead — one Linux or macOS host, no Apple
+hardware and no Windows — run `bin/release.sh` (needs `cargo-zigbuild`, zig and
+python3); the binaries land in `dist/`. Two details make that possible, both
+documented in the script: `chrono`'s `clock` feature is off (it links
+CoreFoundation on macOS, so local time for log lines comes from `time`
+instead), and the `synchronization` import library Rust's Windows std needs is
+generated from zig's own API-set definition.
 
 ## Installation
 
@@ -338,7 +515,11 @@ claude-code-sync pull [OPTIONS]
 ```
 
 **Options:**
-- `--fetch-remote`: Pull from remote before merging (default: true)
+- `--fetch-remote <BOOL>`: Pull from remote before merging (default: true).
+  A remote that cannot be reached or whose changes conflict with the local sync
+  repository stops the pull — diverged branches are merged automatically, and a
+  real conflict is reported and undone. Pass `--fetch-remote false` to merge
+  only what is already in the local sync repository.
 - `--branch, -b <BRANCH>`: Branch to pull from (default: current branch)
 
 **Example:**
@@ -413,6 +594,29 @@ claude-code-sync config --enable-artifacts settings,skills,prompt-history
 # Show current config
 claude-code-sync config --show
 ```
+
+### `purge`
+
+Delete transcripts past the retention window from this machine **and** the sync
+repository. See [Purging old transcripts](#purging-old-transcripts).
+
+```bash
+# What would go, and how much space it frees
+claude-code-sync purge --dry-run
+
+# Ask, then delete (a terminal prompts; elsewhere --yes is required)
+claude-code-sync purge
+claude-code-sync purge --yes
+
+# Override the window for this run
+claude-code-sync purge --older-than 365
+```
+
+**Options:**
+- `--older-than <DAYS>`: retention window for this run (default and minimum: the
+  longer of 180 days and this machine's Claude Code `cleanupPeriodDays`)
+- `--dry-run`: show the plan and stop
+- `-y, --yes`: delete without asking
 
 ### `report`
 
@@ -693,6 +897,20 @@ scm_backend = "git"
 # Subdirectory within sync repo for projects
 sync_subdirectory = "projects"
 
+# Delete transcripts older than this, here and in the repo (see Purging old
+# transcripts). Unset means the longer of 180 days and this machine's own
+# Claude Code cleanupPeriodDays.
+purge_older_than_days = 365
+
+# Purge as part of every sync, between the pull and the push
+purge_after_sync = false
+
+# Warn once per file a pull cannot place, instead of one combined warning
+warn_each_skipped_file = false
+
+# External three-way merge command offered when a pulled file differs
+merge_tool = "phpstorm merge"
+
 # Artifact categories to sync alongside conversation history
 # (all default to false; see the Artifact Sync section)
 [sync_artifacts]
@@ -701,10 +919,16 @@ memory = true
 skills = true
 agents = true
 commands = true
+rules = true
+hooks = true
 plugins = true
 plans = false
 todos = false
 prompt_history = true
+
+# Canonical project id -> this machine's path for it (see Project map)
+[project_map]
+shop = "/home/user/work/shop-web"
 ```
 
 ## Sync State

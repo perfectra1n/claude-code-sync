@@ -7,6 +7,7 @@ pub mod cleanup;
 pub mod config;
 pub mod history;
 pub mod onboarding;
+pub mod purge;
 pub mod undo;
 
 // Re-export all public handler functions for convenient use
@@ -20,4 +21,5 @@ pub use history::{
 pub use onboarding::{
     is_initialized, run_init_from_config, run_onboarding_flow, try_init_from_config,
 };
+pub use purge::{handle_purge, validate_older_than};
 pub use undo::{handle_undo_pull, handle_undo_push};

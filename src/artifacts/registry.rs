@@ -13,6 +13,8 @@ pub enum CategoryId {
     Skills,
     Agents,
     Commands,
+    Rules,
+    Hooks,
     Plugins,
     Plans,
     Todos,
@@ -42,6 +44,10 @@ pub enum MergeStrategy {
     /// Line-wise union of both sides (append-only JSONL like history.jsonl);
     /// applied on push and pull so machines converge grow-only.
     UnionJsonl,
+    /// Union of `MEMORY.md` indexes by link target, applied on push and pull;
+    /// every other file in the category raw-overwrites. Overwriting an index
+    /// with a sparser one orphans the other machine's memory files.
+    UnionMemoryIndex,
 }
 
 /// Where a category's files live inside the sync repository.
@@ -69,6 +75,12 @@ pub struct CategoryDescriptor {
     /// File extensions this category never copies (e.g. attachments skip
     /// `.jsonl`, which belongs to the session pipeline).
     pub exclude_extensions: &'static [&'static str],
+    /// Rewrite this machine's absolute paths to tokens into the repo and back
+    /// out. For config files that embed paths; user content is stored verbatim.
+    pub tokenize_paths: bool,
+    /// Propagate deletions: a file this machine synced before and no longer has
+    /// is removed from the other side. Only for curated directories.
+    pub mirror_deletes: bool,
     /// Short human description for wizard / config --show.
     pub description: &'static str,
 }
@@ -87,6 +99,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: true,
+        mirror_deletes: false,
         description: "User settings and keybindings (never settings.local.json)",
     },
     CategoryDescriptor {
@@ -97,6 +111,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: false,
         description: "Global CLAUDE.md user memory",
     },
     CategoryDescriptor {
@@ -107,6 +123,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: true,
         description: "Custom skills",
     },
     CategoryDescriptor {
@@ -117,6 +135,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: true,
         description: "Custom subagent definitions",
     },
     CategoryDescriptor {
@@ -127,7 +147,33 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: true,
         description: "Custom slash commands",
+    },
+    CategoryDescriptor {
+        id: CategoryId::Rules,
+        name: "rules",
+        repo_subdir: "rules",
+        source: SourceSpec::Dir("rules"),
+        merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: true,
+        description: "Shared rule files projects import from ~/.claude/rules",
+    },
+    CategoryDescriptor {
+        id: CategoryId::Hooks,
+        name: "hooks",
+        repo_subdir: "hooks",
+        source: SourceSpec::Dir("hooks"),
+        merge: MergeStrategy::RawOverwrite,
+        dest: DestRoot::Artifacts,
+        exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: true,
+        description: "Hook scripts settings.json points at (they run automatically)",
     },
     CategoryDescriptor {
         id: CategoryId::Plugins,
@@ -140,6 +186,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: true,
+        mirror_deletes: false,
         description: "Installed-plugin and marketplace manifests (never plugin caches)",
     },
     CategoryDescriptor {
@@ -150,6 +198,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: false,
         description: "Plan-mode documents (may contain sensitive prose)",
     },
     CategoryDescriptor {
@@ -160,6 +210,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: false,
         description: "Session task lists (changes frequently)",
     },
     CategoryDescriptor {
@@ -167,9 +219,11 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         name: "attachments",
         repo_subdir: "",
         source: SourceSpec::Dir("projects"),
-        merge: MergeStrategy::RawOverwrite,
+        merge: MergeStrategy::UnionMemoryIndex,
         dest: DestRoot::SessionTree,
         exclude_extensions: &["jsonl"],
+        tokenize_paths: false,
+        mirror_deletes: false,
         description: "Non-transcript files in project dirs (images, PDFs, project memory)",
     },
     CategoryDescriptor {
@@ -180,6 +234,8 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         merge: MergeStrategy::UnionJsonl,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
+        tokenize_paths: false,
+        mirror_deletes: false,
         description: "Cross-project prompt history (union-merged, grow-only)",
     },
 ];
@@ -200,6 +256,10 @@ pub struct ArtifactToggles {
     #[serde(default)]
     pub commands: bool,
     #[serde(default)]
+    pub rules: bool,
+    #[serde(default)]
+    pub hooks: bool,
+    #[serde(default)]
     pub plugins: bool,
     #[serde(default)]
     pub plans: bool,
@@ -210,8 +270,7 @@ pub struct ArtifactToggles {
 }
 
 impl ArtifactToggles {
-    /// A toggles value with every category enabled (used by onboarding
-    /// defaults and the `all` CLI shorthand).
+    /// A toggles value with every category enabled, `hooks` included.
     pub fn all_enabled() -> Self {
         Self {
             settings: true,
@@ -219,10 +278,22 @@ impl ArtifactToggles {
             skills: true,
             agents: true,
             commands: true,
+            rules: true,
+            hooks: true,
             plugins: true,
             plans: true,
             todos: true,
             prompt_history: true,
+        }
+    }
+
+    /// Every category except `hooks` (used by onboarding defaults and the
+    /// `all` CLI shorthand). Hooks run whatever the sync repository hands
+    /// them, so they are only ever switched on by name.
+    pub fn all_but_hooks() -> Self {
+        Self {
+            hooks: false,
+            ..Self::all_enabled()
         }
     }
 
@@ -239,6 +310,8 @@ impl ArtifactToggles {
             CategoryId::Skills => self.skills,
             CategoryId::Agents => self.agents,
             CategoryId::Commands => self.commands,
+            CategoryId::Rules => self.rules,
+            CategoryId::Hooks => self.hooks,
             CategoryId::Plugins => self.plugins,
             CategoryId::Plans => self.plans,
             CategoryId::Todos => self.todos,
@@ -257,6 +330,8 @@ impl ArtifactToggles {
             CategoryId::Skills => self.skills = value,
             CategoryId::Agents => self.agents = value,
             CategoryId::Commands => self.commands = value,
+            CategoryId::Rules => self.rules = value,
+            CategoryId::Hooks => self.hooks = value,
             CategoryId::Plugins => self.plugins = value,
             CategoryId::Plans => self.plans = value,
             CategoryId::Todos => self.todos = value,
@@ -294,10 +369,10 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn test_registry_has_all_ten_categories() {
-        assert_eq!(REGISTRY.len(), 10);
+    fn test_registry_has_all_twelve_categories() {
+        assert_eq!(REGISTRY.len(), 12);
         let ids: HashSet<_> = REGISTRY.iter().map(|d| d.id).collect();
-        assert_eq!(ids.len(), 10, "every category appears exactly once");
+        assert_eq!(ids.len(), 12, "every category appears exactly once");
     }
 
     #[test]
@@ -336,13 +411,56 @@ mod tests {
             .unwrap();
         assert_eq!(ph.merge, MergeStrategy::UnionJsonl);
         assert_eq!(ph.source, SourceSpec::Files(&["history.jsonl"]));
-        // Everything else raw-overwrites
+        // Only project attachments, which carry per-project MEMORY.md indexes,
+        // merge as well; everything else raw-overwrites.
         for d in REGISTRY
             .iter()
-            .filter(|d| d.id != CategoryId::PromptHistory)
+            .filter(|d| d.id != CategoryId::PromptHistory && d.id != CategoryId::ProjectAttachments)
         {
             assert_eq!(d.merge, MergeStrategy::RawOverwrite, "{}", d.name);
         }
+        let attachments = REGISTRY
+            .iter()
+            .find(|d| d.id == CategoryId::ProjectAttachments)
+            .unwrap();
+        assert_eq!(attachments.merge, MergeStrategy::UnionMemoryIndex);
+    }
+
+    #[test]
+    fn test_only_curated_directories_mirror_deletions() {
+        let mirrored: HashSet<_> = REGISTRY
+            .iter()
+            .filter(|d| d.mirror_deletes)
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(
+            mirrored,
+            HashSet::from(["skills", "agents", "commands", "rules", "hooks"])
+        );
+        for d in REGISTRY.iter().filter(|d| d.mirror_deletes) {
+            assert!(
+                matches!(d.source, SourceSpec::Dir(_)),
+                "{} mirrors deletions, so its source must be a directory",
+                d.name
+            );
+            assert_eq!(
+                d.dest,
+                DestRoot::Artifacts,
+                "{} mirrors deletions, so every tracked path must resolve to a \
+                 destination — a session-tree category can have none",
+                d.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_only_config_files_are_path_tokenized() {
+        let tokenized: HashSet<_> = REGISTRY
+            .iter()
+            .filter(|d| d.tokenize_paths)
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(tokenized, HashSet::from(["settings", "plugins"]));
     }
 
     #[test]

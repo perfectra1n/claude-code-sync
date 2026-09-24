@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, Once};
 
 use claude_code_sync::artifacts::registry::ArtifactToggles;
 use claude_code_sync::filter::FilterConfig;
@@ -71,6 +72,14 @@ impl Machine {
 
     fn claude(&self) -> PathBuf {
         self.home.join(".claude")
+    }
+
+    fn write_filter(&self, filter: &FilterConfig) {
+        fs::write(
+            self.config.join("claude-code-sync/config.toml"),
+            toml::to_string_pretty(filter).unwrap(),
+        )
+        .unwrap();
     }
 }
 
@@ -303,4 +312,107 @@ fn test_full_pipeline_sync_converges_prompt_history() {
         })
         .collect();
     assert_eq!(ts, vec![1000, 2000], "chronological order");
+}
+
+/// Collects what the tool warns about, so a test can count the lines a pull
+/// prints rather than trust that it prints the right number.
+struct WarningCollector;
+
+static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static WARNING_LOGGER: Once = Once::new();
+
+impl log::Log for WarningCollector {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            WARNINGS.lock().unwrap().push(record.args().to_string());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn collected_warnings_since_reset() -> Vec<String> {
+    WARNINGS.lock().unwrap().clone()
+}
+
+fn reset_collected_warnings() {
+    WARNING_LOGGER.call_once(|| {
+        log::set_boxed_logger(Box::new(WarningCollector)).unwrap();
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+    WARNINGS.lock().unwrap().clear();
+}
+
+fn lines_about_unplaceable_files(warnings: &[String]) -> Vec<&String> {
+    warnings
+        .iter()
+        .filter(|line| line.contains("no local project"))
+        .collect()
+}
+
+#[test]
+#[serial]
+fn test_pull_warns_once_for_a_project_this_machine_never_mapped() {
+    let _restore = EnvRestore::capture();
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+
+    // Machine A syncs its project under the canonical id "webapp".
+    let machine_a = Machine::new(repo.path());
+    machine_a.activate();
+    seed_full_claude_home(&machine_a.claude());
+    let mut mapped = FilterConfig {
+        sync_artifacts: ArtifactToggles::all_enabled(),
+        ..Default::default()
+    };
+    mapped.project_map.insert(
+        "webapp".to_string(),
+        PathBuf::from("/home/user/webapp"), // what -home-user-webapp encodes
+    );
+    machine_a.write_filter(&mapped);
+    push_history(Some("A"), false, None, false, false, VerbosityLevel::Quiet).unwrap();
+    assert!(repo.path().join("projects/webapp").is_dir());
+
+    // Machine B has never mapped "webapp": one transcript, one attachment and
+    // one memory index all land in the same warning.
+    let machine_b = Machine::new(repo.path());
+    machine_b.activate();
+    reset_collected_warnings();
+    pull_history(false, None, false, VerbosityLevel::Quiet).unwrap();
+
+    let warnings = collected_warnings_since_reset();
+    let unplaceable = lines_about_unplaceable_files(&warnings);
+    assert_eq!(
+        unplaceable.len(),
+        1,
+        "three unplaceable files, one warning: {warnings:?}"
+    );
+    assert!(
+        unplaceable[0].contains("webapp (3)"),
+        "the warning names the project and counts its files: {}",
+        unplaceable[0]
+    );
+    assert!(
+        !machine_b.claude().join("projects").exists(),
+        "nothing is written into a project this machine has no directory for"
+    );
+
+    // With the config key on, every file gets its line back.
+    let mut warn_each = mapped.clone();
+    warn_each.project_map.clear();
+    warn_each.warn_each_skipped_file = true;
+    machine_b.write_filter(&warn_each);
+    reset_collected_warnings();
+    pull_history(false, None, false, VerbosityLevel::Quiet).unwrap();
+
+    let warnings = collected_warnings_since_reset();
+    assert_eq!(
+        lines_about_unplaceable_files(&warnings).len(),
+        3,
+        "warn_each_skipped_file restores the line per file: {warnings:?}"
+    );
 }

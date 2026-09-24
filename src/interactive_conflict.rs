@@ -223,7 +223,7 @@ pub fn resolve_conflicts_interactive_with_sessions(
                         local_map.get(&conflict.session_id),
                         remote_map.get(&conflict.session_id),
                     ) {
-                        match conflict.try_smart_merge(local_session, remote_session) {
+                        match conflict.preview_smart_merge(local_session, remote_session) {
                             Ok(()) => {
                                 if let ConflictResolution::SmartMerge { ref stats, .. } =
                                     conflict.resolution
@@ -346,35 +346,19 @@ pub fn apply_resolutions(
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut renames = Vec::new();
 
-    // Handle "smart merge" - write merged entries to local file
     for conflict in &result.smart_merge {
-        if let ConflictResolution::SmartMerge {
-            ref merged_entries, ..
-        } = conflict.resolution
-        {
-            // Create a session with merged entries
-            let merged_session = ConversationSession {
-                session_id: conflict.session_id.clone(),
-                entries: merged_entries.clone(),
-                file_path: conflict.local_file.to_string_lossy().to_string(),
-            };
+        let local = ConversationSession::from_file(&conflict.local_file)?;
+        let remote = ConversationSession::from_file(&conflict.remote_file)?;
 
-            // Write to local file
-            merged_session
-                .write_to_file(&conflict.local_file)
-                .with_context(|| {
-                    format!(
-                        "Failed to write smart merged file: {}",
-                        conflict.local_file.display()
-                    )
-                })?;
+        conflict
+            .clone()
+            .smart_merge_into_local_file(&local, &remote)?;
 
-            println!(
-                "  {} Wrote smart merged conversation: {}",
-                "✓".cyan(),
-                conflict.local_file.display()
-            );
-        }
+        println!(
+            "  {} Wrote smart merged conversation: {}",
+            "✓".cyan(),
+            conflict.local_file.display()
+        );
     }
 
     // Handle "keep remote" - overwrite local with remote
@@ -384,9 +368,9 @@ pub fn apply_resolutions(
             .iter()
             .find(|s| s.session_id == conflict.session_id)
         {
-            // Write remote session to local path (overwrite)
+            // Copy the remote transcript over the local one
             remote_session
-                .write_to_file(&conflict.local_file)
+                .copy_to(&conflict.local_file)
                 .with_context(|| {
                     format!(
                         "Failed to overwrite local file with remote: {}",
@@ -417,14 +401,12 @@ pub fn apply_resolutions(
             .iter()
             .find(|s| s.session_id == conflict.session_id)
         {
-            remote_session
-                .write_to_file(&renamed_path)
-                .with_context(|| {
-                    format!(
-                        "Failed to write remote conflict version: {}",
-                        renamed_path.display()
-                    )
-                })?;
+            remote_session.copy_to(&renamed_path).with_context(|| {
+                format!(
+                    "Failed to write remote conflict version: {}",
+                    renamed_path.display()
+                )
+            })?;
 
             let relative_renamed = renamed_path
                 .strip_prefix(claude_dir)

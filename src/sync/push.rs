@@ -52,30 +52,49 @@ pub struct PushReport {
     pub artifacts: crate::artifacts::engine::ArtifactReport,
 }
 
-/// Compute a session's destination path relative to the projects directory,
-/// respecting `use_project_name_only`. Returns None when the session lacks the
-/// `cwd` needed for project-name mapping.
+/// Compute a session's destination path relative to the projects directory: a
+/// mapped project goes under its canonical id, otherwise `use_project_name_only`
+/// and the plain encoded path decide, exactly as before. Returns None when the
+/// session lacks the `cwd` needed for project-name mapping.
 fn compute_relative_path(
     session: &crate::parser::ConversationSession,
     claude_dir: &Path,
     filter: &FilterConfig,
 ) -> Option<PathBuf> {
-    if filter.use_project_name_only {
-        let full_relative = Path::new(&session.file_path)
-            .strip_prefix(claude_dir)
-            .unwrap_or(Path::new(&session.file_path));
+    let full_relative = session
+        .file_path
+        .strip_prefix(claude_dir)
+        .unwrap_or(&session.file_path);
 
-        let filename = full_relative.file_name()?;
-        let project_name = session.project_name()?;
-        Some(PathBuf::from(project_name).join(filename))
-    } else {
-        Some(
-            Path::new(&session.file_path)
-                .strip_prefix(claude_dir)
-                .unwrap_or(Path::new(&session.file_path))
-                .to_path_buf(),
-        )
+    let mut parts = full_relative.components();
+    let encoded_dir = parts.next()?.as_os_str().to_str()?;
+    if let Some(id) = crate::project_map::canonical_id(&filter.project_map, encoded_dir) {
+        return Some(Path::new(&id).join(parts.as_path()));
     }
+
+    if filter.use_project_name_only {
+        // The session's own cwd, not the encoded directory: its last segment
+        // is the project's folder name, which a `-` inside that name would
+        // otherwise truncate ("shop-web" -> "web"). The rest of the path is
+        // kept, so a session's subagent transcripts stay under it.
+        let project_name = session.project_name()?;
+        return Some(PathBuf::from(project_name).join(parts.as_path()));
+    }
+
+    Some(full_relative.to_path_buf())
+}
+
+/// Whether applying this plan entry still has to write the transcript.
+///
+/// An unchanged session already sits in the repository, and copying it again
+/// would rewrite bytes git then has to store for no change: a transcript an
+/// older version wrote is normalized JSON, byte for byte different from the
+/// verbatim copy made today while holding the very same conversation.
+pub fn needs_copy(entry: &PlannedSessionPush, dest_path: &Path) -> bool {
+    if entry.operation != SyncOperation::Unchanged {
+        return true;
+    }
+    !dest_path.exists()
 }
 
 /// Classify every discovered session against the sync repository's current
@@ -166,6 +185,8 @@ pub fn push_history(
             .context("Failed to set up Git LFS")?;
     }
 
+    crate::scm::attributes::ensure_sync_attributes(&state.sync_repo_path)?;
+
     let claude_dir = claude_projects_dir()?;
 
     // Get the current branch name for operation record
@@ -233,15 +254,16 @@ pub fn push_history(
         let session = &sessions[entry.session_index];
         let dest_path = projects_dir.join(&entry.relative_path);
 
-        // Write the session file
-        session.write_to_file(&dest_path)?;
+        if needs_copy(entry, &dest_path) {
+            session.copy_to(&dest_path)?;
+        }
 
         // Track this session in pushed conversations
         let relative_path_str = entry.relative_path.to_string_lossy().to_string();
         match ConversationSummary::new(
             session.session_id.clone(),
             relative_path_str.clone(),
-            session.latest_timestamp(),
+            session.latest_timestamp().map(str::to_string),
             session.message_count(),
             entry.operation,
         ) {
@@ -278,10 +300,11 @@ pub fn push_history(
         );
         if !artifact_report.counts.is_empty() {
             println!(
-                "  {} Artifacts: {} added, {} modified, {} unchanged",
+                "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged",
                 "•".cyan(),
                 artifact_report.total_added(),
                 artifact_report.total_modified(),
+                artifact_report.total_deleted(),
                 artifact_report.total_unchanged()
             );
         }
@@ -481,6 +504,8 @@ pub fn push_history(
             }
         }
     }
+
+    super::print_artifact_changes(&artifact_report);
 
     if verbosity == VerbosityLevel::Quiet {
         println!("Push complete");

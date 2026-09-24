@@ -450,13 +450,19 @@ fn prompt_artifact_categories() -> Result<crate::artifacts::registry::ArtifactTo
     let options: Vec<String> = toggleable()
         .map(|d| format!("{} — {}", d.name, d.description))
         .collect();
-    let all_indices: Vec<usize> = (0..options.len()).collect();
+    // Hooks run code from the sync repository: offered, never preselected.
+    let defaults = ArtifactToggles::all_but_hooks();
+    let default_indices: Vec<usize> = toggleable()
+        .enumerate()
+        .filter(|(_, d)| defaults.is_enabled(d.id))
+        .map(|(i, _)| i)
+        .collect();
 
     let picked = MultiSelect::new(
         "Sync these Claude Code artifacts alongside conversation history?",
         options,
     )
-    .with_default(&all_indices)
+    .with_default(&default_indices)
     .with_help_message(
         "Space toggles, enter confirms. Secrets (credentials, settings.local.json, \
          .env*, keys) are never synced regardless of selection.",

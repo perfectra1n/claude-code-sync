@@ -5,7 +5,6 @@
 //! once configured. This module handles the setup.
 
 use anyhow::{bail, Context, Result};
-use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -43,29 +42,12 @@ pub fn init(repo_path: &Path) -> Result<()> {
 /// Writes a .gitattributes file that tells git to use LFS for the
 /// specified file patterns.
 pub fn configure_gitattributes(repo_path: &Path, patterns: &[String]) -> Result<()> {
-    let gitattributes_path = repo_path.join(".gitattributes");
+    let lfs_lines: Vec<String> = patterns
+        .iter()
+        .map(|pattern| format!("{pattern} filter=lfs diff=lfs merge=lfs -text"))
+        .collect();
 
-    let mut content = String::new();
-
-    // Read existing content if file exists
-    if gitattributes_path.exists() {
-        content = fs::read_to_string(&gitattributes_path)
-            .context("Failed to read existing .gitattributes")?;
-    }
-
-    // Add LFS patterns that aren't already present
-    for pattern in patterns {
-        let lfs_line = format!("{} filter=lfs diff=lfs merge=lfs -text", pattern);
-        if !content.contains(&lfs_line) {
-            if !content.is_empty() && !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push_str(&lfs_line);
-            content.push('\n');
-        }
-    }
-
-    fs::write(&gitattributes_path, content).context("Failed to write .gitattributes")?;
+    super::attributes::ensure_lines(&repo_path.join(".gitattributes"), &lfs_lines)?;
 
     Ok(())
 }
@@ -96,6 +78,7 @@ pub fn setup(repo_path: &Path, patterns: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     #[test]

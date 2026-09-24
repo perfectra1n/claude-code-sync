@@ -704,6 +704,39 @@ fn test_attachments_map_project_names_in_name_only_mode() {
 }
 
 #[test]
+fn test_unmapped_project_files_are_grouped_into_one_warning() {
+    use claude_code_sync::project_map::skipped_project_warnings;
+
+    let repo = TempDir::new().unwrap();
+    let repo_project = repo.path().join("projects/shop");
+    fs::create_dir_all(&repo_project).unwrap();
+    for name in ["one.png", "two.png", "three.png"] {
+        fs::write(repo_project.join(name), b"PNGDATA").unwrap();
+    }
+
+    let machine_that_never_mapped_shop = TempDir::new().unwrap();
+    let filter = FilterConfig::default();
+    let plan = plan_pull(machine_that_never_mapped_shop.path(), repo.path(), &filter).unwrap();
+
+    assert_eq!(plan.skipped, 3);
+    assert_eq!(
+        plan.unmapped_projects.get("shop").map(Vec::len),
+        Some(3),
+        "every miss is grouped under the project it came from"
+    );
+    assert_eq!(
+        skipped_project_warnings(&plan.unmapped_projects, false).len(),
+        1,
+        "three missed files, one warning"
+    );
+    assert_eq!(
+        skipped_project_warnings(&plan.unmapped_projects, true).len(),
+        4,
+        "warn_each_skipped_file restores the line per file, plus the remedy"
+    );
+}
+
+#[test]
 fn test_pull_refuses_unlisted_files_in_allowlist_categories() {
     // A Files-sourced category (settings, plugins, ...) is an exact
     // allowlist: a repo carrying an unexpected filename inside that

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -29,35 +30,72 @@ pub(crate) fn claude_projects_dir() -> Result<PathBuf> {
     Ok(claude_home_dir()?.join("projects"))
 }
 
-/// Discover all conversation sessions in Claude Code history
+/// Discover all conversation sessions in Claude Code history.
+///
+/// Summarizing a transcript is pure CPU and independent per file, so the walk
+/// only gathers paths and the parsing runs across every core. Results keep the
+/// order the walk found them in, and each file is still streamed one line at a
+/// time, so the memory a machine needs does not grow with its history.
 pub fn discover_sessions(
     base_path: &Path,
     filter: &FilterConfig,
 ) -> Result<Vec<ConversationSession>> {
-    let mut sessions = Vec::new();
-
-    for entry in WalkDir::new(base_path)
+    let transcripts: Vec<PathBuf> = WalkDir::new(base_path)
         .follow_links(false)
         .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-
-        if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-            if !filter.should_include(path) {
-                continue;
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.into_path())
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("jsonl"))
+        .filter(|path| {
+            let included = filter.should_include(path);
+            if !included {
+                warn_oversized(path, filter.max_file_size_bytes);
             }
+            included
+        })
+        .collect();
 
-            match ConversationSession::from_file(path) {
-                Ok(session) => sessions.push(session),
-                Err(e) => {
-                    log::warn!("Failed to parse {}: {}", path.display(), e);
-                }
+    let sessions = transcripts
+        .par_iter()
+        .filter_map(|path| match ConversationSession::from_file(path) {
+            Ok(session) => Some(session),
+            Err(e) => {
+                log::warn!("Failed to parse {}: {}", path.display(), e);
+                None
             }
-        }
-    }
+        })
+        .collect();
 
     Ok(sessions)
+}
+
+/// Say that a conversation was left out for being over the size limit.
+///
+/// The filter drops it silently, so without this the conversation simply never
+/// appears in the sync repository and nothing ever explains why.
+fn warn_oversized(path: &Path, max_file_size_bytes: u64) {
+    let size = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => return,
+    };
+
+    if size <= max_file_size_bytes {
+        return;
+    }
+
+    let size_mb = size as f64 / (1024.0 * 1024.0);
+    let limit_mb = max_file_size_bytes as f64 / (1024.0 * 1024.0);
+    println!(
+        "  {} Skipping {} ({:.1} MB, over the {:.1} MB max_file_size_bytes limit)",
+        "⚠️ ".yellow().bold(),
+        path.display(),
+        size_mb,
+        limit_mb
+    );
+    println!(
+        "     {}",
+        "Raise it with `claude-code-sync config` to sync this conversation".dimmed()
+    );
 }
 
 /// Check for large conversation files and emit warnings
@@ -123,6 +161,11 @@ pub fn extract_project_name(encoded_path: &str) -> &str {
 /// Scans `~/.claude/projects/` for directories whose encoded name ends with
 /// the specified project name. Returns the path if exactly one match is found.
 ///
+/// The name is compared as a whole encoded segment, not through
+/// [`extract_project_name`]: a folder called `shop-web` encodes to
+/// `…-shop-web`, whose last dash-separated piece is `web`, so comparing
+/// those would never match the name push wrote.
+///
 /// # Returns
 /// - `Some(PathBuf)` if exactly one matching project directory is found
 /// - `None` if no match found or multiple matches (ambiguous)
@@ -131,6 +174,7 @@ pub fn find_local_project_by_name(
     project_name: &str,
 ) -> Option<PathBuf> {
     let entries = std::fs::read_dir(claude_projects_dir).ok()?;
+    let encoded_name = crate::project_map::encode_project_path(Path::new(project_name));
 
     let matches: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
@@ -138,7 +182,7 @@ pub fn find_local_project_by_name(
         .filter(|e| {
             e.file_name()
                 .to_str()
-                .map(|name| extract_project_name(name) == project_name)
+                .map(|name| name == encoded_name || name.ends_with(&format!("-{encoded_name}")))
                 .unwrap_or(false)
         })
         .map(|e| e.path())
