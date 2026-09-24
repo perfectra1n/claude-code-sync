@@ -561,7 +561,9 @@ jobs:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Install claude-code-sync
-        run: cargo install --locked --git https://github.com/perfectra1n/claude-code-sync
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/perfectra1n/claude-code-sync/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Create init config
         run: |

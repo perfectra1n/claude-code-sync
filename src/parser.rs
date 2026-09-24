@@ -323,6 +323,9 @@ fn allow_writing(path: &Path, permissions: std::fs::Permissions) -> Result<()> {
 
 /// Clear the file's read-only flag.
 #[cfg(not(unix))]
+// The lint warns that this makes a file world-writable on Unix; this is the
+// non-Unix branch, where it only clears the read-only attribute.
+#[allow(clippy::permissions_set_readonly_false)]
 fn allow_writing(path: &Path, permissions: std::fs::Permissions) -> Result<()> {
     let mut permissions = permissions;
     permissions.set_readonly(false);

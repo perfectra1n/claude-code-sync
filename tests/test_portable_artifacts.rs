@@ -33,6 +33,29 @@ fn write(path: &Path, contents: &str) {
     fs::write(path, contents).unwrap();
 }
 
+/// A `settings.json` with one Stop hook running `command`, serialized the way
+/// Claude Code writes it: a Windows path's backslashes are JSON-escaped
+/// (`C:\\Users\\me`), which is the spelling the tokenizer has to match.
+fn stop_hook_settings(command: &str) -> String {
+    serde_json::json!({"hooks": {"Stop": [{"command": command}]}}).to_string()
+}
+
+/// The Stop hook command a `settings.json` renders to; parsing it also proves
+/// the rendered file is still valid JSON.
+fn stop_hook_command(settings: &str) -> String {
+    let parsed: serde_json::Value = serde_json::from_str(settings).unwrap();
+    parsed["hooks"]["Stop"][0]["command"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// How `path` is spelled inside a JSON string in a file on disk.
+fn json_spelling(path: &Path) -> String {
+    let quoted = serde_json::to_string(&path.display().to_string()).unwrap();
+    quoted[1..quoted.len() - 1].to_string()
+}
+
 fn project_memory(claude: &Path, encoded_project: &str, file: &str) -> PathBuf {
     claude
         .join("projects")
@@ -132,25 +155,25 @@ fn settings_paths_are_stored_neutrally_and_rendered_per_machine() {
     let repo = TempDir::new().unwrap();
     let machine_a = TempDir::new().unwrap();
     let machine_b = TempDir::new().unwrap();
-    let hook = format!(
-        "{{\"hooks\":{{\"Stop\":[{{\"command\":\"{}/hooks/stop.sh\"}}]}}}}",
-        machine_a.path().display()
-    );
+    let hook = stop_hook_settings(&format!("{}/hooks/stop.sh", machine_a.path().display()));
     fs::write(machine_a.path().join("settings.json"), &hook).unwrap();
 
     push_artifacts(machine_a.path(), repo.path(), &all_on_filter()).unwrap();
 
     let stored = fs::read_to_string(repo.path().join("artifacts/settings/settings.json")).unwrap();
-    assert!(stored.contains("__CLAUDE_DIR__/hooks/stop.sh"), "{stored}");
-    assert!(!stored.contains(&machine_a.path().display().to_string()));
+    assert_eq!(stop_hook_command(&stored), "__CLAUDE_DIR__/hooks/stop.sh");
+    assert!(
+        !stored.contains(&json_spelling(machine_a.path())),
+        "{stored}"
+    );
 
     let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
     apply_pull(&plan, false).unwrap();
 
     let rendered = fs::read_to_string(machine_b.path().join("settings.json")).unwrap();
-    assert!(
-        rendered.contains(&format!("{}/hooks/stop.sh", machine_b.path().display())),
-        "{rendered}"
+    assert_eq!(
+        stop_hook_command(&rendered),
+        format!("{}/hooks/stop.sh", machine_b.path().display())
     );
 }
 
@@ -158,10 +181,7 @@ fn settings_paths_are_stored_neutrally_and_rendered_per_machine() {
 fn a_settings_file_that_only_differs_by_machine_path_is_not_rewritten() {
     let repo = TempDir::new().unwrap();
     let claude = TempDir::new().unwrap();
-    let hook = format!(
-        "{{\"hooks\":{{\"Stop\":[{{\"command\":\"{}/hooks/stop.sh\"}}]}}}}",
-        claude.path().display()
-    );
+    let hook = stop_hook_settings(&format!("{}/hooks/stop.sh", claude.path().display()));
     fs::write(claude.path().join("settings.json"), &hook).unwrap();
     push_artifacts(claude.path(), repo.path(), &all_on_filter()).unwrap();
 
@@ -457,17 +477,14 @@ fn a_home_path_in_settings_is_stored_as_a_token() {
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    let settings = format!(
-        "{{\"hooks\":{{\"Stop\":[{{\"command\":\"{}/bin/stop.sh\"}}]}}}}",
-        home.display()
-    );
+    let settings = stop_hook_settings(&format!("{}/bin/stop.sh", home.display()));
     fs::write(claude.path().join("settings.json"), &settings).unwrap();
 
     push_artifacts(claude.path(), repo.path(), &all_on_filter()).unwrap();
 
     let stored = fs::read_to_string(repo.path().join("artifacts/settings/settings.json")).unwrap();
-    assert!(stored.contains("__HOME__/bin/stop.sh"), "{stored}");
-    assert!(!stored.contains(&home.display().to_string()));
+    assert_eq!(stop_hook_command(&stored), "__HOME__/bin/stop.sh");
+    assert!(!stored.contains(&json_spelling(&home)), "{stored}");
 }
 
 #[test]

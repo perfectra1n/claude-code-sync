@@ -75,7 +75,7 @@ jobs:
             exit 1
           fi
 
-      # Once, here: five matrix jobs racing to create the same release would
+      # Once, here: the matrix jobs racing to create the same release would
       # leave the losers failed and their platform's assets missing.
       - name: Ensure the release exists
         if: steps.pick.outputs.tag != ''
@@ -93,81 +93,59 @@ jobs:
     # `!cancelled()` again: a skipped job cascades down the whole chain, and
     # release-please is skipped on every tag, so without it nothing builds.
     if: ${{ !cancelled() && needs.release-tag.outputs.tag != '' }}
-    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-linux-x86_64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-linux-x86_64-musl
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: claude-code-sync
-            asset_name: claude-code-sync-macos-aarch64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: claude-code-sync.exe
-            asset_name: claude-code-sync-windows-x86_64.exe
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.release-tag.outputs.tag }}
+
+  update-packaging:
+    name: Bump Homebrew Formula and Scoop Manifest
+    needs: [release-tag, build-binaries]
+    # Only once every platform's assets and checksums are on the release.
+    if: ${{ !cancelled() && needs.build-binaries.result == 'success' && needs.release-tag.outputs.tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Checkout release tag
+      # main, not the tag: the bump is committed on top of the release.
+      - name: Checkout main
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.release-tag.outputs.tag }}
+          ref: main
 
-      - name: Install mise
-        uses: jdx/mise-action@v4
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Add compilation target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Install musl tools (Linux musl only)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-
-      - name: Build release binary
-        run: mise run build-release -- --target ${{ matrix.target }}
-
-      - name: Package binary with checksum
-        shell: bash
-        run: |
-          cd target/${{ matrix.target }}/release
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            7z a ${{ matrix.asset_name }}.zip ${{ matrix.artifact_name }}
-            sha256sum ${{ matrix.asset_name }}.zip > ${{ matrix.asset_name }}.zip.sha256
-          else
-            strip ${{ matrix.artifact_name }}
-            tar czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
-            shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
-          fi
-
-      - name: Upload release assets
-        shell: bash
+      - name: Regenerate manifests from the release checksums
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-tag.outputs.tag }}
+        # A hand-pushed tag can be older than what main already ships; never
+        # roll the manifests back to it.
+        run: |
+          current="$(jq -r .version bucket/claude-code-sync.json)"
+          newest="$(printf '%s\n%s\n' "$current" "${TAG#v}" | sort -V | tail -n 1)"
+          if [ "$newest" != "${TAG#v}" ]; then
+            echo "Manifests already at $current, newer than $TAG; leaving them alone"
+            exit 0
+          fi
+          scripts/update-packaging.sh "$TAG"
+
+      # `ci:` is a hidden changelog section, so release-please does not treat
+      # this commit as release-worthy (chore: would open another release PR).
+      # Pushes made with GITHUB_TOKEN do not trigger workflows, so no CI loop.
+      - name: Commit and push
+        env:
           TAG: ${{ needs.release-tag.outputs.tag }}
         run: |
-          gh release upload "$TAG" \
-            target/${{ matrix.target }}/release/${{ matrix.asset_name }}.* \
-            --clobber
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula bucket
+          if git diff --cached --quiet; then
+            echo "Manifests already up to date"
+            exit 0
+          fi
+          git commit -m "ci(packaging): bump Homebrew formula and Scoop manifest to $TAG"
+          # Something may have merged to main while the binaries were building.
+          git pull --rebase origin main
+          git push origin HEAD:main
 
   publish-crate:
     name: Publish to crates.io

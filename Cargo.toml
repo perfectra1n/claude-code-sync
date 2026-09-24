@@ -5,6 +5,46 @@ edition = "2021"
 authors = ["Claude Code User"]
 description = "Sync Claude Code conversation history with git repositories"
 license = "MIT"
+repository = "https://github.com/perfectra1n/claude-code-sync"
+homepage = "https://github.com/perfectra1n/claude-code-sync"
+readme = "README.md"
+keywords = ["claude", "claude-code", "sync", "git", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+# Distribution plumbing, not needed to build the crate.
+exclude = ["Formula", "bucket", "flake.nix", "flake.lock", "install.sh", "install.ps1", "scripts"]
+
+# `cargo binstall claude-code-sync` downloads the prebuilt release asset instead
+# of compiling. The assets use short OS-arch names rather than target triples
+# (see .github/workflows/build.yml), so each target maps its URL explicitly.
+[package.metadata.binstall]
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-x86_64-musl.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-aarch64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-linux-aarch64-musl.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-macos-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-macos-aarch64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-windows-x86_64.exe.zip"
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-windows-aarch64.exe.zip"
+pkg-fmt = "zip"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
@@ -30,6 +70,21 @@ log = "0.4.33"
 env_logger = "0.11.10"
 atty = "0.2.14"
 tempfile = "3.27.0"
+sha2 = "0.11.0"
+semver = "1.0.28"
+self-replace = "1.5.0"
+
+# `self-update` networking and archive handling. Release assets are .tar.gz
+# everywhere except Windows, which ships .zip.
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+flate2 = "1.1.10"
+tar = "0.4.46"
+
+# schannel instead of rustls: ring needs clang to build for aarch64-pc-windows-msvc.
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3.4.2", default-features = false, features = ["native-tls"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 walkdir = "2.5"

@@ -1,0 +1,114 @@
+name: Build Binaries
+
+# The release build matrix, shared by two callers:
+#   - release.yml calls it with a tag, and every asset is uploaded to that release.
+#   - pull requests that touch the build inputs run it without a tag, so a
+#     broken target surfaces in review rather than halfway through a release.
+# Asset names are a public interface: install.sh, install.ps1, the
+# cargo-binstall metadata in Cargo.toml, `self-update`, and
+# scripts/update-packaging.sh all construct them. Rename with care.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build and upload assets to
+        type: string
+        required: true
+  pull_request:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - mise.toml
+      - src/self_update.rs
+      - .github/workflows/build.yml
+      - .github/workflows/release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: claude-code-sync-linux-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset_name: claude-code-sync-linux-x86_64-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_name: claude-code-sync-linux-aarch64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset_name: claude-code-sync-linux-aarch64-musl
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: claude-code-sync-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: claude-code-sync-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: claude-code-sync-windows-x86_64.exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            asset_name: claude-code-sync-windows-aarch64.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Empty on pull_request, which checks out the PR head.
+          ref: ${{ inputs.tag }}
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Add compilation target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools (Linux musl only)
+        if: endsWith(matrix.target, '-linux-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: mise run build-release -- --target ${{ matrix.target }}
+
+      - name: Package binary with checksum
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ./claude-code-sync.exe --version
+            7z a ${{ matrix.asset_name }}.zip claude-code-sync.exe
+            sha256sum ${{ matrix.asset_name }}.zip > ${{ matrix.asset_name }}.zip.sha256
+          else
+            strip claude-code-sync
+            # Every target builds on a native runner, so the stripped binary
+            # can be smoke-tested before it ships.
+            ./claude-code-sync --version
+            tar czf ${{ matrix.asset_name }}.tar.gz claude-code-sync
+            shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
+          fi
+
+      - name: Upload release assets
+        if: inputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ inputs.tag }} \
+            target/${{ matrix.target }}/release/${{ matrix.asset_name }}.* \
+            --clobber

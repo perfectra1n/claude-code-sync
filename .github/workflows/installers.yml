@@ -1,0 +1,202 @@
+name: Installers
+
+# Exercises every install channel end to end against the published releases,
+# the way a user would run them. These test the distribution plumbing, not the
+# code in the PR: the binaries they fetch are the latest release (or the
+# version pinned in Formula/ and bucket/).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - install.sh
+      - install.ps1
+      - Formula/**
+      - bucket/**
+      - flake.nix
+      - flake.lock
+      - Cargo.toml
+      - scripts/update-packaging.sh
+      - .github/workflows/installers.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint scripts and manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: shellcheck
+        run: shellcheck install.sh scripts/update-packaging.sh
+
+      # The committed manifests must be exactly what the generator produces,
+      # or the release-time bump would silently rewrite hand edits.
+      - name: Manifests match the generator
+        run: |
+          scripts/update-packaging.sh "v$(jq -r .version bucket/claude-code-sync.json)"
+          git diff --exit-code Formula bucket
+
+  install-sh:
+    name: install.sh (${{ matrix.os }}${{ matrix.libc && format(', {0}', matrix.libc) || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: ubuntu-latest
+            libc: gnu
+          # v0.3.3 predates the ARM64 builds: skip until a release ships them,
+          # and never pin that far back.
+          - os: ubuntu-24.04-arm
+            asset: claude-code-sync-linux-aarch64-musl.tar.gz
+            no_pin: true
+          - os: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the latest release has this platform
+        id: avail
+        run: |
+          if [ -z "${{ matrix.asset }}" ] || curl -fsIL -o /dev/null \
+              "https://github.com/perfectra1n/claude-code-sync/releases/latest/download/${{ matrix.asset }}"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Latest release has no ${{ matrix.asset }} yet; skipping"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install latest release
+        if: steps.avail.outputs.ok == 'true'
+        run: sh install.sh --dir "$RUNNER_TEMP/bin" ${{ matrix.libc && format('--libc {0}', matrix.libc) || '' }}
+
+      - name: Binary runs
+        if: steps.avail.outputs.ok == 'true'
+        run: '"$RUNNER_TEMP/bin/claude-code-sync" --version'
+
+      # Reinstalling over an existing binary, and pinning an older release.
+      - name: Install pinned version over it
+        if: steps.avail.outputs.ok == 'true' && !matrix.no_pin
+        run: |
+          sh install.sh --dir "$RUNNER_TEMP/bin" --version 0.3.3 ${{ matrix.libc && format('--libc {0}', matrix.libc) || '' }}
+          "$RUNNER_TEMP/bin/claude-code-sync" --version | grep -F 0.3.3
+
+  install-sh-alpine:
+    name: install.sh (Alpine, busybox sh)
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install latest release
+        run: |
+          apk add --no-cache curl
+          sh install.sh --dir /usr/local/bin
+          claude-code-sync --version
+
+  install-ps1:
+    name: install.ps1 (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows PowerShell 5.1 ships with Windows; pwsh is PowerShell 7.
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The same string-piped-into-iex path as the documented `irm ... | iex`.
+      - name: Install latest release via iex
+        run: |
+          $env:CCS_INSTALL_DIR = "$env:RUNNER_TEMP\ccs"
+          Get-Content -Raw .\install.ps1 | Invoke-Expression
+          & "$env:RUNNER_TEMP\ccs\claude-code-sync.exe" --version
+
+      - name: Reinstall pinned version with parameters
+        run: |
+          .\install.ps1 -Version 0.3.3 -InstallDir "$env:RUNNER_TEMP\ccs" -NoPath
+          $v = & "$env:RUNNER_TEMP\ccs\claude-code-sync.exe" --version
+          if ($v -notmatch '0\.3\.3') { throw "unexpected version: $v" }
+
+  homebrew:
+    name: Homebrew tap
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # brew taps by cloning; a shallow checkout cannot be cloned.
+          fetch-depth: 0
+
+      - name: Tap this checkout and install
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew tap perfectra1n/claude-code-sync "$GITHUB_WORKSPACE"
+          brew install perfectra1n/claude-code-sync/claude-code-sync
+          brew test perfectra1n/claude-code-sync/claude-code-sync
+          claude-code-sync --version
+
+  scoop:
+    name: Scoop bucket
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Scoop
+        run: |
+          # Runners are elevated, which the Scoop installer refuses by default.
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          Join-Path (Resolve-Path ~).Path 'scoop\shims' >> $env:GITHUB_PATH
+
+      - name: Add this checkout as a bucket and install
+        run: |
+          # Scoop only accepts URL-shaped bucket sources, not bare Windows paths.
+          $url = "file:///$($env:GITHUB_WORKSPACE -replace '\\', '/')"
+          scoop bucket add claude-code-sync $url
+          # scoop reports failures as log lines, not a non-zero exit.
+          if (-not (scoop bucket list | Where-Object Name -eq 'claude-code-sync')) { throw "bucket add failed for $url" }
+          scoop install claude-code-sync/claude-code-sync
+          claude-code-sync --version
+
+  cargo-binstall:
+    name: cargo binstall metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+
+      # Resolves the URL from this checkout's Cargo.toml metadata and the
+      # matching published release, never falling back to a source build.
+      - name: Install from release via local manifest
+        run: |
+          cargo binstall --manifest-path . --no-confirm --no-track \
+            --disable-strategies compile,quick-install \
+            --install-path "$RUNNER_TEMP/bin" claude-code-sync
+          "$RUNNER_TEMP/bin/claude-code-sync" --version
+
+  nix:
+    name: Nix flake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31.11.1
+
+      - name: Build and run
+        run: |
+          nix flake check
+          nix build .#default
+          ./result/bin/claude-code-sync --version

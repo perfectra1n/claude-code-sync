@@ -307,41 +307,127 @@ generated from zig's own API-set definition.
 
 ## Installation
 
-### Prebuilt Binaries (Recommended)
+### Install script (Recommended)
 
-Download the latest release binary for your platform directly from GitHub:
+**Linux / macOS:**
 
 ```bash
-# Linux (x86_64)
-curl -fsSL https://github.com/perfectra1n/claude-code-sync/releases/latest/download/claude-code-sync-linux-x86_64.tar.gz | tar xz
-sudo mv claude-code-sync /usr/local/bin/
-
-# macOS (Apple Silicon)
-curl -fsSL https://github.com/perfectra1n/claude-code-sync/releases/latest/download/claude-code-sync-macos-aarch64.tar.gz | tar xz
-sudo mv claude-code-sync /usr/local/bin/
-
-# macOS (Intel)
-curl -fsSL https://github.com/perfectra1n/claude-code-sync/releases/latest/download/claude-code-sync-macos-x86_64.tar.gz | tar xz
-sudo mv claude-code-sync /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/perfectra1n/claude-code-sync/main/install.sh | sh
 ```
 
-Each release asset ships with a `.sha256` checksum file alongside it — see the
-[releases page](https://github.com/perfectra1n/claude-code-sync/releases) for
-all assets and versions.
+**Windows (PowerShell):**
 
-**To update:** re-run the same command; it always fetches the latest release.
+```powershell
+irm https://raw.githubusercontent.com/perfectra1n/claude-code-sync/main/install.ps1 | iex
+```
 
-### Using Cargo (Build from GitHub)
+The scripts detect your OS and CPU (x86_64 or ARM64), download the matching
+release binary, verify it against the published SHA-256 checksum, and install
+it **without sudo**:
 
-If you have a Rust toolchain installed, you can build and install straight from
-this repository without cloning it:
+| Platform | Installs to | PATH |
+|----------|-------------|------|
+| Linux / macOS | `~/.local/bin` | Prints the `export` line if it is missing |
+| Windows | `%LOCALAPPDATA%\Programs\claude-code-sync` | Added to your user PATH automatically |
+
+On Linux the script installs the static **musl** build by default. It has no
+dependencies, so it runs on any distro, including Alpine and NixOS.
+
+**Options:**
+
+```bash
+# Pin a version, choose the directory, or pick the glibc build
+curl -fsSL https://raw.githubusercontent.com/perfectra1n/claude-code-sync/main/install.sh | sh -s -- --version v0.3.3 --dir /usr/local/bin --libc gnu
+```
+
+```powershell
+# `irm | iex` cannot take arguments, so PowerShell options are environment variables
+$env:CCS_VERSION = "v0.3.3"; $env:CCS_INSTALL_DIR = "C:\tools"
+irm https://raw.githubusercontent.com/perfectra1n/claude-code-sync/main/install.ps1 | iex
+```
+
+The shell script reads the same `CCS_VERSION`, `CCS_INSTALL_DIR`, and `CCS_LIBC`
+variables. Set `CCS_NO_PATH=1` to stop the PowerShell script from editing PATH.
+
+**To update:** run `claude-code-sync self-update`, or re-run the install command.
+
+### Homebrew (macOS / Linux)
+
+This repository doubles as a Homebrew tap. The URL is required because the
+repository is not named `homebrew-*`:
+
+```bash
+brew tap perfectra1n/claude-code-sync https://github.com/perfectra1n/claude-code-sync
+brew install perfectra1n/claude-code-sync/claude-code-sync
+```
+
+**To update:** `brew upgrade claude-code-sync`
+
+### Scoop (Windows)
+
+This repository doubles as a Scoop bucket:
+
+```powershell
+scoop bucket add claude-code-sync https://github.com/perfectra1n/claude-code-sync
+scoop install claude-code-sync/claude-code-sync
+```
+
+**To update:** `scoop update claude-code-sync`
+
+### Nix
+
+```bash
+# Run without installing
+nix run github:perfectra1n/claude-code-sync -- --help
+
+# Install into your profile
+nix profile install github:perfectra1n/claude-code-sync
+```
+
+Or add `github:perfectra1n/claude-code-sync` as a flake input and use
+`packages.${system}.default`. The package puts `git` on its PATH as a fallback,
+so your own `git` (with its config and credential helpers) still takes precedence.
+
+### Cargo
+
+The crate is published on [crates.io](https://crates.io/crates/claude-code-sync).
+With [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall), Cargo
+downloads the prebuilt release binary instead of compiling:
+
+```bash
+cargo binstall claude-code-sync     # prebuilt binary, seconds
+cargo install --locked claude-code-sync   # build from source
+```
+
+With `cargo-binstall` installed, `mise use -g cargo:claude-code-sync` uses the same prebuilt binaries.
+
+To track unreleased changes on `main`:
 
 ```bash
 cargo install --locked --git https://github.com/perfectra1n/claude-code-sync
 ```
 
-**To update:** re-run the same command. Cargo tracks the commit it built from,
-so it rebuilds and reinstalls whenever new commits land on the default branch.
+**To update:** re-run the same command.
+
+### Manual download
+
+Every [release](https://github.com/perfectra1n/claude-code-sync/releases) ships
+these assets, each with a `.sha256` checksum file alongside it:
+
+| Platform | Asset |
+|----------|-------|
+| Linux x86_64 (static) | `claude-code-sync-linux-x86_64-musl.tar.gz` |
+| Linux x86_64 (glibc) | `claude-code-sync-linux-x86_64.tar.gz` |
+| Linux ARM64 (static) | `claude-code-sync-linux-aarch64-musl.tar.gz` |
+| Linux ARM64 (glibc) | `claude-code-sync-linux-aarch64.tar.gz` |
+| macOS Apple Silicon | `claude-code-sync-macos-aarch64.tar.gz` |
+| macOS Intel | `claude-code-sync-macos-x86_64.tar.gz` |
+| Windows x86_64 | `claude-code-sync-windows-x86_64.exe.zip` |
+| Windows ARM64 | `claude-code-sync-windows-aarch64.exe.zip` |
+
+The ARM64 Linux and Windows builds start with the first release after v0.3.3.
+
+A container image is also published to `ghcr.io/perfectra1n/claude-code-sync`.
 
 ### From Source
 
@@ -762,6 +848,28 @@ Each history entry shows:
 - Operation history is stored in `~/.claude-code-sync/operation-history.json`
 - Up to 5 operations are kept (automatically rotated)
 - Each operation includes details about affected conversations
+
+### `self-update`
+
+Update the installed binary to the latest release. It downloads the build for
+your platform, verifies its SHA-256 checksum, and replaces the running
+executable in place.
+
+```bash
+# Check for a newer release without changing anything
+claude-code-sync self-update --check
+
+# Update to the latest release
+claude-code-sync self-update
+
+# Install a specific release (including downgrades)
+claude-code-sync self-update --to v0.3.2
+```
+
+If the binary was installed by a package manager (Homebrew, Scoop, Nix, or
+Cargo), `self-update` declines and prints that manager's upgrade command, so
+the package manager's records stay accurate. Pass `--force` to replace the
+binary anyway.
 
 ## Conflict Resolution
 
