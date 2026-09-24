@@ -4,8 +4,12 @@
 //! to a memory index. Git cannot know that: when two machines both appended
 //! between syncs, it reports a content conflict at the end of the file and the
 //! pull stops with nothing merged. Git's own `union` merge driver keeps both
-//! sides' lines instead, and claude-code-sync deduplicates and reorders them
-//! on the next sync (see `artifacts::union_jsonl`).
+//! sides' lines instead, in no meaningful order. claude-code-sync puts them
+//! back in order on the way into `~/.claude`: the prompt history and memory
+//! indexes through `artifacts::union_jsonl` / `artifacts::memory_index`, and
+//! session transcripts through the smart merge (`merge.rs`), which drops
+//! duplicate UUIDs and sorts by timestamp. The next push writes that ordered
+//! copy back to the repository.
 
 use anyhow::{Context, Result};
 use std::fs;

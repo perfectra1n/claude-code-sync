@@ -179,10 +179,16 @@ fn report_outcome(report: &PurgeReport, committed: bool) {
     }
 }
 
-/// `--older-than` must be a real window; 0 would delete everything.
+/// `--older-than` may lengthen the retention window, never shorten it below
+/// [`purge::MINIMUM_RETENTION_DAYS`].
 pub fn validate_older_than(days: Option<u32>) -> Result<()> {
-    if days == Some(0) {
-        bail!("--older-than must be at least 1 day");
+    if let Some(days) = days {
+        if days < purge::MINIMUM_RETENTION_DAYS {
+            bail!(
+                "--older-than must be at least {} days",
+                purge::MINIMUM_RETENTION_DAYS
+            );
+        }
     }
     Ok(())
 }

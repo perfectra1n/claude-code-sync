@@ -163,11 +163,16 @@ struct CollectedFile {
 
 /// Enumerate a category's files on disk. Missing sources yield an empty list;
 /// denied paths and oversized files are skipped (the latter counted).
+///
+/// An oversized file still exists on this machine, so its category-relative
+/// path goes into `held_back`: deletion mirroring must not read "not pushed
+/// this time" as "deleted here" and remove every machine's copy.
 fn collect(
     desc: &CategoryDescriptor,
     claude_dir: &Path,
     filter: &FilterConfig,
     skipped: &mut usize,
+    held_back: &mut Vec<PathBuf>,
 ) -> Result<Vec<CollectedFile>> {
     let max_file_size = filter.max_file_size_bytes;
     let mut files = Vec::new();
@@ -196,6 +201,9 @@ fn collect(
             if !base.is_dir() {
                 return Ok(files);
             }
+            // Resolved once per project: in name-only mode it reads a transcript.
+            let mut project_names: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
             for entry in walkdir::WalkDir::new(&base)
                 .follow_links(false)
                 .into_iter()
@@ -212,11 +220,6 @@ fn collect(
                     *skipped += 1;
                     continue;
                 }
-                if entry.metadata().map(|m| m.len()).unwrap_or(0) > max_file_size {
-                    log::warn!("Skipping {} (exceeds max_file_size_bytes)", abs.display());
-                    *skipped += 1;
-                    continue;
-                }
                 if extension_excluded(desc, abs) {
                     continue;
                 }
@@ -229,8 +232,19 @@ fn collect(
                         *skipped += 1;
                         continue;
                     };
-                    let project = crate::project_map::repo_dir_name(filter, encoded);
+                    let project = project_names
+                        .entry(encoded.to_string())
+                        .or_insert_with(|| {
+                            crate::project_map::repo_dir_name_in(filter, &base, encoded)
+                        })
+                        .clone();
                     rel = Path::new(&project).join(parts.as_path());
+                }
+                if entry.metadata().map(|m| m.len()).unwrap_or(0) > max_file_size {
+                    log::warn!("Skipping {} (exceeds max_file_size_bytes)", abs.display());
+                    *skipped += 1;
+                    held_back.push(rel);
+                    continue;
                 }
                 files.push(CollectedFile {
                     abs: abs.to_path_buf(),
@@ -368,9 +382,23 @@ pub fn push_artifacts(
     for desc in active_categories(filter) {
         let mut counts = CategoryCounts::new(desc.id);
 
-        let files = collect(desc, claude_dir, filter, &mut counts.skipped)?;
+        let mut held_back = Vec::new();
+        let files = collect(
+            desc,
+            claude_dir,
+            filter,
+            &mut counts.skipped,
+            &mut held_back,
+        )?;
         let category_root = category_repo_root(desc, repo_root, filter);
         let mut pushed: TrackedPaths = TrackedPaths::new();
+        // Files kept back for their size are still here: count them as
+        // present so the repo copy (if any) is neither deleted nor forgotten.
+        for rel in held_back {
+            if let Some(rel) = repo_relative(repo_root, &category_root.join(rel)) {
+                pushed.insert(rel);
+            }
+        }
 
         for file in files {
             let dest = category_root.join(&file.rel);

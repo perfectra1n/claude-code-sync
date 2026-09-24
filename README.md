@@ -86,10 +86,10 @@ carries the rest of `~/.claude` across machines, per category:
 | attachments | non-`.jsonl` files in `~/.claude/projects/` | Images, PDFs, and per-project `memory/` dirs; governed by `--exclude-attachments`, not a toggle |
 
 Enable categories per machine (all default **off** for existing configs; the
-first-run wizard pre-selects them for new setups):
+first-run wizard pre-selects them for new setups, except `hooks`):
 
 ```bash
-# Enable everything
+# Enable everything except hooks
 claude-code-sync config --enable-artifacts all
 
 # Or pick categories
@@ -99,8 +99,8 @@ claude-code-sync config --enable-artifacts settings,skills,agents,commands,plugi
 claude-code-sync config --disable-artifacts todos
 ```
 
-A category added after a config was written stays off until it is named, so an
-existing setup picks up hooks with
+`hooks` is only ever switched on by name, never by `all` or the wizard's
+defaults (see below):
 `claude-code-sync config --enable-artifacts hooks`.
 
 Of a file's permissions only the executable bit travels — it is the one git
@@ -254,8 +254,8 @@ claude-code-sync purge --older-than 365
 The default window is the **longer of six months and this machine's own Claude
 Code retention** (`cleanupPeriodDays` in `~/.claude/settings.json`, 30 days by
 default) — Claude Code deletes those transcripts by itself anyway, so the sync
-repo is never the shorter-lived copy. Set your own window, and let a sync do it
-for you, with:
+repo is never the shorter-lived copy. That is also the minimum: a window of your
+own can only be longer. Set one, and let a sync do it for you, with:
 
 ```bash
 claude-code-sync config --purge-older-than 365
@@ -613,8 +613,8 @@ claude-code-sync purge --older-than 365
 ```
 
 **Options:**
-- `--older-than <DAYS>`: retention window for this run (default: the longer of
-  180 days and this machine's Claude Code `cleanupPeriodDays`)
+- `--older-than <DAYS>`: retention window for this run (default and minimum: the
+  longer of 180 days and this machine's Claude Code `cleanupPeriodDays`)
 - `--dry-run`: show the plan and stop
 - `-y, --yes`: delete without asking
 

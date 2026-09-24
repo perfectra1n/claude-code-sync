@@ -16,6 +16,10 @@ pub const HOME_TOKEN: &str = "__HOME__";
 pub const CLAUDE_DIR_TOKEN: &str = "__CLAUDE_DIR__";
 
 /// This machine's absolute locations and their neutral spellings.
+///
+/// Every tokenized file is JSON, so the locations are held as they are spelled
+/// inside a JSON string: on Windows `C:\Users\me` appears in the file as
+/// `C:\\Users\\me`, and rendering it raw would write `\U`, an invalid escape.
 #[derive(Debug, Clone, Default)]
 pub struct PathTokens {
     home: String,
@@ -25,11 +29,17 @@ pub struct PathTokens {
 impl PathTokens {
     /// Tokens for the machine whose Claude directory is `claude_dir`.
     pub fn for_claude_dir(claude_dir: &Path) -> Self {
+        let home = dirs::home_dir()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Self::for_paths(&home, &claude_dir.to_string_lossy())
+    }
+
+    /// Tokens for these two absolute locations, as written on this machine.
+    fn for_paths(home: &str, claude_dir: &str) -> Self {
         PathTokens {
-            home: dirs::home_dir()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            claude_dir: claude_dir.to_string_lossy().to_string(),
+            home: json_string_contents(home),
+            claude_dir: json_string_contents(claude_dir),
         }
     }
 
@@ -52,6 +62,16 @@ impl PathTokens {
         let text = text.replace(HOME_TOKEN, &self.home);
         text.into_bytes()
     }
+}
+
+/// `text` as it is spelled between the quotes of a JSON string.
+fn json_string_contents(text: &str) -> String {
+    let quoted = serde_json::to_string(text).unwrap_or_default();
+    quoted
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Replace `needle` with `token` only where the match is a whole path prefix:
@@ -95,6 +115,25 @@ fn continues_a_segment(neighbour: Option<char>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_windows_home_round_trips_as_valid_json() {
+        let windows = PathTokens::for_paths(r"C:\Users\me", r"C:\Users\me\.claude");
+        let live = br#"{"statusLine":{"command":"C:\\Users\\me\\.claude\\s.ps1"},"x":"C:\\Users\\me\\bin"}"#;
+
+        let stored = String::from_utf8(windows.to_repo(live)).unwrap();
+        assert!(stored.contains("__CLAUDE_DIR__"), "{stored}");
+        assert!(stored.contains("__HOME__"), "{stored}");
+
+        let from_linux = br#"{"statusLine":{"command":"__HOME__/bin/status.sh"}}"#;
+        let rendered = windows.to_machine(from_linux);
+        let parsed: serde_json::Value = serde_json::from_slice(&rendered).unwrap();
+        assert_eq!(
+            parsed["statusLine"]["command"],
+            r"C:\Users\me/bin/status.sh"
+        );
+        assert_eq!(windows.to_machine(stored.as_bytes()), live.to_vec());
+    }
 
     fn tokens() -> PathTokens {
         PathTokens {

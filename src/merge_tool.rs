@@ -5,8 +5,10 @@
 //! `<merge_tool> <local> <remote> <base> <output>` (the JetBrains argument
 //! order) and whatever it writes to the output pane is what lands.
 //!
-//! The launcher's exit code is not a result. Editor launchers hand the request
-//! to an already-running process and exit before the window is drawn, so the
+//! A tool that keeps its window open until the merge is done (meld, kdiff3,
+//! vimdiff) is waited for, and its exit code decides whether the output pane
+//! applies. Editor launchers instead hand the request to an already-running
+//! process and exit successfully before the window is drawn; for those the
 //! output file being rewritten and then settling is what completion means.
 
 use anyhow::{Context, Result};
@@ -120,31 +122,43 @@ pub fn merge(
 
         let current = std::fs::read(&output).unwrap_or_default();
         let rewritten = current != local_bytes;
-        let settled = current == previous;
-        if rewritten && settled {
-            break Resolution::Written(current);
+
+        if handed_off {
+            // Nothing left to wait on but the file: the editor that owns the
+            // merge is another process. Rewritten and then settled is done.
+            if rewritten && current == previous {
+                break Resolution::Written(current);
+            }
+        } else {
+            match child.try_wait().ok().flatten() {
+                // A tool that owns its window (meld, kdiff3, vimdiff) is done
+                // when it exits, not at its first save: the user may save
+                // partway through a merge. Its exit code says whether to apply.
+                None => {}
+                Some(status) if status.success() && started.elapsed() <= handoff_grace => {
+                    // Or a launcher that handed the request to an already
+                    // running editor and exited straight away.
+                    handed_off = true;
+                    println!(
+                        "  Waiting for the merge of '{}'. Save the merged file to continue, \
+                         or press Ctrl-C to keep the local version (giving up in {}).",
+                        local_path.display(),
+                        describe(timeout)
+                    );
+                    if rewritten && current == previous {
+                        break Resolution::Written(current);
+                    }
+                }
+                Some(status) => {
+                    break if status.success() && rewritten {
+                        Resolution::Written(current)
+                    } else {
+                        Resolution::Abandoned
+                    };
+                }
+            }
         }
         previous = current;
-
-        // A launcher that hands the request to an already-running editor exits
-        // straight away, and successfully; a tool that failed to start exits
-        // with a failure and is not worth waiting for.
-        let exit_status = child.try_wait().ok().flatten();
-        let handed_over_to_an_editor = exit_status
-            .is_some_and(|status| status.success() && started.elapsed() <= handoff_grace);
-        if handed_over_to_an_editor {
-            if !handed_off {
-                println!(
-                    "  Waiting for the merge of '{}'. Save the merged file to continue, \
-                     or press Ctrl-C to keep the local version (giving up in {}).",
-                    local_path.display(),
-                    describe(timeout)
-                );
-            }
-            handed_off = true;
-        } else if exit_status.is_some() && !handed_off {
-            break Resolution::Abandoned;
-        }
 
         if started.elapsed() > timeout {
             log::warn!("Merge tool did not finish within the timeout; keeping the local file");
@@ -226,6 +240,56 @@ mod tests {
 
         assert_eq!(resolution, Resolution::Abandoned);
         assert_eq!(std::fs::read(&path).unwrap(), b"local side\n".to_vec());
+    }
+
+    /// A stand-in for a tool that owns its window: saves a partial merge,
+    /// keeps going, then saves the final one and exits.
+    #[cfg(unix)]
+    fn tool_that_saves_twice(dir: &Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("slow-merge-tool.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'half\\n' > \"$4\"\nsleep 6\nprintf 'final\\n' > \"$4\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script.to_string_lossy().to_string()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_tool_still_open_after_a_save_is_waited_for() {
+        let (dir, path) = local_file("local side\n");
+        let tool = tool_that_saves_twice(dir.path());
+
+        let resolution = merge(&tool, &path, b"remote\n", Duration::from_secs(30)).unwrap();
+
+        assert_eq!(resolution, Resolution::Written(b"final\n".to_vec()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_tool_that_exits_with_a_failure_after_saving_applies_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = local_file("local side\n");
+        let script = dir.path().join("cancelled-merge-tool.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'partial\\n' > \"$4\"\nsleep 6\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let resolution = merge(
+            &script.to_string_lossy(),
+            &path,
+            b"remote\n",
+            Duration::from_secs(30),
+        )
+        .unwrap();
+
+        assert_eq!(resolution, Resolution::Abandoned);
     }
 
     #[test]

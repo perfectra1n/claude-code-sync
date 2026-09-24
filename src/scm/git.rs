@@ -115,6 +115,30 @@ impl GitScm {
             .with_context(|| format!("Failed to run 'git {}'", args.join(" ")))
     }
 
+    /// Whether `remote` has `branch`. Only a definite "no" (exit code 2 from
+    /// `ls-remote --exit-code`) counts; an unreachable remote is an error.
+    fn remote_has_branch(&self, remote: &str, branch: &str) -> Result<bool> {
+        let output = self.git_output(&["ls-remote", "--exit-code", "--heads", remote, branch])?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(2) => Ok(false),
+            _ => Err(anyhow!(
+                "Failed to reach remote '{remote}': {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        }
+    }
+
+    /// Whether the only uncommitted change is the `.gitattributes` file.
+    fn only_sync_attributes_pending(&self) -> Result<bool> {
+        // Raw output: `run_git` trims, which would eat the first line's
+        // leading status column.
+        let output = self.git_output(&["status", "--porcelain", "--untracked-files=all"])?;
+        let status = String::from_utf8_lossy(&output.stdout);
+        let mut lines = status.lines().filter(|l| !l.trim().is_empty()).peekable();
+        Ok(lines.peek().is_some() && lines.all(|l| l.get(3..) == Some(".gitattributes")))
+    }
+
     /// Check if a git command succeeds (exit code 0).
     fn git_succeeds(&self, args: &[&str]) -> bool {
         Command::new("git")
@@ -215,6 +239,14 @@ impl Scm for GitScm {
     /// not own. Merge, not rebase: undo records point at local commit hashes,
     /// and a rebase rewrites them.
     fn pull(&self, remote: &str, branch: &str) -> Result<()> {
+        // A remote nobody has pushed to yet has no branch to fetch. That is
+        // the first machine's normal state, not a failure: there is nothing
+        // to merge, and the push that follows creates the branch.
+        if !self.remote_has_branch(remote, branch)? {
+            log::info!("Remote '{remote}' has no branch '{branch}' yet; nothing to pull");
+            return Ok(());
+        }
+
         self.run_git_ok(&["fetch", remote, branch])
             .with_context(|| format!("Failed to fetch from remote '{remote}'"))?;
 
@@ -223,11 +255,19 @@ impl Scm for GitScm {
         // Only when there is nothing to lose — checking it out is a hard reset,
         // and work staged but never committed would go with it.
         if !self.git_succeeds(&["rev-parse", "--verify", "HEAD"]) {
+            // `init` writes the sync `.gitattributes` without committing it.
+            // It is regenerated after the pull, so it is not work to protect.
+            if self.only_sync_attributes_pending()? {
+                let _ = self.git_output(&["rm", "--cached", "--quiet", ".gitattributes"]);
+                std::fs::remove_file(self.workdir.join(".gitattributes"))
+                    .context("Failed to set aside the uncommitted .gitattributes")?;
+            }
             if self.has_changes()? {
                 return Err(anyhow!(
                     "Failed to check out '{remote}/{branch}': the sync repository has no commit \
                      of its own yet, and taking the remote's history would discard the files \
-                     waiting in it. Run `claude-code-sync push` first."
+                     waiting in it. Move them out of {}, then pull again.",
+                    self.workdir.display()
                 ));
             }
             return self
@@ -461,6 +501,55 @@ mod tests {
             shared_start, "start\n",
             "the remote's history is checked out with LF line endings"
         );
+    }
+
+    #[test]
+    fn a_first_pull_is_not_blocked_by_the_attributes_init_wrote() {
+        let (root, _machine, _first, branch) = two_diverged_machines(None);
+
+        // `init` writes the sync rules and commits nothing.
+        let fresh = root.path().join("fresh");
+        let machine = GitScm::init(&fresh).unwrap();
+        crate::scm::attributes::ensure_sync_attributes(&fresh).unwrap();
+        machine
+            .add_remote("origin", root.path().join("origin").to_str().unwrap())
+            .unwrap();
+
+        machine.pull("origin", &branch).unwrap();
+
+        assert!(fresh.join("shared-start.txt").is_file());
+        assert!(!machine.has_changes().unwrap());
+    }
+
+    #[test]
+    fn a_pull_from_a_remote_nobody_pushed_to_yet_is_a_no_op() {
+        let root = TempDir::new().unwrap();
+        git_in(root.path(), &["init", "--bare", "--quiet", "origin"]);
+        let fresh = root.path().join("fresh");
+        let machine = GitScm::init(&fresh).unwrap();
+        crate::scm::attributes::ensure_sync_attributes(&fresh).unwrap();
+        machine
+            .add_remote("origin", root.path().join("origin").to_str().unwrap())
+            .unwrap();
+
+        machine.pull("origin", "main").unwrap();
+
+        assert!(
+            fresh.join(".gitattributes").is_file(),
+            "nothing was touched"
+        );
+    }
+
+    #[test]
+    fn a_pull_from_an_unreachable_remote_is_an_error() {
+        let root = TempDir::new().unwrap();
+        let fresh = root.path().join("fresh");
+        let machine = GitScm::init(&fresh).unwrap();
+        machine
+            .add_remote("origin", root.path().join("missing").to_str().unwrap())
+            .unwrap();
+
+        assert!(machine.pull("origin", "main").is_err());
     }
 
     #[test]

@@ -380,8 +380,11 @@ pub fn configure_purge(older_than_days: Option<u32>, after_sync: Option<bool>) -
     let mut config = FilterConfig::load()?;
 
     if let Some(days) = older_than_days {
-        if days == 0 {
-            bail!("purge_older_than_days must be at least 1 day");
+        if days < crate::purge::MINIMUM_RETENTION_DAYS {
+            bail!(
+                "purge_older_than_days must be at least {} days",
+                crate::purge::MINIMUM_RETENTION_DAYS
+            );
         }
         config.purge_older_than_days = Some(days);
         println!(
@@ -580,18 +583,26 @@ pub fn update_config(
 /// Resolve a comma-separated list of category names (or `all`) and flip their
 /// toggles. Unknown names abort before anything is persisted.
 fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -> Result<()> {
-    use crate::artifacts::registry::{find_by_name, ArtifactToggles};
+    use crate::artifacts::registry::{find_by_name, ArtifactToggles, CategoryId};
 
     let verb = if value { "Enabled" } else { "Disabled" };
 
     for name in names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         if name == "all" {
-            config.sync_artifacts = if value {
-                ArtifactToggles::all_enabled()
+            if value {
+                // Keep hooks as they were: `all` never switches them on.
+                let hooks = config.sync_artifacts.is_enabled(CategoryId::Hooks);
+                config.sync_artifacts = ArtifactToggles::all_but_hooks();
+                config.sync_artifacts.set_enabled(CategoryId::Hooks, hooks);
+                println!(
+                    "{}",
+                    "Enabled all artifact categories (hooks only by name: --enable-artifacts hooks)"
+                        .green()
+                );
             } else {
-                ArtifactToggles::default()
-            };
-            println!("{}", format!("{verb} all artifact categories").green());
+                config.sync_artifacts = ArtifactToggles::default();
+                println!("{}", format!("{verb} all artifact categories").green());
+            }
             continue;
         }
         if name == "attachments" {
@@ -609,6 +620,15 @@ fn apply_artifact_toggles(config: &mut FilterConfig, names: &str, value: bool) -
         };
         config.sync_artifacts.set_enabled(desc.id, value);
         println!("{}", format!("{verb} artifact category: {name}").green());
+        if value && desc.id == CategoryId::Hooks {
+            println!(
+                "{}",
+                "Warning: hooks run code. Every machine syncing this repository will run \
+                 whatever scripts it holds; enable this only for a repository you control."
+                    .yellow()
+                    .bold()
+            );
+        }
     }
 
     Ok(())
@@ -754,6 +774,25 @@ pub fn show_config() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn enabling_all_artifacts_leaves_hooks_to_be_named() {
+        use crate::artifacts::registry::CategoryId;
+
+        let mut config = FilterConfig::default();
+        apply_artifact_toggles(&mut config, "all", true).unwrap();
+        assert!(config.sync_artifacts.is_enabled(CategoryId::Skills));
+        assert!(!config.sync_artifacts.is_enabled(CategoryId::Hooks));
+
+        apply_artifact_toggles(&mut config, "hooks", true).unwrap();
+        assert!(config.sync_artifacts.is_enabled(CategoryId::Hooks));
+        apply_artifact_toggles(&mut config, "all", true).unwrap();
+        assert!(
+            config.sync_artifacts.is_enabled(CategoryId::Hooks),
+            "`all` does not switch hooks back off either"
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -69,13 +69,22 @@ pub struct PurgeReport {
     pub failures: Vec<String>,
 }
 
-/// Retention window in days: the configured override, or the longer of
-/// [`MINIMUM_RETENTION_DAYS`] and this machine's `cleanupPeriodDays`.
+/// Retention window in days: the longer of [`MINIMUM_RETENTION_DAYS`] and this
+/// machine's `cleanupPeriodDays`, lengthened (never shortened) by a configured
+/// override. A purge can run unattended after every sync, so a short window
+/// set once, or left in an older config, must not quietly delete recent work.
 pub fn retention_days(claude_dir: &Path, configured: Option<u32>) -> u32 {
-    if let Some(days) = configured {
-        return days.max(1);
+    let floor = MINIMUM_RETENTION_DAYS.max(claude_code_retention_days(claude_dir));
+    match configured {
+        Some(days) if days < floor => {
+            log::warn!(
+                "Purge window of {days} days is below the {floor}-day minimum; using {floor}"
+            );
+            floor
+        }
+        Some(days) => days,
+        None => floor,
     }
-    MINIMUM_RETENTION_DAYS.max(claude_code_retention_days(claude_dir))
 }
 
 /// `cleanupPeriodDays` from the user-level settings files, or
@@ -424,9 +433,16 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_window_is_used_as_given_but_never_zero() {
+    fn a_configured_window_can_lengthen_the_minimum_but_never_shorten_it() {
         let claude = claude_dir_with(Some(r#"{"cleanupPeriodDays": 400}"#));
-        assert_eq!(retention_days(claude.path(), Some(30)), 30);
-        assert_eq!(retention_days(claude.path(), Some(0)), 1);
+        assert_eq!(retention_days(claude.path(), Some(500)), 500);
+        assert_eq!(retention_days(claude.path(), Some(30)), 400);
+        assert_eq!(retention_days(claude.path(), Some(0)), 400);
+
+        let defaults = claude_dir_with(None);
+        assert_eq!(
+            retention_days(defaults.path(), Some(1)),
+            MINIMUM_RETENTION_DAYS
+        );
     }
 }

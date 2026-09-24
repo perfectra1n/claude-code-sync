@@ -270,8 +270,7 @@ pub struct ArtifactToggles {
 }
 
 impl ArtifactToggles {
-    /// A toggles value with every category enabled (used by onboarding
-    /// defaults and the `all` CLI shorthand).
+    /// A toggles value with every category enabled, `hooks` included.
     pub fn all_enabled() -> Self {
         Self {
             settings: true,
@@ -285,6 +284,16 @@ impl ArtifactToggles {
             plans: true,
             todos: true,
             prompt_history: true,
+        }
+    }
+
+    /// Every category except `hooks` (used by onboarding defaults and the
+    /// `all` CLI shorthand). Hooks run whatever the sync repository hands
+    /// them, so they are only ever switched on by name.
+    pub fn all_but_hooks() -> Self {
+        Self {
+            hooks: false,
+            ..Self::all_enabled()
         }
     }
 

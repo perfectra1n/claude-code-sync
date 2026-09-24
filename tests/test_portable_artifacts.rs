@@ -194,6 +194,33 @@ fn a_skill_deleted_locally_is_removed_from_the_repo_on_the_next_push() {
 }
 
 #[test]
+fn a_skill_grown_past_the_size_limit_is_not_mistaken_for_a_deletion() {
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    write(&machine_a.path().join("skills/big/SKILL.md"), "# big\n");
+    sync_both_ways(machine_a.path(), repo.path(), &all_on_filter());
+    sync_both_ways(machine_b.path(), repo.path(), &all_on_filter());
+
+    // The skill still exists on machine A; it has only outgrown the limit.
+    let mut small_limit = all_on_filter();
+    small_limit.max_file_size_bytes = 4;
+    let report = push_artifacts(machine_a.path(), repo.path(), &small_limit).unwrap();
+
+    assert_eq!(report.counts.iter().map(|c| c.deleted).sum::<usize>(), 0);
+    assert!(
+        repo.path().join("artifacts/skills/big/SKILL.md").is_file(),
+        "the repo copy is kept"
+    );
+    let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
+    apply_pull(&plan, false).unwrap();
+    assert!(
+        machine_b.path().join("skills/big/SKILL.md").is_file(),
+        "the other machine keeps its copy"
+    );
+}
+
+#[test]
 fn a_skill_deleted_on_another_machine_is_removed_here_on_pull() {
     let repo = TempDir::new().unwrap();
     let machine_a = TempDir::new().unwrap();

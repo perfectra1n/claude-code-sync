@@ -96,6 +96,54 @@ pub fn repo_dir_name(filter: &FilterConfig, encoded_dir: &str) -> String {
     encoded_dir.to_string()
 }
 
+/// [`repo_dir_name`] for a project directory under `projects_dir`. In
+/// `use_project_name_only` mode the name comes from the working directory a
+/// transcript in it records, the same name its sessions are pushed under:
+/// the encoded directory alone cannot tell `shop-web` from `shop/web`, and
+/// its last dash-separated piece would file this project's memory and
+/// attachments apart from its sessions.
+pub fn repo_dir_name_in(filter: &FilterConfig, projects_dir: &Path, encoded_dir: &str) -> String {
+    if filter.use_project_name_only && canonical_id(&filter.project_map, encoded_dir).is_none() {
+        if let Some(name) = project_name_from_transcripts(&projects_dir.join(encoded_dir)) {
+            return name;
+        }
+    }
+    repo_dir_name(filter, encoded_dir)
+}
+
+/// The folder name of the first `cwd` a transcript directly inside
+/// `project_dir` records, if any does.
+fn project_name_from_transcripts(project_dir: &Path) -> Option<String> {
+    use std::io::BufRead;
+
+    let mut transcripts: Vec<PathBuf> = std::fs::read_dir(project_dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "jsonl"))
+        .collect();
+    transcripts.sort();
+
+    for transcript in transcripts {
+        let Ok(file) = std::fs::File::open(&transcript) else {
+            continue;
+        };
+        for line in std::io::BufReader::new(file).lines().map_while(|l| l.ok()) {
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if let Some(name) = entry
+                .get("cwd")
+                .and_then(|cwd| cwd.as_str())
+                .and_then(|cwd| Path::new(cwd).file_name())
+                .and_then(|name| name.to_str())
+            {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// The local project directory a sync-repo directory name belongs to, or
 /// `None` when this machine has no destination for it.
 pub fn local_project_dir(
@@ -263,6 +311,33 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(repo_dir_name(&filter, "-home-user-work-myapp"), "myapp");
+    }
+
+    #[test]
+    fn name_only_files_attachments_under_the_same_name_as_sessions() {
+        let projects = tempfile::TempDir::new().unwrap();
+        let encoded = "-home-user-shop-web";
+        std::fs::create_dir_all(projects.path().join(encoded).join("memory")).unwrap();
+        std::fs::write(
+            projects.path().join(encoded).join("s1.jsonl"),
+            "{\"type\":\"summary\"}\n{\"type\":\"user\",\"cwd\":\"/home/user/shop-web\"}\n",
+        )
+        .unwrap();
+        let filter = FilterConfig {
+            use_project_name_only: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            repo_dir_name_in(&filter, projects.path(), encoded),
+            "shop-web",
+            "the folder name, not its last dash-separated piece"
+        );
+        assert_eq!(
+            repo_dir_name_in(&filter, projects.path(), "-home-user-no-transcripts"),
+            "transcripts",
+            "without a transcript it falls back to the old guess"
+        );
     }
 
     #[test]

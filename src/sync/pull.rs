@@ -84,6 +84,10 @@ pub fn pull_history(
              already in the local sync repository.",
         )?;
         println!("  {} Pulled from origin/{}", "✓".green(), branch_name);
+
+        // A first pull into a repository with no commits of its own sets the
+        // uncommitted rules aside; restore and commit them now.
+        super::commit_sync_attributes(repo.as_ref(), &state.sync_repo_path)?;
     }
 
     // Discover local sessions

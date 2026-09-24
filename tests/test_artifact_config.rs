@@ -74,7 +74,8 @@ fn test_enable_all_shorthand() {
     let config = FilterConfig::load().unwrap();
     assert_eq!(
         config.sync_artifacts,
-        claude_code_sync::artifacts::registry::ArtifactToggles::all_enabled()
+        claude_code_sync::artifacts::registry::ArtifactToggles::all_but_hooks(),
+        "hooks run code, so `all` leaves them off"
     );
 }
 
