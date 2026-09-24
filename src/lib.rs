@@ -31,6 +31,7 @@
 //! - Core synchronization logic ([`sync`])
 //! - Syncing Claude Code state beyond conversations ([`artifacts`])
 //! - The command handlers behind the CLI ([`handlers`])
+//! - Upgrading the installed binary ([`self_update`])
 
 /// Verbosity level for command output
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +144,14 @@ pub mod purge;
 /// Reports include information about diverged conversations, message counts, timestamps,
 /// and resolution strategies applied during the last sync operation.
 pub mod report;
+
+/// In-place upgrade of the running binary from GitHub releases.
+///
+/// Resolves the latest (or a requested) release, downloads the asset built for
+/// this platform, verifies it against the published SHA-256, and swaps it in
+/// for the running executable. Defers to the package manager when one owns
+/// the install (Nix, Homebrew, Scoop, cargo).
+pub mod self_update;
 
 /// Core synchronization logic for pushing and pulling conversation history.
 ///

@@ -14,7 +14,7 @@ use claude_code_sync::handlers::{
     is_initialized, run_init_from_config, run_onboarding_flow, try_init_from_config,
     validate_older_than,
 };
-use claude_code_sync::{config, filter, logger, report, scm, sync, VerbosityLevel};
+use claude_code_sync::{config, filter, logger, report, scm, self_update, sync, VerbosityLevel};
 
 #[derive(Parser)]
 #[command(name = "claude-code-sync")]
@@ -292,6 +292,21 @@ enum Commands {
         action: HistoryAction,
     },
 
+    /// Update claude-code-sync to the latest release
+    SelfUpdate {
+        /// Only report whether an update is available
+        #[arg(long)]
+        check: bool,
+
+        /// Install this release (e.g. v0.3.2) instead of the latest
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+
+        /// Reinstall even if already current, or if a package manager owns the binary
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Clean up old snapshot files
     CleanupSnapshots {
         /// Show what would be deleted without actually deleting
@@ -430,9 +445,11 @@ fn main() -> Result<()> {
     // Check if this is an Init or Config command (skip auto-onboarding for these)
     let is_init_command = matches!(command, Commands::Init { .. });
     let is_config_command = matches!(command, Commands::Config { .. });
+    let is_self_update_command = matches!(command, Commands::SelfUpdate { .. });
 
-    // Run onboarding if needed (but not for Init or Config commands - they handle their own setup)
-    if needs_onboarding && !is_init_command && !is_config_command {
+    // Run onboarding if needed (but not for Init or Config commands - they handle their own
+    // setup - nor SelfUpdate, which never touches the sync repository)
+    if needs_onboarding && !is_init_command && !is_config_command && !is_self_update_command {
         log::info!("Running onboarding flow - first time setup detected");
 
         // Try non-interactive init first (from config file)
@@ -763,6 +780,9 @@ fn main() -> Result<()> {
             };
 
             handle_cleanup_snapshots(dry_run, max_count, max_age_days, interactive, verbosity)?;
+        }
+        Commands::SelfUpdate { check, to, force } => {
+            self_update::self_update(check, to.as_deref(), force)?;
         }
     }
 
