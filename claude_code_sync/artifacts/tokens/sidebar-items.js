@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CLAUDE_DIR_TOKEN","HOME_TOKEN"],"struct":["PathTokens"]};

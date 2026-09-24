@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["configure_gitattributes","init","is_installed","setup"]};

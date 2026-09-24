@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["configure_purge","set_merge_tool","set_warn_each_skipped_file","show_config","update_config","update_project_map"],"struct":["FilterConfig"]};

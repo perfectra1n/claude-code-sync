@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["forget","load","record_path","save"],"type":["TrackedPaths"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CATEGORY_MARKER"],"enum":["ArtifactChangeKind"],"fn":["apply_pull","ensure_ignore_files","is_category_enabled","plan_pull","push_artifacts"],"struct":["ArtifactChange","ArtifactReport","CategoryCounts","PlannedDelete","PlannedWrite","PullPlan"]};

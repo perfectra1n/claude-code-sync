@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MEMORY_INDEX_FILE"],"fn":["is_memory_index","merge_memory_index"]};

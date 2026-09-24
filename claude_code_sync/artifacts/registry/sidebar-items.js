@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ARTIFACTS_SUBDIR"],"enum":["CategoryId","DestRoot","MergeStrategy","SourceSpec"],"fn":["enabled_categories","find_by_name","toggleable"],"static":["REGISTRY"],"struct":["ArtifactToggles","CategoryDescriptor"]};

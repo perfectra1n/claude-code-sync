@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["VerbosityLevel"],"fn":["cleanup_old_snapshots","cleanup_old_snapshots_with_dir","preview_undo_pull","preview_undo_push","undo_pull","undo_push"],"struct":["Snapshot","SnapshotCleanupConfig","UndoPreview"]};
