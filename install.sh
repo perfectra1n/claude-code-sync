@@ -119,7 +119,7 @@ main() {
 
     say "Downloading $asset ($version)..."
     download "$base/$asset" "$tmp/$asset" ||
-        err "download failed: $base/$asset (does release $version have a $target build?)"
+        err "download failed: $base/$asset (does the $version release have a $target build?)"
     download "$base/$asset.sha256" "$tmp/$asset.sha256" ||
         err "checksum download failed: $base/$asset.sha256"
 

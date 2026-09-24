@@ -49,19 +49,37 @@ jobs:
           - os: ubuntu-latest
           - os: ubuntu-latest
             libc: gnu
+          # v0.3.3 predates the ARM64 builds: skip until a release ships them,
+          # and never pin that far back.
           - os: ubuntu-24.04-arm
+            asset: claude-code-sync-linux-aarch64-musl.tar.gz
+            no_pin: true
           - os: macos-latest
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check the latest release has this platform
+        id: avail
+        run: |
+          if [ -z "${{ matrix.asset }}" ] || curl -fsIL -o /dev/null \
+              "https://github.com/perfectra1n/claude-code-sync/releases/latest/download/${{ matrix.asset }}"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Latest release has no ${{ matrix.asset }} yet; skipping"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install latest release
+        if: steps.avail.outputs.ok == 'true'
         run: sh install.sh --dir "$RUNNER_TEMP/bin" ${{ matrix.libc && format('--libc {0}', matrix.libc) || '' }}
 
       - name: Binary runs
+        if: steps.avail.outputs.ok == 'true'
         run: '"$RUNNER_TEMP/bin/claude-code-sync" --version'
 
       # Reinstalling over an existing binary, and pinning an older release.
       - name: Install pinned version over it
+        if: steps.avail.outputs.ok == 'true' && !matrix.no_pin
         run: |
           sh install.sh --dir "$RUNNER_TEMP/bin" --version 0.3.3 ${{ matrix.libc && format('--libc {0}', matrix.libc) || '' }}
           "$RUNNER_TEMP/bin/claude-code-sync" --version | grep -F 0.3.3
@@ -143,7 +161,11 @@ jobs:
 
       - name: Add this checkout as a bucket and install
         run: |
-          scoop bucket add claude-code-sync $env:GITHUB_WORKSPACE
+          # Scoop only accepts URL-shaped bucket sources, not bare Windows paths.
+          $url = "file:///$($env:GITHUB_WORKSPACE -replace '\\', '/')"
+          scoop bucket add claude-code-sync $url
+          # scoop reports failures as log lines, not a non-zero exit.
+          if (-not (scoop bucket list | Where-Object Name -eq 'claude-code-sync')) { throw "bucket add failed for $url" }
           scoop install claude-code-sync/claude-code-sync
           claude-code-sync --version
 
