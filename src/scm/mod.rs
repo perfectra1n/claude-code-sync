@@ -50,6 +50,26 @@ impl Backend {
     }
 }
 
+/// A file both sides of a merge changed in ways the merge cannot combine.
+/// A side that deleted the file has `None`.
+#[derive(Debug, Default)]
+pub struct ConflictedFile {
+    pub path: String,
+    pub base: Option<Vec<u8>>,
+    pub local: Option<Vec<u8>>,
+    pub remote: Option<Vec<u8>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConflictChoice {
+    KeepLocal,
+    TakeRemote,
+    WriteMerged(Vec<u8>),
+    AbortMerge,
+}
+
+pub type ConflictResolver<'a> = &'a dyn Fn(&ConflictedFile) -> Result<ConflictChoice>;
+
 /// Trait for source control management operations.
 pub trait Scm: Send + Sync {
     /// Get the current branch name.
@@ -91,8 +111,12 @@ pub trait Scm: Send + Sync {
     /// Push to a remote repository.
     fn push(&self, remote: &str, branch: &str) -> Result<()>;
 
-    /// Pull from a remote repository (fetch + merge/update).
-    fn pull(&self, remote: &str, branch: &str) -> Result<()>;
+    /// Pull from a remote repository (fetch + merge/update). A file both sides
+    /// changed in ways the merge cannot combine goes to `resolve_conflict`.
+    fn pull(&self, remote: &str, branch: &str, resolve_conflict: ConflictResolver) -> Result<()>;
+
+    /// Whether an interrupted pull left a merge unfinished.
+    fn has_unfinished_merge(&self) -> bool;
 
     /// Reset to a specific commit (soft reset - keeps working directory).
     fn reset_soft(&self, commit: &str) -> Result<()>;

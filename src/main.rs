@@ -247,6 +247,10 @@ enum Commands {
         #[arg(long)]
         merge_tool: Option<String>,
 
+        /// Start each per-file prompt on `merge` when the merge tool is offered
+        #[arg(long, value_name = "BOOL")]
+        prefer_merge_tool: Option<bool>,
+
         /// Retention window for `purge`, in days (default: the longer of 180
         /// and this machine's Claude Code cleanupPeriodDays)
         #[arg(long, value_name = "DAYS")]
@@ -664,6 +668,7 @@ fn main() -> Result<()> {
             unmap_project,
             warn_each_skipped_file,
             merge_tool,
+            prefer_merge_tool,
             purge_older_than,
             purge_after_sync,
             show,
@@ -689,6 +694,7 @@ fn main() -> Result<()> {
                 || !unmap_project.is_empty()
                 || warn_each_skipped_file.is_some()
                 || merge_tool.is_some()
+                || prefer_merge_tool.is_some()
                 || purge_older_than.is_some()
                 || purge_after_sync.is_some()
                 || show
@@ -718,6 +724,9 @@ fn main() -> Result<()> {
                 }
                 if let Some(command) = merge_tool {
                     filter::set_merge_tool(&command)?;
+                }
+                if let Some(prefer) = prefer_merge_tool {
+                    filter::set_prefer_merge_tool(prefer)?;
                 }
                 if purge_older_than.is_some() || purge_after_sync.is_some() {
                     filter::configure_purge(purge_older_than, purge_after_sync)?;

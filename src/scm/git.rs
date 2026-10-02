@@ -1,10 +1,11 @@
 //! Git SCM backend using CLI commands.
 
 use anyhow::{anyhow, Context, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::Scm;
+use super::{ConflictChoice, ConflictResolver, ConflictedFile, Scm};
 
 /// Git SCM implementation using the git CLI.
 pub struct GitScm {
@@ -139,6 +140,99 @@ impl GitScm {
         Ok(lines.peek().is_some() && lines.all(|l| l.get(3..) == Some(".gitattributes")))
     }
 
+    fn settle_conflicts(&self, resolve_conflict: ConflictResolver) -> Result<bool> {
+        for file in self.read_conflicted_files()? {
+            let choice = resolve_conflict(&file)?;
+            match choice {
+                ConflictChoice::KeepLocal => {
+                    self.take_side("--ours", file.local.is_some(), &file.path)?;
+                }
+                ConflictChoice::TakeRemote => {
+                    self.take_side("--theirs", file.remote.is_some(), &file.path)?;
+                }
+                ConflictChoice::WriteMerged(bytes) => {
+                    std::fs::write(self.workdir.join(&file.path), bytes)
+                        .with_context(|| format!("Failed to write the merged {}", file.path))?;
+                    self.run_git_ok(&["--literal-pathspecs", "add", "--", &file.path])?;
+                }
+                ConflictChoice::AbortMerge => return Ok(false),
+            }
+        }
+
+        self.run_git_ok(&["commit", "--no-edit"])?;
+        Ok(true)
+    }
+
+    fn take_side(&self, side: &str, side_has_file: bool, path: &str) -> Result<()> {
+        if !side_has_file {
+            return self.run_git_ok(&[
+                "--literal-pathspecs",
+                "rm",
+                "--quiet",
+                "--force",
+                "--",
+                path,
+            ]);
+        }
+        self.run_git_ok(&["--literal-pathspecs", "checkout", side, "--", path])?;
+        self.run_git_ok(&["--literal-pathspecs", "add", "--", path])
+    }
+
+    fn read_conflicted_files(&self) -> Result<Vec<ConflictedFile>> {
+        const COMMON_ANCESTOR_STAGE: &str = "1";
+        const LOCAL_STAGE: &str = "2";
+        const REMOTE_STAGE: &str = "3";
+
+        let output = self.git_output(&["ls-files", "--unmerged", "-z"])?;
+        let listed = output.status.success();
+        if !listed {
+            return Err(anyhow!(
+                "git ls-files --unmerged failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        let listing = String::from_utf8_lossy(&output.stdout).into_owned();
+        let mut files: BTreeMap<String, ConflictedFile> = BTreeMap::new();
+        for entry in listing.split('\0').filter(|entry| !entry.is_empty()) {
+            let (stage_entry, path) = entry
+                .split_once('\t')
+                .with_context(|| format!("Unexpected ls-files entry: {entry}"))?;
+            let mut fields = stage_entry.split(' ');
+            let object = fields.nth(1).context("ls-files entry without an object")?;
+            let stage = fields.next().context("ls-files entry without a stage")?;
+            let content = Some(self.read_blob(object, path)?);
+
+            let file = files
+                .entry(path.to_string())
+                .or_insert_with(|| ConflictedFile {
+                    path: path.to_string(),
+                    ..Default::default()
+                });
+            match stage {
+                COMMON_ANCESTOR_STAGE => file.base = content,
+                LOCAL_STAGE => file.local = content,
+                REMOTE_STAGE => file.remote = content,
+                _ => return Err(anyhow!("Unexpected merge stage {stage} for {path}")),
+            }
+        }
+
+        Ok(files.into_values().collect())
+    }
+
+    fn read_blob(&self, object: &str, path: &str) -> Result<Vec<u8>> {
+        let path_argument = format!("--path={path}");
+        let output = self.git_output(&["cat-file", "--filters", &path_argument, object])?;
+        let read = output.status.success();
+        if !read {
+            return Err(anyhow!(
+                "Failed to read {path} from the merge: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(output.stdout)
+    }
+
     /// Check if a git command succeeds (exit code 0).
     fn git_succeeds(&self, args: &[&str]) -> bool {
         Command::new("git")
@@ -160,6 +254,13 @@ impl Scm for GitScm {
     }
 
     fn stage_all(&self) -> Result<()> {
+        let merge_is_unfinished = self.has_unfinished_merge();
+        if merge_is_unfinished {
+            return Err(anyhow!(
+                "The sync repository has a merge an interrupted pull left unfinished. \
+                 Run `claude-code-sync pull` to settle or undo it first."
+            ));
+        }
         self.run_git_ok(&["-c", "core.safecrlf=false", "add", "-A"])
     }
 
@@ -238,7 +339,14 @@ impl Scm for GitScm {
     /// own `pull.rebase` / `pull.ff` is configured — a setting this tool does
     /// not own. Merge, not rebase: undo records point at local commit hashes,
     /// and a rebase rewrites them.
-    fn pull(&self, remote: &str, branch: &str) -> Result<()> {
+    fn pull(&self, remote: &str, branch: &str, resolve_conflict: ConflictResolver) -> Result<()> {
+        let interrupted_merge_left = self.has_unfinished_merge();
+        if interrupted_merge_left {
+            self.run_git_ok(&["merge", "--abort"])
+                .context("Failed to undo the merge an interrupted pull left unfinished")?;
+            log::warn!("Undid the merge an interrupted pull left unfinished; merging again");
+        }
+
         // A remote nobody has pushed to yet has no branch to fetch. That is
         // the first machine's normal state, not a failure: there is nothing
         // to merge, and the push that follows creates the branch.
@@ -280,15 +388,27 @@ impl Scm for GitScm {
             return Ok(());
         }
 
-        // Leave the repository where it was, so the next sync can retry. A
-        // merge git refused to start — uncommitted work in the sync repository,
-        // unrelated histories — has nothing to abort and changed nothing.
-        let merge_started = self.git_succeeds(&["rev-parse", "--verify", "MERGE_HEAD"]);
-        let details = format!(
-            "{}{}",
-            String::from_utf8_lossy(&merge.stdout),
-            String::from_utf8_lossy(&merge.stderr)
-        );
+        // A merge git refused to start — uncommitted work in the sync
+        // repository, unrelated histories — has nothing to abort and changed
+        // nothing.
+        let merge_started = self.has_unfinished_merge();
+        let settled = if merge_started {
+            self.settle_conflicts(resolve_conflict)
+        } else {
+            Ok(false)
+        };
+        if let Ok(true) = settled {
+            return Ok(());
+        }
+
+        let details = match settled {
+            Err(error) => format!("{error:#}"),
+            _ => format!(
+                "{}{}",
+                String::from_utf8_lossy(&merge.stdout),
+                String::from_utf8_lossy(&merge.stderr)
+            ),
+        };
         let state = if !merge_started {
             "Nothing was merged; the sync repository is as it was."
         } else if self.git_succeeds(&["merge", "--abort"]) {
@@ -301,6 +421,10 @@ impl Scm for GitScm {
             "Failed to merge '{remote}/{branch}' into the sync repository: {}\n{state}",
             details.trim()
         ))
+    }
+
+    fn has_unfinished_merge(&self) -> bool {
+        self.git_succeeds(&["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])
     }
 
     fn reset_soft(&self, commit: &str) -> Result<()> {
@@ -386,6 +510,10 @@ mod tests {
         git_in(dir, &["config", "core.autocrlf", "true"]);
     }
 
+    fn stop_at_conflicts(_file: &ConflictedFile) -> Result<ConflictChoice> {
+        Ok(ConflictChoice::AbortMerge)
+    }
+
     /// Two clones of one bare remote, both already one commit ahead of it in
     /// their own way: the shape a sync repository takes when two machines
     /// pushed between pulls.
@@ -424,7 +552,7 @@ mod tests {
     fn pull_reconciles_a_repository_that_both_machines_moved() {
         let (_root, machine, workdir, branch) = two_diverged_machines(None);
 
-        machine.pull("origin", &branch).unwrap();
+        machine.pull("origin", &branch, &stop_at_conflicts).unwrap();
 
         let only_second = std::fs::read_to_string(workdir.join("only-second.txt")).unwrap();
         let only_first = std::fs::read_to_string(workdir.join("only-first.txt")).unwrap();
@@ -445,8 +573,8 @@ mod tests {
         let before = machine.current_commit_hash().unwrap();
 
         let error = machine
-            .pull("origin", &branch)
-            .expect_err("a content conflict cannot be resolved for the user")
+            .pull("origin", &branch, &stop_at_conflicts)
+            .expect_err("a conflict nobody settled stops the pull")
             .to_string();
 
         assert!(error.contains("both-touched.txt"), "unexpected: {error}");
@@ -466,12 +594,108 @@ mod tests {
     }
 
     #[test]
+    fn a_conflict_settled_per_file_completes_the_merge_with_the_chosen_version() {
+        let (_root, machine, workdir, branch) = two_diverged_machines(Some("both-touched.txt"));
+        let before = machine.current_commit_hash().unwrap();
+        let offered = std::cell::RefCell::new(Vec::new());
+        let take_the_remote = |file: &ConflictedFile| {
+            offered.borrow_mut().push(format!(
+                "{} base={:?} local={:?} remote={:?}",
+                file.path,
+                file.base.as_deref().map(String::from_utf8_lossy),
+                file.local.as_deref().map(String::from_utf8_lossy),
+                file.remote.as_deref().map(String::from_utf8_lossy),
+            ));
+            Ok(ConflictChoice::WriteMerged(file.remote.clone().unwrap()))
+        };
+
+        machine.pull("origin", &branch, &take_the_remote).unwrap();
+
+        assert_eq!(
+            offered.into_inner(),
+            vec![
+                "both-touched.txt base=None local=Some(\"from the first\\n\") \
+                 remote=Some(\"from the second\\n\")"
+                    .to_string()
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("both-touched.txt")).unwrap(),
+            "from the second\n"
+        );
+        assert!(!machine.has_changes().unwrap(), "the merge is committed");
+        let merge_parents = machine.run_git(&["rev-parse", "HEAD^1", "HEAD^2"]).unwrap();
+        assert!(
+            merge_parents.starts_with(&before),
+            "a merge commit on top of this machine's history: {merge_parents}"
+        );
+    }
+
+    #[test]
+    fn a_file_deleted_on_one_machine_and_changed_on_the_other_can_be_deleted() {
+        let (root, machine, workdir, branch) = two_diverged_machines(None);
+        let second = root.path().join("second");
+        let machine_second = GitScm::open(&second).unwrap();
+        git_in(&second, &["rm", "--quiet", "shared-start.txt"]);
+        machine_second.commit("remove shared-start.txt").unwrap();
+        machine_second.push("origin", &branch).unwrap();
+        commit_file(&machine, &workdir, "shared-start.txt", "changed here\n");
+        let offered = std::cell::RefCell::new(Vec::new());
+        let take_the_remote = |file: &ConflictedFile| {
+            offered.borrow_mut().push((
+                file.path.clone(),
+                file.base.is_some(),
+                file.local.is_some(),
+                file.remote.is_some(),
+            ));
+            Ok(ConflictChoice::TakeRemote)
+        };
+
+        machine.pull("origin", &branch, &take_the_remote).unwrap();
+
+        assert_eq!(
+            offered.into_inner(),
+            vec![("shared-start.txt".to_string(), true, true, false)]
+        );
+        assert!(!workdir.join("shared-start.txt").exists());
+        assert!(workdir.join("only-second.txt").is_file());
+        assert!(!machine.has_changes().unwrap(), "the merge is committed");
+    }
+
+    #[test]
+    fn a_merge_an_interrupted_pull_left_blocks_a_push_and_is_redone_by_the_next_pull() {
+        let (_root, machine, workdir, branch) = two_diverged_machines(Some("both-touched.txt"));
+        git_in(&workdir, &["fetch", "--quiet", "origin", &branch]);
+        let interrupted = machine.git_output(&["merge", "FETCH_HEAD"]).unwrap();
+        assert!(
+            !interrupted.status.success(),
+            "the merge stops at the conflict"
+        );
+
+        let push_error = machine
+            .stage_all()
+            .expect_err("conflict markers must not be committed")
+            .to_string();
+        assert!(push_error.contains("pull"), "unexpected: {push_error}");
+
+        let keep_local = |_file: &ConflictedFile| Ok(ConflictChoice::KeepLocal);
+        machine.pull("origin", &branch, &keep_local).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("both-touched.txt")).unwrap(),
+            "from the first\n"
+        );
+        assert!(!machine.has_unfinished_merge());
+        assert!(!machine.has_changes().unwrap(), "the merge is committed");
+    }
+
+    #[test]
     fn a_log_both_machines_wrote_to_is_merged_rather_than_refused() {
         // A transcript and the prompt history only ever grow, so both sides'
         // lines are kept instead of stopping the pull with a conflict.
         let (_root, machine, workdir, branch) = two_diverged_machines(Some("history.jsonl"));
 
-        machine.pull("origin", &branch).unwrap();
+        machine.pull("origin", &branch, &stop_at_conflicts).unwrap();
 
         let merged = std::fs::read_to_string(workdir.join("history.jsonl")).unwrap();
         assert!(merged.contains("from the first"), "kept: {merged}");
@@ -494,7 +718,7 @@ mod tests {
             .add_remote("origin", root.path().join("origin").to_str().unwrap())
             .unwrap();
 
-        machine.pull("origin", &branch).unwrap();
+        machine.pull("origin", &branch, &stop_at_conflicts).unwrap();
 
         let shared_start = std::fs::read_to_string(fresh.join("shared-start.txt")).unwrap();
         assert_eq!(
@@ -515,7 +739,7 @@ mod tests {
             .add_remote("origin", root.path().join("origin").to_str().unwrap())
             .unwrap();
 
-        machine.pull("origin", &branch).unwrap();
+        machine.pull("origin", &branch, &stop_at_conflicts).unwrap();
 
         assert!(fresh.join("shared-start.txt").is_file());
         assert!(!machine.has_changes().unwrap());
@@ -532,7 +756,7 @@ mod tests {
             .add_remote("origin", root.path().join("origin").to_str().unwrap())
             .unwrap();
 
-        machine.pull("origin", "main").unwrap();
+        machine.pull("origin", "main", &stop_at_conflicts).unwrap();
 
         assert!(
             fresh.join(".gitattributes").is_file(),
@@ -549,7 +773,7 @@ mod tests {
             .add_remote("origin", root.path().join("missing").to_str().unwrap())
             .unwrap();
 
-        assert!(machine.pull("origin", "main").is_err());
+        assert!(machine.pull("origin", "main", &stop_at_conflicts).is_err());
     }
 
     #[test]
@@ -561,7 +785,7 @@ mod tests {
         std::fs::write(workdir.join("only-second.txt"), "half a push\n").unwrap();
 
         let error = machine
-            .pull("origin", &branch)
+            .pull("origin", &branch, &stop_at_conflicts)
             .expect_err("a dirty sync repository cannot be merged into")
             .to_string();
 

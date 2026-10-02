@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::Scm;
+use super::{ConflictResolver, Scm};
 
 /// Mercurial SCM implementation using the `hg` CLI.
 pub struct HgScm {
@@ -258,10 +258,14 @@ impl Scm for HgScm {
         Ok(())
     }
 
-    fn pull(&self, remote: &str, _branch: &str) -> Result<()> {
+    fn pull(&self, remote: &str, _branch: &str, _resolve_conflict: ConflictResolver) -> Result<()> {
         // Pull and update
         self.run_hg(&["pull", "-u", remote])?;
         Ok(())
+    }
+
+    fn has_unfinished_merge(&self) -> bool {
+        false
     }
 
     fn reset_soft(&self, commit: &str) -> Result<()> {

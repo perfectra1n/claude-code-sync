@@ -152,7 +152,7 @@ fn confirmed(plan: &PurgePlan, assume_yes: bool) -> bool {
         return false;
     }
     inquire::Confirm::new(&format!(
-        "Delete {} sessions from this machine and the sync repository?",
+        "Delete {} sessions here and in the sync repo?",
         plan.targets.len()
     ))
     .with_default(false)

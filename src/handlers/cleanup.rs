@@ -39,9 +39,8 @@ pub fn handle_cleanup_snapshots(
 
     // If interactive mode and not dry run, ask for confirmation
     if interactive && !dry_run && interactive_conflict::is_interactive() {
-        let confirm = Confirm::new("Do you want to proceed with deleting these snapshots?")
+        let confirm = Confirm::new("Delete these snapshots? (permanent)")
             .with_default(false)
-            .with_help_message("This cannot be undone")
             .prompt()
             .context("Failed to get confirmation")?;
 

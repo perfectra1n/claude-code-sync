@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use crate::scm::{ConflictChoice, ConflictedFile};
+
 /// How a merge window ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Resolution {
@@ -30,6 +32,11 @@ const KEEP_LOCAL: &str = "Keep the local version";
 const TAKE_REMOTE: &str = "Overwrite with the sync repo version";
 const MERGE_EXTERNALLY: &str = "Merge both in the configured merge tool";
 const KEEP_BOTH: &str = "Keep both — save the sync repo version next to your local one";
+// A conflict inside the sync repository itself: "ours" is this machine's
+// last commit, "theirs" what the other machine pushed.
+const TAKE_THEIRS: &str = "Take the other machine's version";
+const KEEP_OURS: &str = "Keep this machine's version";
+const STOP_THE_PULL: &str = "Stop the pull (undo the merge)";
 
 /// What the user (or the merge tool) decided about one differing file.
 pub enum ResolutionOutcome {
@@ -56,6 +63,7 @@ pub enum ResolutionOutcome {
 /// an explicit keep is a decision the caller may record durably.
 pub fn resolve_overwrite(
     merge_tool: &str,
+    prefer_merge_tool: bool,
     local_path: &Path,
     remote_bytes: &[u8],
 ) -> Result<ResolutionOutcome> {
@@ -71,24 +79,29 @@ pub fn resolve_overwrite(
     // their local edit and inspect the remote's version alongside it.
     options.push(KEEP_BOTH);
 
-    let choice = match Select::new(
-        &format!("'{file_name}' differs from the sync repo:"),
-        options,
-    )
-    .prompt()
-    {
-        Ok(choice) => choice,
-        // EOF or a rendering failure is NOT a keep: mapping it to
-        // KeepLocal would make the caller durably record the repo bytes
-        // as the base — permanently dirty files off an input accident.
-        // No decision was made.
-        Err(_) => return Ok(ResolutionOutcome::Abandoned),
+    // EOF or a rendering failure is NOT a keep: mapping it to KeepLocal
+    // would make the caller durably record the repo bytes as the base —
+    // permanently dirty files off an input accident. No decision was made.
+    let question = format!("'{file_name}' differs from the sync repo:");
+    let Some(choice) = ask(&question, options, prefer_merge_tool) else {
+        return Ok(ResolutionOutcome::Abandoned);
     };
 
     match choice {
         TAKE_REMOTE => Ok(ResolutionOutcome::Write(remote_bytes.to_vec())),
         MERGE_EXTERNALLY => {
-            match merge(merge_tool, local_path, remote_bytes, configured_timeout())? {
+            let local_bytes = std::fs::read(local_path)
+                .with_context(|| format!("Failed to read {}", local_path.display()))?;
+            let no_recorded_ancestor: &[u8] = b"";
+            let resolution = merge(
+                merge_tool,
+                local_path,
+                &local_bytes,
+                remote_bytes,
+                no_recorded_ancestor,
+                configured_timeout(),
+            )?;
+            match resolution {
                 Resolution::Written(merged) => Ok(ResolutionOutcome::Write(merged)),
                 Resolution::Abandoned => Ok(ResolutionOutcome::Abandoned),
             }
@@ -234,23 +247,91 @@ unsafe fn libc_gethostname(
     gethostname(name, len)
 }
 
-/// Run the configured tool on `local_path` against `remote_bytes`.
-///
-/// There is no recorded common ancestor for an artifact, so the base pane is
-/// empty: the tool shows both sides in full rather than a misleading diff
-/// against a version neither machine had.
+/// Ask which version of a file both machines changed the sync repository keeps.
+pub fn resolve_conflict(
+    merge_tool: &str,
+    prefer_merge_tool: bool,
+    file: &ConflictedFile,
+) -> Result<ConflictChoice> {
+    let mut options = vec![TAKE_THEIRS, KEEP_OURS];
+    let both_machines_have_it = file.local.is_some() && file.remote.is_some();
+    let has_merge_tool = !merge_tool.trim().is_empty();
+    if both_machines_have_it && has_merge_tool {
+        options.push(MERGE_EXTERNALLY);
+    }
+    options.push(STOP_THE_PULL);
+
+    let question = format!("'{}' {}:", file.path, describe_conflict(file));
+    let Some(choice) = ask(&question, options, prefer_merge_tool) else {
+        return Ok(ConflictChoice::AbortMerge);
+    };
+
+    match choice {
+        KEEP_OURS => Ok(ConflictChoice::KeepLocal),
+        TAKE_THEIRS => Ok(ConflictChoice::TakeRemote),
+        MERGE_EXTERNALLY => {
+            let resolution = merge(
+                merge_tool,
+                Path::new(&file.path),
+                file.local.as_deref().unwrap_or_default(),
+                file.remote.as_deref().unwrap_or_default(),
+                file.base.as_deref().unwrap_or_default(),
+                configured_timeout(),
+            )?;
+            match resolution {
+                Resolution::Written(merged) => Ok(ConflictChoice::WriteMerged(merged)),
+                Resolution::Abandoned => Ok(ConflictChoice::AbortMerge),
+            }
+        }
+        _ => Ok(ConflictChoice::AbortMerge),
+    }
+}
+
+fn describe_conflict(file: &ConflictedFile) -> &'static str {
+    match (&file.local, &file.remote) {
+        (None, None) => "renamed on both sides",
+        (None, _) => "deleted locally, changed remotely",
+        (_, None) => "changed locally, deleted remotely",
+        _ => "changed on both sides",
+    }
+}
+
+/// `None` when no choice was made (Esc, EOF, a rendering failure).
+fn ask(
+    question: &str,
+    options: Vec<&'static str>,
+    prefer_merge_tool: bool,
+) -> Option<&'static str> {
+    let merge_position = options
+        .iter()
+        .position(|option| *option == MERGE_EXTERNALLY);
+    let starting_cursor = match merge_position {
+        Some(position) if prefer_merge_tool => position,
+        _ => 0,
+    };
+
+    Select::new(question, options)
+        .with_starting_cursor(starting_cursor)
+        .prompt()
+        .ok()
+}
+
+/// Run the configured tool on the local and remote versions of `path`, with
+/// `base_bytes` as the version both started from.
 pub fn merge(
     merge_tool: &str,
-    local_path: &Path,
+    path: &Path,
+    local_bytes: &[u8],
     remote_bytes: &[u8],
+    base_bytes: &[u8],
     timeout: Duration,
 ) -> Result<Resolution> {
-    let extension = local_path
+    let extension = path
         .extension()
         .map(|e| e.to_string_lossy().to_string())
         .unwrap_or_else(|| "txt".to_string());
     let workspace = tempfile::tempdir()?;
-    let stem = local_path
+    let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "artifact".to_string());
@@ -262,12 +343,16 @@ pub fn merge(
     let base_pane = pane("base");
     let output = pane("merged");
 
-    let local_bytes = std::fs::read(local_path)
-        .with_context(|| format!("Failed to read {}", local_path.display()))?;
-    std::fs::write(&local_pane, &local_bytes)?;
+    std::fs::write(&local_pane, local_bytes)?;
     std::fs::write(&remote_pane, remote_bytes)?;
-    std::fs::write(&base_pane, b"")?;
-    std::fs::write(&output, &local_bytes)?;
+    std::fs::write(&base_pane, base_bytes)?;
+    std::fs::write(&output, local_bytes)?;
+    let before_any_save = std::time::SystemTime::now() - Duration::from_secs(2);
+    std::fs::File::options()
+        .write(true)
+        .open(&output)?
+        .set_modified(before_any_save)?;
+    let output_written_at = read_modified_time(&output);
 
     let mut parts = merge_tool.split_whitespace();
     let program = parts.next().context("merge_tool is empty")?;
@@ -283,18 +368,18 @@ pub fn merge(
     let started = Instant::now();
     let handoff_grace = Duration::from_secs(5);
     let mut handed_off = false;
-    let mut previous = local_bytes.clone();
+    let mut previous = local_bytes.to_vec();
 
     let outcome = loop {
         std::thread::sleep(Duration::from_millis(250));
 
         let current = std::fs::read(&output).unwrap_or_default();
-        let rewritten = current != local_bytes;
+        let saved = current != local_bytes || read_modified_time(&output) != output_written_at;
 
         if handed_off {
             // Nothing left to wait on but the file: the editor that owns the
-            // merge is another process. Rewritten and then settled is done.
-            if rewritten && current == previous {
+            // merge is another process. Saved and then settled is done.
+            if saved && current == previous {
                 break Resolution::Written(current);
             }
         } else {
@@ -308,21 +393,21 @@ pub fn merge(
                     // running editor and exited straight away.
                     handed_off = true;
                     println!(
-                        "  Waiting for the merge of '{}'. Save the merged file to continue, \
-                         or press Ctrl-C to keep the local version (giving up in {}).",
-                        local_path.display(),
+                        "  Waiting for the merge of '{}'. Save the merged file to continue \
+                         (giving up in {}).",
+                        path.display(),
                         describe(timeout)
                     );
-                    if rewritten && current == previous {
+                    if saved && current == previous {
                         break Resolution::Written(current);
                     }
                 }
+                Some(status) if status.success() && saved => break Resolution::Written(current),
                 Some(status) => {
-                    break if status.success() && rewritten {
-                        Resolution::Written(current)
-                    } else {
-                        Resolution::Abandoned
-                    };
+                    log::warn!(
+                        "The merge tool exited ({status}) without saving; nothing from it is applied"
+                    );
+                    break Resolution::Abandoned;
                 }
             }
         }
@@ -342,6 +427,12 @@ pub fn merge(
     let _ = child.wait();
 
     Ok(outcome)
+}
+
+fn read_modified_time(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
 }
 
 /// A wait spelled the way a person reads it.
@@ -391,7 +482,15 @@ mod tests {
         let (dir, path) = local_file("local side\n");
         let tool = tool_that_takes_the_remote_side(dir.path());
 
-        let resolution = merge(&tool, &path, b"remote side\n", Duration::from_secs(10)).unwrap();
+        let resolution = merge(
+            &tool,
+            &path,
+            b"local side\n",
+            b"remote side\n",
+            b"",
+            Duration::from_secs(10),
+        )
+        .unwrap();
 
         match resolution {
             Resolution::Written(bytes) => assert_eq!(bytes, b"remote side\n".to_vec()),
@@ -401,10 +500,110 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn a_merge_that_settles_on_the_local_version_is_applied() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = local_file("local side\n");
+        let script = dir.path().join("take-local.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 6\ncat \"$1\" > \"$4\"\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let resolution = merge(
+            &script.to_string_lossy(),
+            &path,
+            b"local side\n",
+            b"remote side\n",
+            b"",
+            Duration::from_secs(30),
+        )
+        .unwrap();
+
+        assert_eq!(resolution, Resolution::Written(b"local side\n".to_vec()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_editor_that_saves_the_local_version_after_the_handoff_is_applied() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = local_file("local side\n");
+        let script = dir.path().join("handoff-take-local.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n(sleep 1; cat \"$1\" > \"$4\") &\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let resolution = merge(
+            &script.to_string_lossy(),
+            &path,
+            b"local side\n",
+            b"remote side\n",
+            b"",
+            Duration::from_secs(10),
+        )
+        .unwrap();
+
+        assert_eq!(resolution, Resolution::Written(b"local side\n".to_vec()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_tool_closed_without_saving_applies_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = local_file("local side\n");
+        let script = dir.path().join("closed-unsaved.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 6\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let resolution = merge(
+            &script.to_string_lossy(),
+            &path,
+            b"local side\n",
+            b"remote side\n",
+            b"",
+            Duration::from_secs(30),
+        )
+        .unwrap();
+
+        assert_eq!(resolution, Resolution::Abandoned);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_base_pane_holds_the_version_both_sides_started_from() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = local_file("local side\n");
+        let script = dir.path().join("take-base.sh");
+        std::fs::write(&script, "#!/bin/sh\ncat \"$3\" > \"$4\"\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let resolution = merge(
+            &script.to_string_lossy(),
+            &path,
+            b"local side\n",
+            b"remote side\n",
+            b"common start\n",
+            Duration::from_secs(10),
+        )
+        .unwrap();
+
+        assert_eq!(resolution, Resolution::Written(b"common start\n".to_vec()));
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn a_tool_that_writes_nothing_leaves_the_local_file_alone() {
         let (_dir, path) = local_file("local side\n");
 
-        let resolution = merge("true", &path, b"remote\n", Duration::from_secs(1)).unwrap();
+        let resolution = merge(
+            "true",
+            &path,
+            b"local side\n",
+            b"remote\n",
+            b"",
+            Duration::from_secs(1),
+        )
+        .unwrap();
 
         assert_eq!(resolution, Resolution::Abandoned);
         assert_eq!(std::fs::read(&path).unwrap(), b"local side\n".to_vec());
@@ -431,7 +630,15 @@ mod tests {
         let (dir, path) = local_file("local side\n");
         let tool = tool_that_saves_twice(dir.path());
 
-        let resolution = merge(&tool, &path, b"remote\n", Duration::from_secs(30)).unwrap();
+        let resolution = merge(
+            &tool,
+            &path,
+            b"local side\n",
+            b"remote\n",
+            b"",
+            Duration::from_secs(30),
+        )
+        .unwrap();
 
         assert_eq!(resolution, Resolution::Written(b"final\n".to_vec()));
     }
@@ -452,7 +659,9 @@ mod tests {
         let resolution = merge(
             &script.to_string_lossy(),
             &path,
+            b"local side\n",
             b"remote\n",
+            b"",
             Duration::from_secs(30),
         )
         .unwrap();
@@ -466,7 +675,9 @@ mod tests {
         let attempt = merge(
             "definitely-not-a-real-merge-tool",
             &path,
+            b"local side\n",
             b"remote\n",
+            b"",
             Duration::from_secs(1),
         );
         assert!(attempt.is_err());

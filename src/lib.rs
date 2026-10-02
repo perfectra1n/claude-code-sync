@@ -112,6 +112,9 @@ pub mod merge;
 /// having one side discarded.
 pub mod merge_tool;
 
+/// Settling two versions of a file that differ only in date-times.
+pub mod later_timestamps;
+
 /// Interactive onboarding flow for first-time setup.
 ///
 /// Guides users through initial configuration including repository setup (clone vs local),

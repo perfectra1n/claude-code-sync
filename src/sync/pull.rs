@@ -10,6 +10,7 @@ use crate::history::{
     ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
 };
 use crate::interactive_conflict;
+use crate::later_timestamps::keep_later_timestamps;
 use crate::parser::ConversationSession;
 use crate::report::{save_conflict_report, ConflictReport};
 use crate::scm;
@@ -42,6 +43,26 @@ fn local_destination(
         crate::project_map::local_project_dir(filter, claude_dir, repo_project_dir)?;
 
     Some(local_project_dir.join(inside_project))
+}
+
+fn settle_conflict(
+    file: &scm::ConflictedFile,
+    can_ask: bool,
+    filter: &FilterConfig,
+) -> Result<scm::ConflictChoice> {
+    let differing_only_in_dates = match (&file.local, &file.remote) {
+        (Some(local), Some(remote)) => keep_later_timestamps(local, remote),
+        _ => None,
+    };
+    if let Some(merged) = differing_only_in_dates {
+        println!("  {} {}: kept the later dates", "✓".green(), file.path);
+        return Ok(scm::ConflictChoice::WriteMerged(merged));
+    }
+
+    if !can_ask {
+        return Ok(scm::ConflictChoice::AbortMerge);
+    }
+    crate::merge_tool::resolve_conflict(&filter.merge_tool, filter.prefer_merge_tool, file)
 }
 
 /// Whether the artifact counts say anything worth a line: a kept-local-only
@@ -88,12 +109,17 @@ pub fn pull_history(
         // Merging a stale sync repository into ~/.claude looks like a
         // successful pull and silently loses whatever the remote holds, so a
         // remote that cannot be reached or reconciled stops the pull instead.
-        repo.pull("origin", &branch_name).context(
-            "Nothing was merged into ~/.claude. Fix the remote (or resolve the \
-             conflict in the sync repository by hand), then pull again — or run \
-             `claude-code-sync pull --fetch-remote false` to merge only what is \
-             already in the local sync repository.",
-        )?;
+        let resolve_conflict = |file: &scm::ConflictedFile| {
+            let can_ask = interactive_conflict::is_interactive();
+            settle_conflict(file, can_ask, &filter)
+        };
+        repo.pull("origin", &branch_name, &resolve_conflict)
+            .context(
+                "Nothing was merged into ~/.claude. Pull again in a terminal to choose \
+                 a version of each file both machines changed, or fix the remote — or \
+                 run `claude-code-sync pull --fetch-remote false` to merge only what is \
+                 already in the local sync repository.",
+            )?;
         println!("  {} Pulled from origin/{}", "✓".green(), branch_name);
 
         // A first pull into a repository with no commits of its own sets the
@@ -357,14 +383,10 @@ pub fn pull_history(
 
     // Interactive confirmation
     if interactive && interactive_conflict::is_interactive() {
-        let confirm =
-            Confirm::new("Do you want to proceed with pulling and merging these changes?")
-                .with_default(true)
-                .with_help_message(
-                    "This will merge remote sessions into your local Claude Code history",
-                )
-                .prompt()
-                .context("Failed to get confirmation")?;
+        let confirm = Confirm::new("Pull?")
+            .with_default(true)
+            .prompt()
+            .context("Failed to get confirmation")?;
 
         if !confirm {
             println!("\n{}", "Pull cancelled.".yellow());
@@ -1011,4 +1033,53 @@ pub fn pull_history(
     }
 
     Ok(artifact_report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn conflicted(local: Option<&str>, remote: Option<&str>) -> scm::ConflictedFile {
+        scm::ConflictedFile {
+            path: "artifacts/plugins/known_marketplaces.json".to_string(),
+            base: None,
+            local: local.map(|text| text.as_bytes().to_vec()),
+            remote: remote.map(|text| text.as_bytes().to_vec()),
+        }
+    }
+
+    #[test]
+    fn a_conflict_settles_without_asking_only_when_the_dates_alone_differ() {
+        let filter = FilterConfig::default();
+        let cases = [
+            (
+                "dates alone differ",
+                conflicted(
+                    Some("\"lastUpdated\": \"2026-10-01T06:00:01.741Z\""),
+                    Some("\"lastUpdated\": \"2026-10-01T06:50:50.567Z\""),
+                ),
+                scm::ConflictChoice::WriteMerged(
+                    b"\"lastUpdated\": \"2026-10-01T06:50:50.567Z\"".to_vec(),
+                ),
+            ),
+            (
+                "content differs too",
+                conflicted(
+                    Some("a 2026-10-01T06:00:01Z"),
+                    Some("b 2026-10-01T06:00:02Z"),
+                ),
+                scm::ConflictChoice::AbortMerge,
+            ),
+            (
+                "deleted on one side",
+                conflicted(Some("a"), None),
+                scm::ConflictChoice::AbortMerge,
+            ),
+        ];
+
+        for (name, file, expected) in cases {
+            let choice = settle_conflict(&file, false, &filter).unwrap();
+            assert_eq!(choice, expected, "{name}");
+        }
+    }
 }

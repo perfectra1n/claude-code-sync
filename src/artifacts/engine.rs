@@ -1240,6 +1240,8 @@ pub struct PullPlan {
     /// delta — and its `tracks_deletions` is false, so the save gate
     /// never opens for it anyway.
     pub tracked_before: TrackedPaths,
+    /// Whether the overwrite prompt starts on the merge tool.
+    pub prefer_merge_tool: bool,
     /// The repo paths this machine will hold afterwards, for the next pull to
     /// tell a deletion from a file it never had.
     pub tracked_after: TrackedPaths,
@@ -1613,6 +1615,7 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
         claude_dir: claude_dir.to_path_buf(),
         repo_root: repo_root.to_path_buf(),
         merge_tool: filter.merge_tool.clone(),
+        prefer_merge_tool: filter.prefer_merge_tool,
         tracks_deletions: active_categories(filter).any(|desc| desc.mirror_deletes),
         ..Default::default()
     };
@@ -2525,6 +2528,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 };
             let resolution = crate::merge_tool::resolve_overwrite(
                 &plan.merge_tool,
+                plan.prefer_merge_tool,
                 &write.local_path,
                 &repo_bytes,
             );
@@ -2864,6 +2868,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         let resolved = if prompt_overwrites {
             match crate::merge_tool::resolve_overwrite(
                 &plan.merge_tool,
+                plan.prefer_merge_tool,
                 &write.local_path,
                 &repo_bytes,
             ) {

@@ -24,15 +24,11 @@ pub enum ResolutionAction {
 impl std::fmt::Display for ResolutionAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResolutionAction::SmartMerge => {
-                write!(f, "Smart Merge (combine both versions - recommended)")
-            }
-            ResolutionAction::KeepLocal => write!(f, "Keep Local Version (discard remote)"),
-            ResolutionAction::KeepRemote => write!(f, "Keep Remote Version (overwrite local)"),
-            ResolutionAction::KeepBoth => {
-                write!(f, "Keep Both (save remote with conflict suffix)")
-            }
-            ResolutionAction::ViewDetails => write!(f, "View Detailed Comparison"),
+            ResolutionAction::SmartMerge => write!(f, "smart merge"),
+            ResolutionAction::KeepLocal => write!(f, "local"),
+            ResolutionAction::KeepRemote => write!(f, "remote"),
+            ResolutionAction::KeepBoth => write!(f, "both (remote saved as a copy)"),
+            ResolutionAction::ViewDetails => write!(f, "details"),
         }
     }
 }
@@ -156,8 +152,7 @@ fn resolve_conflict_interactive(conflict: &Conflict) -> Result<ResolutionAction>
             ResolutionAction::ViewDetails,
         ];
 
-        let action = Select::new("How would you like to resolve this conflict?", options)
-            .with_help_message("Use arrow keys to navigate, Enter to select")
+        let action = Select::new("Resolve:", options)
             .prompt()
             .context("Failed to get resolution action")?;
 
@@ -306,7 +301,7 @@ pub fn resolve_conflicts_interactive_with_sessions(
     println!("{}", "=".repeat(80).green());
 
     // Final confirmation
-    let confirm = Confirm::new("Apply these resolutions?")
+    let confirm = Confirm::new("Apply?")
         .with_default(true)
         .prompt()
         .context("Failed to get confirmation")?;
@@ -442,15 +437,12 @@ mod tests {
     #[test]
     fn test_display_resolution_action() {
         let action = ResolutionAction::KeepLocal;
-        assert_eq!(action.to_string(), "Keep Local Version (discard remote)");
+        assert_eq!(action.to_string(), "local");
 
         let action = ResolutionAction::KeepRemote;
-        assert_eq!(action.to_string(), "Keep Remote Version (overwrite local)");
+        assert_eq!(action.to_string(), "remote");
 
         let action = ResolutionAction::KeepBoth;
-        assert_eq!(
-            action.to_string(),
-            "Keep Both (save remote with conflict suffix)"
-        );
+        assert_eq!(action.to_string(), "both (remote saved as a copy)");
     }
 }

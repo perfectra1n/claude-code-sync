@@ -271,17 +271,23 @@ own commit, so `git` still has everything until the history itself is rewritten.
 
 ### External merge tool
 
-When a pulled file differs from the local one, `pull --interactive` offers to
-open a real three-way merge instead of only choosing a side:
+**Get `merge` next to `remote` / `local` in the per-file prompt** — on a file
+both machines changed in the sync repository, and on a pulled file that
+differs under `pull --interactive`:
 
 ```bash
 claude-code-sync config --merge-tool "phpstorm merge"
+claude-code-sync config --prefer-merge-tool true   # prompt starts on merge
 ```
 
-The tool is invoked as `<merge_tool> <local> <remote> <base> <output>` (the
-JetBrains argument order); whatever it writes to `<output>` is what lands. The
-base pane is empty — an artifact has no recorded common ancestor. Set
-`CLAUDE_CODE_SYNC_MERGE_TIMEOUT_SECONDS` to change the 15-minute wait, or pass
+The tool runs as `<merge_tool> <local> <remote> <base> <output>` (JetBrains
+argument order). What it saves to `<output>` lands, even when that is the local
+version unchanged.
+
+- Both machines changed it → `<base>` is the version both started from.
+- Pulled file differs → `<base>` is empty; nothing records an ancestor.
+
+Set `CLAUDE_CODE_SYNC_MERGE_TIMEOUT_SECONDS` to change the 15-minute wait. Pass
 an empty string to `--merge-tool` to go back to the terminal picker.
 
 ### Binaries per tag
@@ -602,10 +608,12 @@ claude-code-sync pull [OPTIONS]
 
 **Options:**
 - `--fetch-remote <BOOL>`: Pull from remote before merging (default: true).
-  A remote that cannot be reached or whose changes conflict with the local sync
-  repository stops the pull — diverged branches are merged automatically, and a
-  real conflict is reported and undone. Pass `--fetch-remote false` to merge
-  only what is already in the local sync repository.
+  Diverged branches merge on their own. A file both machines changed only in
+  date-times (`lastUpdated`, `modified: …`) keeps the later dates, no prompt.
+  Any other file both changed asks, per file: `remote`, `local`, `merge` (the
+  [merge tool](#external-merge-tool)) or `stop`. `stop`, or no terminal to ask in, undoes the merge and stops the
+  pull, as does a remote that cannot be reached. Pass `--fetch-remote false` to
+  merge only what is already in the local sync repository.
 - `--branch, -b <BRANCH>`: Branch to pull from (default: current branch)
 
 **Example:**
@@ -948,12 +956,12 @@ Project: my-project
 Local:  45 messages, last modified 2 hours ago (15.2 KB)
 Remote: 52 messages, last modified 1 hour ago (18.5 KB)
 
-How do you want to resolve this conflict?
-❯ Smart Merge (combine both versions - recommended)
-  Keep Local Version (discard remote)
-  Keep Remote Version (overwrite local)
-  Keep Both (save remote with conflict suffix)
-  View Detailed Comparison
+Resolve:
+❯ smart merge
+  local
+  remote
+  both (remote saved as a copy)
+  details
 ```
 
 ### Automatic Resolution (Non-Interactive)
@@ -1016,8 +1024,11 @@ purge_after_sync = false
 # Warn once per file a pull cannot place, instead of one combined warning
 warn_each_skipped_file = false
 
-# External three-way merge command offered when a pulled file differs
+# External three-way merge command offered when a file differs or conflicts
 merge_tool = "phpstorm merge"
+
+# Start each per-file prompt on `merge` when the merge tool is offered
+prefer_merge_tool = false
 
 # Artifact categories to sync alongside conversation history
 # (all default to false; see the Artifact Sync section)

@@ -90,6 +90,11 @@ pub struct FilterConfig {
     /// `phpstorm merge` argument order). Empty means the terminal picker only.
     #[serde(default)]
     pub merge_tool: String,
+
+    /// Start the per-file prompt on `merge` instead of the first option,
+    /// whenever the merge tool is offered.
+    #[serde(default)]
+    pub prefer_merge_tool: bool,
 }
 
 fn default_lfs_patterns() -> Vec<String> {
@@ -127,6 +132,7 @@ impl Default for FilterConfig {
             purge_after_sync: false,
             warn_each_skipped_file: false,
             merge_tool: String::new(),
+            prefer_merge_tool: false,
         }
     }
 }
@@ -446,6 +452,18 @@ pub fn set_merge_tool(command: &str) -> Result<()> {
     Ok(())
 }
 
+/// Choose whether the per-file prompt starts on the merge tool.
+pub fn set_prefer_merge_tool(prefer: bool) -> Result<()> {
+    let mut config = FilterConfig::load()?;
+    config.prefer_merge_tool = prefer;
+    config.validate()?;
+    config.save()?;
+
+    let starting_option = if prefer { "merge" } else { "the first option" };
+    println!("{}", format!("Prompts start on: {starting_option}").green());
+    Ok(())
+}
+
 /// Update the filter configuration
 #[allow(clippy::too_many_arguments)]
 pub fn update_config(
@@ -722,6 +740,16 @@ pub fn show_config() -> Result<()> {
             "none (terminal picker only)".yellow()
         } else {
             config.merge_tool.green()
+        }
+    );
+
+    println!(
+        "  {}: {}",
+        "Prefer merge tool".cyan(),
+        if config.prefer_merge_tool {
+            "Yes (prompts start on merge)".green()
+        } else {
+            "No".yellow()
         }
     );
 

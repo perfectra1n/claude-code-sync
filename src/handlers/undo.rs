@@ -45,9 +45,8 @@ pub fn handle_undo_pull(preview_only: bool, verbosity: crate::VerbosityLevel) ->
 
     if is_interactive {
         // Ask for confirmation
-        let confirm = Confirm::new("Do you want to proceed with this undo operation?")
+        let confirm = Confirm::new("Restore files to before the pull?")
             .with_default(false)
-            .with_help_message("This will restore files to their pre-pull state")
             .prompt()
             .context("Failed to get confirmation")?;
 
@@ -113,9 +112,8 @@ pub fn handle_undo_push(preview_only: bool, verbosity: crate::VerbosityLevel) ->
 
     if is_interactive {
         // Ask for confirmation
-        let confirm = Confirm::new("Do you want to proceed with this undo operation?")
+        let confirm = Confirm::new("Reset the sync repository to before the push?")
             .with_default(false)
-            .with_help_message("This will reset the git repository to the previous commit")
             .prompt()
             .context("Failed to get confirmation")?;
 
