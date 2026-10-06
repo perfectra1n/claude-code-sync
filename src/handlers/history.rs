@@ -174,7 +174,7 @@ pub fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
                 parts.push(format!("{} kept local", counts.kept_local));
             }
             if counts.merged_entries > 0 {
-                parts.push(format!("{} lines merged", counts.merged_entries));
+                parts.push(format!("{} entries merged", counts.merged_entries));
             }
             if counts.held_back_remote_lost > 0 {
                 parts.push(format!(

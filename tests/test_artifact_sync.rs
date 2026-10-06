@@ -47,6 +47,14 @@ fn seed_claude_dir(claude: &Path) {
     )
     .unwrap();
     fs::write(
+        claude.join("plugins/plugin-directory-bindings.json"),
+        bindings_json(&[(
+            "code-simplifier@anthropic-plugin-directory",
+            "github.com/anthropics/claude-plugins-official#plugins/code-simplifier",
+        )]),
+    )
+    .unwrap();
+    fs::write(
         claude.join("plugins/cache/some-plugin/huge.bin"),
         b"cached plugin data",
     )
@@ -66,6 +74,25 @@ fn history_line(ts: u64, display: &str) -> String {
     format!(
         "{{\"display\":\"{display}\",\"timestamp\":{ts},\"project\":\"/p\",\"sessionId\":\"s{ts}\"}}\n"
     )
+}
+
+/// A plugin-directory bindings file mapping each plugin to its repository.
+fn bindings_json(pairs: &[(&str, &str)]) -> Vec<u8> {
+    let entries: Vec<String> = pairs
+        .iter()
+        .map(|(name, repo)| format!("\"{name}\":{{\"repositoryKey\":\"{repo}\"}}"))
+        .collect();
+    format!(
+        "{{\"schemaVersion\":1,\"bindings\":{{{}}}}}",
+        entries.join(",")
+    )
+    .into_bytes()
+}
+
+/// The plugin keys a bindings file maps.
+fn binding_names(bytes: &[u8]) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    v["bindings"].as_object().unwrap().keys().cloned().collect()
 }
 
 fn all_on_filter() -> FilterConfig {
@@ -93,6 +120,7 @@ fn test_push_creates_expected_layout() {
     assert!(a.join("commands/deploy.md").is_file());
     assert!(a.join("plugins/installed_plugins.json").is_file());
     assert!(a.join("plugins/known_marketplaces.json").is_file());
+    assert!(a.join("plugins/plugin-directory-bindings.json").is_file());
     assert!(a.join("plans/big-refactor.md").is_file());
     assert!(a.join("todos/session-1.json").is_file());
     assert!(a.join("prompt-history/history.jsonl").is_file());
@@ -277,6 +305,117 @@ fn test_push_unions_prompt_history() {
 }
 
 #[test]
+fn test_push_unions_plugin_bindings() {
+    let claude = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    seed_claude_dir(claude.path());
+    let filter = all_on_filter();
+
+    // The repo already holds a binding another machine pushed.
+    let repo_bindings = repo
+        .path()
+        .join("artifacts/plugins/plugin-directory-bindings.json");
+    fs::create_dir_all(repo_bindings.parent().unwrap()).unwrap();
+    fs::write(
+        &repo_bindings,
+        bindings_json(&[(
+            "other-tool@anthropic-plugin-directory",
+            "github.com/o/r#plugins/other-tool",
+        )]),
+    )
+    .unwrap();
+
+    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+
+    let names = binding_names(&fs::read(&repo_bindings).unwrap());
+    assert!(
+        names.contains(&"code-simplifier@anthropic-plugin-directory".to_string()),
+        "local binding reaches the repo: {names:?}"
+    );
+    assert!(
+        names.contains(&"other-tool@anthropic-plugin-directory".to_string()),
+        "repo-only binding survives push: {names:?}"
+    );
+
+    let plugins = report
+        .counts
+        .iter()
+        .find(|c| c.category == CategoryId::Plugins)
+        .unwrap();
+    assert!(
+        plugins.merged_entries >= 1,
+        "the merged binding is counted: {plugins:?}"
+    );
+}
+
+#[test]
+fn test_pull_unions_plugin_bindings_with_local() {
+    let machine_b = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    // The repo carries a binding machine B has never seen...
+    let repo_bindings = repo
+        .path()
+        .join("artifacts/plugins/plugin-directory-bindings.json");
+    fs::create_dir_all(repo_bindings.parent().unwrap()).unwrap();
+    fs::write(
+        &repo_bindings,
+        bindings_json(&[
+            (
+                "shared@anthropic-plugin-directory",
+                "github.com/o/r#plugins/shared",
+            ),
+            (
+                "remote-only@anthropic-plugin-directory",
+                "github.com/o/r#plugins/remote-only",
+            ),
+        ]),
+    )
+    .unwrap();
+    // ...and machine B holds one of its own the repo lacks.
+    fs::create_dir_all(machine_b.path().join("plugins")).unwrap();
+    fs::write(
+        machine_b
+            .path()
+            .join("plugins/plugin-directory-bindings.json"),
+        bindings_json(&[
+            (
+                "shared@anthropic-plugin-directory",
+                "github.com/o/r#plugins/shared",
+            ),
+            (
+                "local-only@anthropic-plugin-directory",
+                "github.com/o/r#plugins/local-only",
+            ),
+        ]),
+    )
+    .unwrap();
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+
+    let names = binding_names(
+        &fs::read(
+            machine_b
+                .path()
+                .join("plugins/plugin-directory-bindings.json"),
+        )
+        .unwrap(),
+    );
+    for expected in [
+        "shared@anthropic-plugin-directory",
+        "remote-only@anthropic-plugin-directory",
+        "local-only@anthropic-plugin-directory",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "union keeps {expected}: {names:?}"
+        );
+    }
+}
+
+#[test]
 fn test_oversized_files_are_skipped() {
     let claude = TempDir::new().unwrap();
     let repo = TempDir::new().unwrap();
@@ -371,6 +510,10 @@ fn test_pull_restores_artifacts_to_fresh_machine() {
     assert!(machine_b
         .path()
         .join("plugins/installed_plugins.json")
+        .is_file());
+    assert!(machine_b
+        .path()
+        .join("plugins/plugin-directory-bindings.json")
         .is_file());
     assert!(machine_b.path().join("history.jsonl").is_file());
     assert!(report.total_added() >= 12);

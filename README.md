@@ -79,7 +79,7 @@ carries the rest of `~/.claude` across machines, per category:
 | `commands` | `~/.claude/commands/` | Custom slash commands |
 | `rules` | `~/.claude/rules/` | Shared rule files projects import |
 | `hooks` | `~/.claude/hooks/` | The scripts `settings.json` points at; they arrive executable |
-| `plugins` | `installed_plugins.json`, `known_marketplaces.json` | Only the manifests — plugin caches never sync |
+| `plugins` | `installed_plugins.json`, `known_marketplaces.json`, `plugin-directory-bindings.json` | Plugin manifests; the bindings file (plugin-directory v2 installs) union-merges so concurrent installs on different machines converge — plugin caches never sync |
 | `plans` | `~/.claude/plans/` | Plan-mode documents (may contain sensitive prose) |
 | `todos` | `~/.claude/todos/` | Session task lists (churny; consider leaving off) |
 | `prompt-history` | `~/.claude/history.jsonl` | Union-merged in both directions, so machines converge to the superset |

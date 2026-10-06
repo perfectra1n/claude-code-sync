@@ -14,13 +14,31 @@ use crate::scm::Backend;
 
 use super::bases::{self, BaseHashes};
 use super::denylist::{is_denied, is_unsafe_rel_path};
-use super::memory_index::{is_memory_index, merge_memory_index_with_tombstones};
+use super::memory_index::{
+    is_memory_index, merge_memory_index, merge_memory_index_with_tombstones,
+};
+use super::plugin_bindings::{is_plugin_bindings, merge_plugin_bindings};
 use super::registry::{
     CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR, REGISTRY,
 };
 use super::tokens::PathTokens;
 use super::tracked::{self, TrackedPaths};
 use super::union_jsonl::merge_history_lines;
+
+/// For one merge strategy and one file's path, the merge to apply — or
+/// `None`, meaning the file raw-overwrites. Adding a union kind is one
+/// registry variant plus one arm here; every engine path (push, plan,
+/// apply) routes through this table, so no site can drift out of
+/// sync with the others.
+fn union_for(merge: MergeStrategy, path: &Path) -> Option<fn(&[u8], &[u8]) -> (Vec<u8>, usize)> {
+    match merge {
+        MergeStrategy::UnionMemoryIndex if is_memory_index(path) => Some(merge_memory_index),
+        MergeStrategy::UnionPluginBindings if is_plugin_bindings(path) => {
+            Some(merge_plugin_bindings)
+        }
+        _ => None,
+    }
+}
 
 /// Whether one category participates for this configuration: toggles for the
 /// regular categories, the (inverted) attachments flag for ProjectAttachments.
@@ -50,11 +68,12 @@ fn active_categories(
 /// and skips the merge when nothing new arrived. Prompt history
 /// (`UnionJsonl`) is append-only and does not need per-line
 /// protection.
-pub(crate) fn records_base(strategy: MergeStrategy, _rel: &Path) -> bool {
+pub(crate) fn records_base(strategy: MergeStrategy, rel: &Path) -> bool {
     match strategy {
         MergeStrategy::RawOverwrite => true,
         MergeStrategy::UnionJsonl => false,
-        MergeStrategy::UnionMemoryIndex => true,
+        MergeStrategy::UnionMemoryIndex => !is_memory_index(rel),
+        MergeStrategy::UnionPluginBindings => !is_plugin_bindings(rel),
     }
 }
 
@@ -699,7 +718,9 @@ pub fn push_artifacts(
                         counts.unchanged += 1;
                     }
                 }
-                MergeStrategy::UnionMemoryIndex | MergeStrategy::RawOverwrite => {
+                MergeStrategy::UnionMemoryIndex
+                | MergeStrategy::UnionPluginBindings
+                | MergeStrategy::RawOverwrite => {
                     // Never fatal, matching the pull side: an unreadable
                     // local file is held back and warned, so a bad file
                     // cannot wedge every later sync behind one error.
@@ -711,8 +732,6 @@ pub fn push_artifacts(
                         }
                     };
                     let existed = dest.is_file();
-                    let unions_index =
-                        desc.merge == MergeStrategy::UnionMemoryIndex && is_memory_index(&file.rel);
                     // Hashed before `read_bytes` moves into `src_bytes`: the
                     // base record stores the LOCAL bytes as pushed, per the
                     // one shared rule (see `records_base`).
@@ -723,28 +742,30 @@ pub fn push_artifacts(
                     } else {
                         read_bytes
                     };
-                    // Repo-side IO is never fatal either: one bad repo
-                    // file must not wedge every later push.
                     // Merged lines count only once a write lands (see the
                     // jsonl arm): `pending_entries` rides to the write.
                     let mut pending_entries = 0usize;
-                    if existed && unions_index {
+                    // Push-side merge dispatch. UnionMemoryIndex is
+                    // tombstone-aware (5-arg); other union strategies
+                    // use the `union_for` dispatch (UnionPluginBindings,
+                    // etc.).
+                    let is_tombstoned_memory = desc.merge
+                        == MergeStrategy::UnionMemoryIndex
+                        && is_memory_index(&file.rel);
+                    if is_tombstoned_memory
+                        || union_for(desc.merge, &file.rel).is_some()
+                    {
                         match fs::read(&dest) {
                             Ok(dest_bytes) => {
-                                // Push-side tombstone-aware merge. The
-                                // local side (incoming in merge terms) is
-                                // `file.abs`; the repo side (dest) is `dest`.
-                                // Sibling + deleted sets on both sides are
-                                // needed to honor per-record tombstones.
-                                let dest_siblings =
-                                    collect_memory_sibling_targets(&dest);
-                                let incoming_siblings =
-                                    collect_memory_sibling_targets(&file.abs);
-                                let dest_deleted =
-                                    collect_memory_deleted_ids(&dest);
-                                let incoming_deleted =
-                                    collect_memory_deleted_ids(&file.abs);
-                                let (merged, new_entries) =
+                                let (merged, new_entries) = if is_tombstoned_memory {
+                                    let dest_siblings =
+                                        collect_memory_sibling_targets(&dest);
+                                    let incoming_siblings =
+                                        collect_memory_sibling_targets(&file.abs);
+                                    let dest_deleted =
+                                        collect_memory_deleted_ids(&dest);
+                                    let incoming_deleted =
+                                        collect_memory_deleted_ids(&file.abs);
                                     merge_memory_index_with_tombstones(
                                         &dest_bytes,
                                         &src_bytes,
@@ -752,7 +773,12 @@ pub fn push_artifacts(
                                         &incoming_siblings,
                                         &dest_deleted,
                                         &incoming_deleted,
-                                    );
+                                    )
+                                } else {
+                                    let merge_fn = union_for(desc.merge, &file.rel)
+                                        .expect("Some by the outer guard");
+                                    merge_fn(&dest_bytes, &src_bytes)
+                                };
                                 pending_entries = new_entries;
                                 src_bytes = merged;
                             }
@@ -1756,7 +1782,23 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         plan.unchanged += 1;
                     }
                 }
-                MergeStrategy::UnionMemoryIndex if is_memory_index(&rel) => {
+                _ if union_for(desc.merge, &rel).is_some() => {
+                    // No F3-class guard here. The union-merge contract
+                    // is "incoming wins per entry" (memory_index.rs /
+                    // plugin_bindings.rs): for shared targets, the
+                    // incoming (repo) text replaces the dest text;
+                    // for dest-only targets, the dest text is kept;
+                    // for incoming-only targets, the entry is
+                    // appended. This is the user-expected union-merge
+                    // contract — not silent overwrite — so a None
+                    // base + tracked entry is a valid index to merge
+                    // against (the file IS in the tracked record
+                    // after the first pull, via
+                    // `tracked_after.extend(present)` in the
+                    // gone-scan). The F3-class guard in the
+                    // overwrites arm is for RawOverwrite files,
+                    // where local-vs-repo byte equality means the
+                    // local IS the source of truth.
                     if !local_path.is_file() {
                         plan.creates.push(write);
                         continue;
@@ -1768,63 +1810,48 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         plan.skipped += 1;
                         continue;
                     };
-                    // The union-merge contract is "incoming wins per
-                    // entry" (memory_index.rs): a user-curated bullet
-                    // at a target key the incoming (repo) also has is
-                    // treated as a match and overwritten. That is
-                    // silent clobber for issue #103. The same F3 + base
-                    // dirty guards as the overwrites arm apply: if we
-                    // have no recorded base but the file is in
-                    // `tracked_before`, or the recorded base does not
-                    // match the local bytes, the user edited this
-                    // since the last sync and the next pull must not
-                    // union-merge over it.
-                    let repo_rel = repo_relative(repo_root, &repo_path);
-                    let recorded = repo_rel.as_ref().and_then(|r| base_hashes.get(r));
-                    let f3 = repo_rel
-                        .as_ref()
-                        .map(|r| f3_class_potentially_dirty(
-                            &base_hashes, &plan.tracked_before, r,
-                        ))
-                        .unwrap_or(false);
-                    if f3 || bases::is_dirty(recorded, &local_bytes) {
-                        plan.kept_local.push(write);
-                        continue;
-                    }
-                    // Never fatal (see the unions arm below): one bad
-                    // repo file must not block every category and session.
+                    let merge_fn = union_for(desc.merge, &rel)
+                        .expect("guarded above");
+                    // Never fatal (see the unions arm below): one
+                    // bad repo file must not block every category
+                    // and session.
                     let Ok(repo_bytes) = machine_bytes(desc, &plan.tokens, &repo_path) else {
                         log::warn!("Skipping {} (repo copy unreadable)", repo_path.display());
                         plan.skipped += 1;
                         continue;
                     };
-                    // Tombstone-aware plan-time check: the local side
-                    // is `local_path`, the repo side is `repo_path`. If
-                    // either carries a `deleted/<id>.md` marker that
-                    // matches an entry here, the merged MEMORY.md drops
-                    // the entry — the local "is this unchanged?" check
-                    // must see the post-merge output, not the raw
-                    // local bytes (otherwise the apply's 5-arg merge
-                    // never runs because the plan sees nothing to do).
-                    let dest_siblings = collect_memory_sibling_targets(&local_path);
-                    let incoming_siblings = collect_memory_sibling_targets(&repo_path);
-                    let dest_deleted = collect_memory_deleted_ids(&local_path);
-                    let incoming_deleted = collect_memory_deleted_ids(&repo_path);
-                    let (merged, _) = merge_memory_index_with_tombstones(
-                        &local_bytes,
-                        &repo_bytes,
-                        &dest_siblings,
-                        &incoming_siblings,
-                        &dest_deleted,
-                        &incoming_deleted,
-                    );
+                    // Plan-time union-merge. UnionMemoryIndex is
+                    // tombstone-aware (5-arg); the 2-arg `merge_fn`
+                    // (which `union_for` returns for UnionPluginBindings
+                    // etc.) covers the other union strategies.
+                    let is_tombstoned_memory = desc.merge
+                        == MergeStrategy::UnionMemoryIndex
+                        && is_memory_index(&rel);
+                    let (merged, _) = if is_tombstoned_memory {
+                        let dest_siblings = collect_memory_sibling_targets(&local_path);
+                        let incoming_siblings = collect_memory_sibling_targets(&repo_path);
+                        let dest_deleted = collect_memory_deleted_ids(&local_path);
+                        let incoming_deleted = collect_memory_deleted_ids(&repo_path);
+                        merge_memory_index_with_tombstones(
+                            &local_bytes,
+                            &repo_bytes,
+                            &dest_siblings,
+                            &incoming_siblings,
+                            &dest_deleted,
+                            &incoming_deleted,
+                        )
+                    } else {
+                        merge_fn(&local_bytes, &repo_bytes)
+                    };
                     if merged != local_bytes {
                         plan.unions.push(write);
                     } else {
                         plan.unchanged += 1;
                     }
                 }
-                MergeStrategy::UnionMemoryIndex | MergeStrategy::RawOverwrite => {
+                MergeStrategy::UnionMemoryIndex
+                | MergeStrategy::UnionPluginBindings
+                | MergeStrategy::RawOverwrite => {
                     if !local_path.is_file() {
                         plan.creates.push(write);
                     } else {
@@ -3052,60 +3079,62 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 continue;
             }
         };
-        let (merged, new_entries) = match desc.merge {
-            MergeStrategy::UnionMemoryIndex => {
-                // Collect sibling-file sets for the tombstone-aware
-                // 5-arg merge. The local parent is the dest side; the
-                // repo side is read via the recorded repo_path's parent.
-                let dest_siblings = collect_memory_sibling_targets(
-                    &write.local_path,
-                );
-                let incoming_siblings = collect_memory_sibling_targets(
-                    &write.repo_path,
-                );
-                let dest_deleted = collect_memory_deleted_ids(&write.local_path);
-                let incoming_deleted = collect_memory_deleted_ids(&write.repo_path);
-                merge_memory_index_with_tombstones(
-                    &local_bytes,
-                    &repo_bytes,
-                    &dest_siblings,
-                    &incoming_siblings,
-                    &dest_deleted,
-                    &incoming_deleted,
-                )
-            }
-            _ => {
-                // Strict UTF-8 decode — `from_utf8_lossy` would silently
-                // substitute invalid sequences with U+FFFD, corrupting
-                // binary or partial-encoding prompt-history content on
-                // every pull/push. An unreadable prompt-history must
-                // error out so the user can hand-recover, not silently
-                // rewrite the file with replacement characters.
-                let local_text = match std::str::from_utf8(&local_bytes) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!(
-                            "Skipping {} (local bytes not valid UTF-8; cannot union-merge): {e}",
-                            write.local_path.display()
-                        );
-                        counts_for(&mut by_category, write.category).skipped += 1;
-                        continue;
-                    }
-                };
-                let repo_text = match std::str::from_utf8(&repo_bytes) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!(
-                            "Skipping {} (repo bytes not valid UTF-8; cannot union-merge): {e}",
-                            write.local_path.display()
-                        );
-                        counts_for(&mut by_category, write.category).skipped += 1;
-                        continue;
-                    }
-                };
-                let (text, lines) = merge_history_lines(local_text, repo_text);
-                (text.into_bytes(), lines)
-            }
+        // Apply-time union-merge dispatch. UnionMemoryIndex is the
+        // tombstone-aware 5-arg path; other union strategies (e.g.
+        // UnionPluginBindings) go through `union_for`; the non-union
+        // fallback is the strict UTF-8 jsonl path.
+        let is_tombstoned_memory = desc.merge
+            == MergeStrategy::UnionMemoryIndex
+            && is_memory_index(&write.repo_path);
+        let (merged, new_entries) = if is_tombstoned_memory {
+            let dest_siblings =
+                collect_memory_sibling_targets(&write.local_path);
+            let incoming_siblings =
+                collect_memory_sibling_targets(&write.repo_path);
+            let dest_deleted = collect_memory_deleted_ids(&write.local_path);
+            let incoming_deleted =
+                collect_memory_deleted_ids(&write.repo_path);
+            merge_memory_index_with_tombstones(
+                &local_bytes,
+                &repo_bytes,
+                &dest_siblings,
+                &incoming_siblings,
+                &dest_deleted,
+                &incoming_deleted,
+            )
+        } else if let Some(merge_fn) = union_for(desc.merge, &write.repo_path) {
+            merge_fn(&local_bytes, &repo_bytes)
+        } else {
+            // Strict UTF-8 decode — `from_utf8_lossy` would silently
+            // substitute invalid sequences with U+FFFD, corrupting
+            // binary or partial-encoding prompt-history content on
+            // every pull/push. An unreadable prompt-history must
+            // error out so the user can hand-recover, not silently
+            // rewrite the file with replacement characters.
+            let local_text = match std::str::from_utf8(&local_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!(
+                        "Skipping {} (local bytes not valid UTF-8; cannot union-merge): {e}",
+                        write.local_path.display()
+                    );
+                    counts_for(&mut by_category, write.category).skipped += 1;
+                    continue;
+                }
+            };
+            let repo_text = match std::str::from_utf8(&repo_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!(
+                        "Skipping {} (repo bytes not valid UTF-8; cannot union-merge): {e}",
+                        write.local_path.display()
+                    );
+                    counts_for(&mut by_category, write.category).skipped += 1;
+                    continue;
+                }
+            };
+            let (text, lines) = merge_history_lines(local_text, repo_text);
+            (text.into_bytes(), lines)
         };
         if let Err(e) = write_atomic(&write.local_path, &merged, &write.repo_path) {
             log::warn!(

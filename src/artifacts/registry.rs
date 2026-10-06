@@ -48,6 +48,11 @@ pub enum MergeStrategy {
     /// every other file in the category raw-overwrites. Overwriting an index
     /// with a sparser one orphans the other machine's memory files.
     UnionMemoryIndex,
+    /// Union of `plugin-directory-bindings.json` entries by plugin key,
+    /// applied on push and pull; every other file in the category
+    /// raw-overwrites. Overwriting the bindings map with a sparser one loses
+    /// plugins the other machines bound.
+    UnionPluginBindings,
 }
 
 /// Where a category's files live inside the sync repository.
@@ -184,12 +189,15 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
             "plugins/known_marketplaces.json",
             "plugins/plugin-directory-bindings.json",
         ]),
-        merge: MergeStrategy::RawOverwrite,
+        // The bindings file unions (each machine binds plugins of its own);
+        // the two manifests stay raw — they are Claude Code's full view, and
+        // the last machine to push carries the canonical install set.
+        merge: MergeStrategy::UnionPluginBindings,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
         tokenize_paths: true,
         mirror_deletes: false,
-        description: "Installed-plugin and marketplace manifests (never plugin caches)",
+        description: "Plugin manifests; plugin-directory bindings union-merge (never caches)",
     },
     CategoryDescriptor {
         id: CategoryId::Plans,
@@ -413,12 +421,19 @@ mod tests {
             .unwrap();
         assert_eq!(ph.merge, MergeStrategy::UnionJsonl);
         assert_eq!(ph.source, SourceSpec::Files(&["history.jsonl"]));
-        // Only project attachments, which carry per-project MEMORY.md indexes,
-        // merge as well; everything else raw-overwrites.
-        for d in REGISTRY
+        // The plugins category union-merges its bindings file, and project
+        // attachments their MEMORY.md indexes; everything else raw-overwrites.
+        let plugins = REGISTRY
             .iter()
-            .filter(|d| d.id != CategoryId::PromptHistory && d.id != CategoryId::ProjectAttachments)
-        {
+            .find(|d| d.id == CategoryId::Plugins)
+            .unwrap();
+        assert_eq!(plugins.merge, MergeStrategy::UnionPluginBindings);
+        for d in REGISTRY.iter().filter(|d| {
+            !matches!(
+                d.id,
+                CategoryId::PromptHistory | CategoryId::ProjectAttachments | CategoryId::Plugins
+            )
+        }) {
             assert_eq!(d.merge, MergeStrategy::RawOverwrite, "{}", d.name);
         }
         let attachments = REGISTRY
