@@ -182,6 +182,7 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         source: SourceSpec::Files(&[
             "plugins/installed_plugins.json",
             "plugins/known_marketplaces.json",
+            "plugins/plugin-directory-bindings.json",
         ]),
         merge: MergeStrategy::RawOverwrite,
         dest: DestRoot::Artifacts,
@@ -395,7 +396,8 @@ mod tests {
                     files,
                     [
                         "plugins/installed_plugins.json",
-                        "plugins/known_marketplaces.json"
+                        "plugins/known_marketplaces.json",
+                        "plugins/plugin-directory-bindings.json"
                     ]
                 );
             }
