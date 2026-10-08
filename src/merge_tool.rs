@@ -30,39 +30,56 @@ const KEEP_LOCAL: &str = "Keep the local version";
 const TAKE_REMOTE: &str = "Overwrite with the sync repo version";
 const MERGE_EXTERNALLY: &str = "Merge both in the configured merge tool";
 
-/// Ask what to do about one differing file, returning the bytes to write, or
-/// `None` to keep the local file untouched.
+/// What the user (or the merge tool) decided about one differing file.
+pub enum ResolutionOutcome {
+    /// Write these bytes (a take-remote or a saved merge result).
+    Write(Vec<u8>),
+    /// The user explicitly chose to keep the local file — a DECISION,
+    /// which callers make durable.
+    KeepLocal,
+    /// The merge-tool session was abandoned (closed without applying):
+    /// no decision was made, and callers must not record one.
+    Abandoned,
+}
+
+/// Ask what to do about one differing file. `KeepLocal` and `Abandoned`
+/// both leave the local file untouched, but they are NOT the same: only
+/// an explicit keep is a decision the caller may record durably.
 pub fn resolve_overwrite(
     merge_tool: &str,
     local_path: &Path,
     remote_bytes: &[u8],
-) -> Result<Option<Vec<u8>>> {
-    let file_name = local_path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| local_path.display().to_string());
+) -> Result<ResolutionOutcome> {
+    let file_name = crate::artifacts::engine::prompt_file_name(local_path);
 
     let mut options = vec![TAKE_REMOTE, KEEP_LOCAL];
     if !merge_tool.trim().is_empty() {
         options.push(MERGE_EXTERNALLY);
     }
 
-    let choice = Select::new(
+    let choice = match Select::new(
         &format!("'{file_name}' differs from the sync repo:"),
         options,
     )
     .prompt()
-    .unwrap_or(KEEP_LOCAL);
+    {
+        Ok(choice) => choice,
+        // EOF or a rendering failure is NOT a keep: mapping it to
+        // KeepLocal would make the caller durably record the repo bytes
+        // as the base — permanently dirty files off an input accident.
+        // No decision was made.
+        Err(_) => return Ok(ResolutionOutcome::Abandoned),
+    };
 
     match choice {
-        TAKE_REMOTE => Ok(Some(remote_bytes.to_vec())),
+        TAKE_REMOTE => Ok(ResolutionOutcome::Write(remote_bytes.to_vec())),
         MERGE_EXTERNALLY => {
             match merge(merge_tool, local_path, remote_bytes, configured_timeout())? {
-                Resolution::Written(merged) => Ok(Some(merged)),
-                Resolution::Abandoned => Ok(None),
+                Resolution::Written(merged) => Ok(ResolutionOutcome::Write(merged)),
+                Resolution::Abandoned => Ok(ResolutionOutcome::Abandoned),
             }
         }
-        _ => Ok(None),
+        _ => Ok(ResolutionOutcome::KeepLocal),
     }
 }
 

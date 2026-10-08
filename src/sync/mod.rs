@@ -58,6 +58,8 @@ pub(crate) fn print_artifact_changes(report: &ArtifactReport) {
                 ArtifactChangeKind::Added => "ADD".green(),
                 ArtifactChangeKind::Modified => "MOD".cyan(),
                 ArtifactChangeKind::Deleted => "DEL".red(),
+                ArtifactChangeKind::KeptLocal => "KEEP".yellow(),
+                ArtifactChangeKind::KeptLocalDelete => "KEEP".yellow(),
             };
             println!("    {} {}", kind_label, change.path.display());
         }
@@ -77,6 +79,8 @@ fn describe_change_counts(counts: &CategoryCounts) -> String {
         (counts.added, "added"),
         (counts.modified, "modified"),
         (counts.deleted, "deleted"),
+        (counts.kept_local, "kept local"),
+        (counts.skipped, "skipped"),
     ];
 
     labelled_counts
@@ -123,6 +127,7 @@ pub fn sync_bidirectional(
     verbosity: crate::VerbosityLevel,
 ) -> Result<()> {
     use crate::VerbosityLevel;
+    use std::collections::HashSet;
 
     if verbosity != VerbosityLevel::Quiet {
         println!("{}", "=== Bidirectional Sync ===".bold().cyan());
@@ -130,23 +135,67 @@ pub fn sync_bidirectional(
         println!("{}", "Step 1: Pulling remote changes...".bold());
     }
 
-    // First, pull remote changes
-    pull_history(true, branch, interactive, verbosity)?;
+    // First, pull remote changes. The artifact report from the apply
+    // is the source of truth for the next push: every KeptLocal /
+    // KeptLocalDelete file the pull just protected is added to the
+    // push's per-file skip set so the next push does not reverse
+    // those decisions (a clean-keep file's local==base bytes would
+    // otherwise overwrite the repo's newer version).
+    let artifact_report = pull_history(true, branch, interactive, verbosity, true)?;
+    // The banner counts only files that actually exist locally and were
+    // held (KeptLocal): every KeptLocalDelete record site has the local
+    // file already gone, so the push collects nothing for them — nothing
+    // is held. The skip set still includes KeptLocalDelete defensively
+    // (a file recreated before the push runs must not resurrect the
+    // repo copy the user just accepted the deletion of).
+    let kept_local = artifact_report.total_kept_local();
+    let skip_artifact_paths: HashSet<(crate::artifacts::registry::CategoryId, std::path::PathBuf)> =
+        artifact_report
+            .changes
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.kind,
+                    crate::artifacts::engine::ArtifactChangeKind::KeptLocal
+                        | crate::artifacts::engine::ArtifactChangeKind::KeptLocalDelete
+                )
+            })
+            .map(|c| (c.category, c.path.clone()))
+            .collect();
 
-    // Purge between the two, when it is turned on, so the removals travel with
-    // the push below instead of waiting for the next one.
+    if kept_local > 0 && verbosity != VerbosityLevel::Quiet {
+        println!();
+        println!(
+            "{}",
+            format!("Step 2: {kept_local} artifact file(s) held back — pushed around them")
+                .yellow()
+                .bold()
+        );
+        println!(
+            "  {} take the repo copy with {} (a merge alone does not clear the window), or publish deliberately with {}",
+            "→".cyan(),
+            "claude-code-sync pull -i".bold(),
+            "claude-code-sync push".bold()
+        );
+        println!();
+        println!("{}", "Pushing local changes (held files skipped)...".bold());
+    }
+
+    // Purge between the two, when it is turned on, so the removals travel
+    // with the push below instead of waiting for the next one.
     let filter = crate::filter::FilterConfig::load()?;
     if filter.purge_after_sync {
         let state = SyncState::load()?;
         crate::handlers::purge::purge_after_sync(&filter, &state.sync_repo_path)?;
     }
 
-    if verbosity != VerbosityLevel::Quiet {
+    if kept_local == 0 && verbosity != VerbosityLevel::Quiet {
         println!();
         println!("{}", "Step 2: Pushing local changes...".bold());
     }
 
-    // Then, push local changes
+    // Push local changes. The skip set is per-file, not per-category:
+    // unrelated categories travel normally even when one file is held.
     push_history(
         commit_message,
         true,
@@ -154,10 +203,23 @@ pub fn sync_bidirectional(
         exclude_attachments,
         interactive,
         verbosity,
+        &skip_artifact_paths,
     )?;
 
-    if verbosity == VerbosityLevel::Quiet {
+    if verbosity == VerbosityLevel::Quiet && kept_local > 0 {
+        // Quiet mode still owes cron/CI the one fact that matters.
+        println!("Sync complete ({kept_local} artifact file(s) held back)");
+    } else if verbosity == VerbosityLevel::Quiet {
         println!("Sync complete");
+    } else if kept_local > 0 {
+        // The honest footer: the held files did not travel; everything
+        // else did.
+        println!();
+        println!("{}", "=== Sync Complete ===".green().bold());
+        println!(
+            "  {} sessions synced; {kept_local} artifact file(s) held back; rest pushed",
+            "✓".green()
+        );
     } else {
         println!();
         println!("{}", "=== Sync Complete ===".green().bold());

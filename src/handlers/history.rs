@@ -161,11 +161,17 @@ pub fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
             if counts.modified > 0 {
                 parts.push(format!("{} modified", counts.modified));
             }
+            if counts.deleted > 0 {
+                parts.push(format!("{} deleted", counts.deleted));
+            }
             if counts.unchanged > 0 {
                 parts.push(format!("{} unchanged", counts.unchanged));
             }
             if counts.skipped > 0 {
                 parts.push(format!("{} skipped", counts.skipped));
+            }
+            if counts.kept_local > 0 {
+                parts.push(format!("{} kept local", counts.kept_local));
             }
             if counts.merged_entries > 0 {
                 parts.push(format!("{} lines merged", counts.merged_entries));

@@ -101,19 +101,9 @@ impl Snapshot {
         allowed_base_dir: Option<&Path>,
         snapshots_dir: Option<&Path>,
     ) -> Result<()> {
-        // Determine the allowed base directory
-        let allowed_base = if let Some(base) = allowed_base_dir {
-            // For testing: use the provided base
-            base.canonicalize().with_context(|| {
-                format!("Failed to canonicalize base directory: {}", base.display())
-            })?
-        } else {
-            // For production: use home directory
-            let home_dir = dirs::home_dir().context("Failed to get home directory")?;
-            home_dir
-                .canonicalize()
-                .context("Failed to canonicalize home directory")?
-        };
+        // Determine the allowed base directory (the one shared rule —
+        // see undo::allowed_base, also used by the record surgery).
+        let allowed_base = super::allowed_base::allowed_base(allowed_base_dir)?;
 
         // Build the complete file state by walking the snapshot chain
         let all_files = self.reconstruct_full_state_with_dir(snapshots_dir)?;

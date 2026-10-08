@@ -153,6 +153,17 @@ impl OperationHistory {
             .find(|op| op.operation_type == op_type)
     }
 
+    /// The most recent pull an undo can actually act on: snapshotless
+    /// pulls (a kept-local-only nightly sync changed no machine state, so
+    /// none was minted) are skipped — erroring on the newest of those
+    /// would block undo of the earlier snapshot-bearing pull the user
+    /// actually wants, for as long as a kept-local edit stays unresolved.
+    pub fn get_last_undoable_pull(&self) -> Option<&OperationRecord> {
+        self.operations
+            .iter()
+            .find(|op| op.operation_type == OperationType::Pull && op.snapshot_path.is_some())
+    }
+
     /// Get all operation records
     ///
     /// This will be used by the `claude-code-sync history` command to display
@@ -202,6 +213,25 @@ impl OperationHistory {
             .operations
             .iter()
             .position(|op| op.operation_type == op_type)
+        {
+            self.operations.remove(index);
+            self.save_to(path)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Remove the newest pull record that HAS a snapshot — the exact
+    /// record `get_last_undoable_pull` selects. Removing "the newest pull
+    /// of any kind" instead would delete a snapshotless kept-local
+    /// record and leave the just-undone record pointing at the snapshot
+    /// file that Step 3 deletes.
+    pub fn remove_last_undoable_pull(&mut self, path: Option<PathBuf>) -> Result<bool> {
+        if let Some(index) = self
+            .operations
+            .iter()
+            .position(|op| op.operation_type == OperationType::Pull && op.snapshot_path.is_some())
         {
             self.operations.remove(index);
             self.save_to(path)?;

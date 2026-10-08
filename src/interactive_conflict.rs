@@ -102,7 +102,7 @@ fn display_conflict_details(conflict: &Conflict) {
     if let Some(ts) = &conflict.local_timestamp {
         println!("  Last updated: {}", ts.dimmed());
     }
-    println!("  Content hash: {}", &conflict.local_hash[..16].dimmed());
+    println!("  Content hash: {}", conflict.local_hash[..16].dimmed());
 
     println!(
         "\n{} {}",
@@ -116,7 +116,7 @@ fn display_conflict_details(conflict: &Conflict) {
     if let Some(ts) = &conflict.remote_timestamp {
         println!("  Last updated: {}", ts.dimmed());
     }
-    println!("  Content hash: {}", &conflict.remote_hash[..16].dimmed());
+    println!("  Content hash: {}", conflict.remote_hash[..16].dimmed());
 
     // Highlight the differences
     let msg_diff = conflict.remote_message_count as i32 - conflict.local_message_count as i32;

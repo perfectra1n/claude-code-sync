@@ -1,4 +1,5 @@
 use anyhow::Result;
+use colored::Colorize;
 use log::warn;
 use std::fs;
 use std::path::Path;
@@ -55,6 +56,8 @@ pub fn cleanup_old_snapshots_with_dir(
     // Collect all snapshots with metadata
     let mut pull_snapshots: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
     let mut push_snapshots: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    let mut pinned_pulls: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    let mut pinned_pushes: Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>)> = Vec::new();
 
     for entry in fs::read_dir(&snapshots_dir)? {
         let entry = entry?;
@@ -67,9 +70,17 @@ pub fn cleanup_old_snapshots_with_dir(
         // Load snapshot metadata
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content) {
-                match snapshot.operation_type {
-                    OperationType::Pull => pull_snapshots.push((path, snapshot.timestamp)),
-                    OperationType::Push => push_snapshots.push((path, snapshot.timestamp)),
+                match (snapshot.pinned, snapshot.operation_type) {
+                    // A pinned snapshot is the sole copy of record entries
+                    // a warned undo could not restore — exempt from the AGE
+                    // limit (however old, its entries may still be the only
+                    // copy), but not from the COUNT limit: a machine whose
+                    // undos keep warning must not accumulate pinned
+                    // multi-megabyte snapshots no command can ever clear.
+                    (true, OperationType::Pull) => pinned_pulls.push((path, snapshot.timestamp)),
+                    (true, OperationType::Push) => pinned_pushes.push((path, snapshot.timestamp)),
+                    (false, OperationType::Pull) => pull_snapshots.push((path, snapshot.timestamp)),
+                    (false, OperationType::Push) => push_snapshots.push((path, snapshot.timestamp)),
                 }
             }
         }
@@ -78,6 +89,8 @@ pub fn cleanup_old_snapshots_with_dir(
     // Sort by timestamp descending (newest first)
     pull_snapshots.sort_by_key(|s| std::cmp::Reverse(s.1));
     push_snapshots.sort_by_key(|s| std::cmp::Reverse(s.1));
+    pinned_pulls.sort_by_key(|s| std::cmp::Reverse(s.1));
+    pinned_pushes.sort_by_key(|s| std::cmp::Reverse(s.1));
 
     // Determine which snapshots to keep
     let now = chrono::Utc::now();
@@ -102,6 +115,31 @@ pub fn cleanup_old_snapshots_with_dir(
         let within_age_limit = *timestamp >= age_threshold;
 
         if !within_count_limit && !within_age_limit {
+            to_delete.push(path.clone());
+        }
+    }
+
+    // Pinned snapshots: count limit only (see the collection loop) —
+    // keep the newest N, drop the rest. Each dropped file is the sole
+    // copy of record entries a warned undo could not restore, so the
+    // line is louder than the regular cleanup's — and honest about the
+    // mode: "would delete" under a dry run, "deleted" only after the
+    // remove succeeded.
+    for (label, pinned) in [("pull", &pinned_pulls), ("push", &pinned_pushes)] {
+        for (path, _) in pinned.iter().skip(config.max_count_per_type) {
+            let note = if dry_run {
+                "WOULD delete a PINNED snapshot — recover its entries first if still needed"
+            } else {
+                "Deleting a PINNED snapshot — recover its entries first if still needed"
+            };
+            println!(
+                "  {} {}: pinned {} snapshot {} (the sole copy of record \
+                 entries a warned undo could not restore)",
+                "⚠".yellow(),
+                note,
+                label,
+                path.display()
+            );
             to_delete.push(path.clone());
         }
     }
@@ -178,6 +216,33 @@ mod tests {
 
         let remaining = fs::read_dir(&snapshots_dir).unwrap().count();
         assert_eq!(remaining, 5, "Should have 5 snapshots remaining");
+    }
+
+    #[test]
+    fn test_cleanup_never_deletes_a_pinned_snapshot() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        fs::create_dir_all(&snapshots_dir).unwrap();
+        // The pinned one is the oldest AND past the count limit — every
+        // criterion says delete, and the pin is the only thing standing
+        // between it and the trash: a warned undo promised the file holds
+        // the sole copy of unrestored record entries.
+        let mut pinned = metadata_only_snapshot("pinned", OperationType::Pull, Duration::days(365));
+        pinned.pinned = true;
+        let pinned_path = pinned.save_to_disk(Some(&snapshots_dir)).unwrap();
+        for i in 0..5 {
+            metadata_only_snapshot(
+                &format!("regular_{i}"),
+                OperationType::Pull,
+                Duration::days(i),
+            )
+            .save_to_disk(Some(&snapshots_dir))
+            .unwrap();
+        }
+
+        let deleted = cleanup_old_snapshots_with_dir(None, false, Some(&snapshots_dir)).unwrap();
+        assert_eq!(deleted, 0, "the pinned snapshot is not cleanup material");
+        assert!(pinned_path.is_file());
     }
 
     #[test]
@@ -271,5 +336,41 @@ mod tests {
             remaining, 10,
             "All snapshots should still exist after dry run"
         );
+    }
+
+    #[test]
+    fn pinned_snapshots_are_count_limited_not_age_limited() {
+        let temp_dir = tempdir().unwrap();
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        fs::create_dir_all(&snapshots_dir).unwrap();
+        // A machine whose undos keep warning: six pinned snapshots, all
+        // recent (age says keep) — the count limit is the only bound left,
+        // or they accumulate forever with no command to clear them.
+        let mut paths = Vec::new();
+        for i in 0..6 {
+            let mut pinned = metadata_only_snapshot(
+                &format!("pinned_{i}"),
+                OperationType::Pull,
+                Duration::days(i),
+            );
+            pinned.pinned = true;
+            paths.push(pinned.save_to_disk(Some(&snapshots_dir)).unwrap());
+        }
+
+        let deleted = cleanup_old_snapshots_with_dir(None, false, Some(&snapshots_dir)).unwrap();
+        assert_eq!(
+            deleted, 1,
+            "the oldest pinned snapshot beyond the count limit goes"
+        );
+        assert!(
+            !paths[5].is_file(),
+            "the OLDEST pin is the one dropped (days-old beats days-new)"
+        );
+        for path in &paths[0..5] {
+            assert!(
+                path.is_file(),
+                "the newest five pins survive, whatever their age"
+            );
+        }
     }
 }

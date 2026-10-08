@@ -49,3 +49,6 @@ test-backup/
 
 # nix build output
 /result
+
+# Process core dumps (may contain secrets from the crashed process env)
+core.*

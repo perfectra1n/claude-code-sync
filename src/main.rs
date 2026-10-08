@@ -561,6 +561,7 @@ fn main() -> Result<()> {
                 exclude_attachments,
                 interactive,
                 verbosity,
+                &std::collections::HashSet::new(),
             )?;
         }
         Commands::Pull {
@@ -579,7 +580,13 @@ fn main() -> Result<()> {
                 VerbosityLevel::Normal
             };
 
-            sync::pull_history(fetch_remote, branch.as_deref(), interactive, verbosity)?;
+            sync::pull_history(
+                fetch_remote,
+                branch.as_deref(),
+                interactive,
+                verbosity,
+                false,
+            )?;
         }
         Commands::Sync {
             message,

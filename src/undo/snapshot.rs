@@ -63,6 +63,68 @@ pub struct Snapshot {
     /// in the base snapshot but should be removed when restoring this snapshot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deleted_files: Vec<String>,
+
+    /// Artifact record files (bases, tracked) this snapshot carries, at
+    /// their pull-time spellings. They hold one entry per sync repository
+    /// and are restored surgically — this repository's entry only, never
+    /// the whole file — so undo needs to know exactly which keys are
+    /// records; matching by file name alone could be hijacked by a synced
+    /// artifact that happens to share the name. Absent on snapshots
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub record_files: Vec<String>,
+
+    /// Artifact record files the apply of this snapshot's pull may create.
+    /// Undo forgets this repository's entry instead of deleting the shared
+    /// file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created_record_files: Vec<String>,
+
+    /// Repo-relative keys the pull's apply writes or prunes in the BASES
+    /// record, as the plan computed them. Undo restores the PRE-PULL value
+    /// of exactly these keys — never the whole entry, which would erase
+    /// entries a push recorded between the pull and its undo. `None` on
+    /// snapshots written before the field existed (undo then falls back
+    /// to the whole-entry restore those snapshots were written with);
+    /// `Some(empty)` is a CURRENT snapshot whose pull owned no key — the
+    /// restore is then a no-op, never a rewind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_touched_bases: Option<Vec<String>>,
+
+    /// The TRACKED record's counterpart of `record_touched_bases`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_touched_tracked: Option<Vec<String>>,
+
+    /// Files the pull intended to modify whose pre-pull backup FAILED
+    /// (unreadable at snapshot time). The apply reads this and skips
+    /// them: the pre-PR contract — no file is modified without a backup
+    /// — must survive the never-fatal snapshot, or a transient read
+    /// error at snapshot time that recovers before the apply turns into
+    /// a modification undo cannot restore.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreadable_files: Vec<String>,
+
+    /// Record-shaped blobs `promote_legacy_records` stripped from
+    /// `files` (unverifiable placement). NOT serialized: the on-disk
+    /// snapshot keeps them inside `files` untouched — this stash exists
+    /// only so the undo's pinned re-save can put them BACK before
+    /// overwriting the sole copy (the warning tells the user to recover
+    /// them by hand from that file; persisting the stripped map would
+    /// destroy what it points at).
+    #[serde(skip, default)]
+    pub stripped_blobs: Vec<(String, Vec<u8>)>,
+
+    /// Set when an undo KEPT this snapshot (record-surgery warnings): it
+    /// holds the sole copy of the unrestored record entries, and the
+    /// regular snapshot cleanup must never delete it from under the
+    /// user. Cleared by hand once the entries are recovered.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+}
+
+/// serde helper for [`Snapshot::pinned`].
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Custom serialization for `HashMap<String, Vec<u8>>` using base64 encoding
@@ -104,6 +166,128 @@ mod base64_map {
 }
 
 impl Snapshot {
+    /// Declare the shared record files a LEGACY snapshot (written before
+    /// the declaration fields, e.g. by a previous release still inside
+    /// the retention window) carries among `files` without declaring
+    /// them — so both undo and its preview treat them surgically instead
+    /// of the whole-file generic restore, which would clobber every
+    /// other repository's entries.
+    ///
+    /// Recognition must not be by file name alone: a synced artifact can
+    /// share the name (the decoy test pins that contract). A real record
+    /// sits at the CLAUDE ROOT with every other snapshotted file under
+    /// that same root, and it PARSES — a JSON object keyed by repository
+    /// roots. A name-matching key counts as a legacy record only when
+    /// its parent directory is an ancestor of every other snapshot key
+    /// AND its bytes parse as a record. A decoy under skills/docs/ fails
+    /// the first (nothing else lives under it), a text decoy at the root
+    /// fails the second, and a snapshot of records alone (no artifacts
+    /// to hijack) passes trivially.
+    /// Returns whether anything was STRIPPED (a record-looking blob that
+    /// could not be safely classified): the caller must warn and pin —
+    /// the stripped bytes are the sole copy and are recoverable by hand.
+    pub fn promote_legacy_records(&mut self) -> bool {
+        if !self.record_files.is_empty() || !self.created_record_files.is_empty() {
+            return false;
+        }
+        let is_record_name = |key: &str| {
+            let path = Path::new(key);
+            crate::artifacts::bases::is_record_path(path)
+                || crate::artifacts::tracked::is_record_path(path)
+        };
+        let parses_as_record = |key: &str| {
+            use crate::artifacts::repo_record::RepoRecord;
+            let bytes = &self.files[key];
+            RepoRecord::<crate::artifacts::tracked::TrackedPaths>::from_bytes_strict(bytes)
+                .is_some()
+                || RepoRecord::<crate::artifacts::bases::BaseHashes>::from_bytes_strict(bytes)
+                    .is_some()
+        };
+        let others: Vec<&String> = self
+            .files
+            .keys()
+            .filter(|key| !is_record_name(key))
+            .collect();
+        let mut legacy_records = Vec::new();
+        let mut stripped = Vec::new();
+        for key in self.files.keys() {
+            if !is_record_name(key) || !parses_as_record(key) {
+                // Not a record at all (a same-named artifact decoy stays
+                // an ordinary file), or one whose shape disqualifies it.
+                continue;
+            }
+            let ancestor_of_all = Path::new(key).parent().is_some_and(|parent| {
+                others
+                    .iter()
+                    .all(|other| Path::new(other.as_str()).starts_with(parent))
+            });
+            if ancestor_of_all {
+                legacy_records.push(key.clone());
+            } else {
+                // Record-shaped but unverifiable placement: restoring it
+                // WHOLESALE would clobber every other repository's entries
+                // (the exact loss the surgery exists to prevent), and
+                // surgically is impossible without a trusted directory.
+                // Strip it from the generic restore entirely — the bytes
+                // are recoverable by hand from the kept file, and stashed
+                // here so the pinned re-save puts them back.
+                if let Some(bytes) = self.files.get(key) {
+                    self.stripped_blobs.push((key.clone(), bytes.clone()));
+                }
+                stripped.push(key.clone());
+            }
+        }
+        if !legacy_records.is_empty() {
+            log::warn!(
+                "Legacy snapshot carries {} undeclared shared record file(s); \
+                 restoring their entries surgically",
+                legacy_records.len()
+            );
+            self.record_files.extend(legacy_records);
+        }
+        let stripped_anything = !stripped.is_empty();
+        for key in stripped {
+            self.files.remove(&key);
+        }
+        stripped_anything
+    }
+
+    /// Declare the artifact record files a pull snapshot carries (or may
+    /// create), so undo can restore this repository's entries surgically
+    /// instead of the whole shared files. The rules live on the plan
+    /// (`carries_*_record` / `may_create_*_record`) — the same ones
+    /// `paths_to_snapshot` uses, so carrier and declaration cannot drift.
+    pub fn attach_record_bookkeeping(
+        &mut self,
+        plan: &crate::artifacts::engine::PullPlan,
+        claude_dir: &Path,
+        interactive: bool,
+    ) {
+        let bases_record = crate::artifacts::bases::record_path(claude_dir);
+        if plan.carries_bases_record(interactive) {
+            self.record_files
+                .push(bases_record.to_string_lossy().to_string());
+        } else if plan.may_create_bases_record(interactive) {
+            self.created_record_files
+                .push(bases_record.to_string_lossy().to_string());
+        }
+        let tracked_record = crate::artifacts::tracked::record_path(claude_dir);
+        if plan.carries_tracked_record() {
+            self.record_files
+                .push(tracked_record.to_string_lossy().to_string());
+        } else if plan.may_create_tracked_record() {
+            self.created_record_files
+                .push(tracked_record.to_string_lossy().to_string());
+        }
+        // Which keys the apply owns in each record: the undo restores the
+        // pre-pull value of exactly these, so entries a later push recorded
+        // survive it (see `record_touched_bases`). Always set here — even
+        // empty — so the undo can tell a CURRENT snapshot (per-key restore,
+        // possibly of zero keys) from a pre-field one (whole-entry restore).
+        self.record_touched_bases = Some(plan.touched_base_keys());
+        self.record_touched_tracked = Some(plan.touched_tracked_keys.clone());
+    }
+
     /// Create a new snapshot from a set of file paths
     ///
     /// # Arguments
@@ -125,6 +309,7 @@ impl Snapshot {
         let snapshot_id = Uuid::new_v4().to_string();
         let timestamp = chrono::Utc::now();
         let mut files = HashMap::new();
+        let mut unreadable_files = Vec::new();
 
         // Capture current state of all specified files
         for path in file_paths {
@@ -142,10 +327,21 @@ impl Snapshot {
                     continue;
                 }
                 Err(e) => {
-                    // Other errors should be reported
-                    return Err(e).with_context(|| {
-                        format!("Failed to read file for snapshot: {}", path.display())
-                    });
+                    // Never fatal — the same rule every pull arm follows:
+                    // one unreadable file must not block the whole sync.
+                    // But the file is RECORDED: the apply consults this
+                    // list and refuses to modify a file it could not
+                    // back up (the pre-PR guarantee — nothing is modified
+                    // without a pre-pull copy — survives the never-fatal
+                    // snapshot; a transient permission error that recovers
+                    // before the apply must not become an unbackupable
+                    // modification).
+                    log::warn!(
+                        "Not snapshotting {} (unreadable: {e}); the pull will not modify it",
+                        path.display()
+                    );
+                    unreadable_files.push(path.to_string_lossy().to_string());
+                    continue;
                 }
             }
         }
@@ -159,6 +355,13 @@ impl Snapshot {
             branch: None,
             base_snapshot_id: None,
             deleted_files: Vec::new(),
+            record_files: Vec::new(),
+            created_record_files: Vec::new(),
+            record_touched_bases: None,
+            record_touched_tracked: None,
+            unreadable_files,
+            stripped_blobs: Vec::new(),
+            pinned: false,
         })
     }
 
@@ -188,9 +391,38 @@ impl Snapshot {
         let json =
             serde_json::to_string_pretty(self).context("Failed to serialize snapshot to JSON")?;
 
-        fs::write(&snapshot_path, &json).with_context(|| {
+        // Same-directory temp + atomic rename (see the artifacts engine's
+        // `write_atomic`): a re-save can overwrite the ONLY pre-pull backup
+        // long after the files it describes are already gone (the undo-delete
+        // narrowing after an apply, a pin during an undo). A truncate-in-place
+        // write that fails midway would corrupt that sole copy in place, and a
+        // crash mid-write leaves the same corruption — the temp file keeps
+        // the original intact on every failure path.
+        let tmp = tempfile::NamedTempFile::new_in(&snapshot_dir).with_context(|| {
+            format!(
+                "Failed to create temp file in snapshots directory: {}",
+                snapshot_dir.display()
+            )
+        })?;
+        fs::write(tmp.path(), &json).with_context(|| {
             format!(
                 "Failed to write snapshot to disk: {}",
+                snapshot_path.display()
+            )
+        })?;
+        // Flush before the rename (see RepoRecord::write): a pinned
+        // snapshot is the SOLE copy of record entries a warned undo could
+        // not restore — a rename landing before the data blocks would
+        // turn a power loss into an empty sole copy.
+        tmp.as_file().sync_all().with_context(|| {
+            format!(
+                "Failed to flush snapshot to disk: {}",
+                snapshot_path.display()
+            )
+        })?;
+        tmp.persist(&snapshot_path).with_context(|| {
+            format!(
+                "Failed to persist snapshot to disk: {}",
                 snapshot_path.display()
             )
         })?;
@@ -293,6 +525,33 @@ mod tests {
     use super::*;
     use crate::undo::test_support::{create_test_file, setup_test_repo};
     use tempfile::tempdir;
+
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_file_is_skipped_not_fatal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempdir().unwrap();
+        let readable = create_test_file(temp_dir.path(), "readable.jsonl", "x");
+        let locked = create_test_file(temp_dir.path(), "locked.jsonl", "y");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // The pull's only Snapshot::create caller must not fail the whole
+        // sync over one bad file — the apply's kept arm keeps it anyway.
+        let snapshot =
+            Snapshot::create(OperationType::Pull, vec![&readable, &locked], None).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(snapshot
+            .files
+            .contains_key(&readable.to_string_lossy().to_string()));
+        assert!(
+            !snapshot
+                .files
+                .contains_key(&locked.to_string_lossy().to_string()),
+            "the unreadable file is left out, not fatal"
+        );
+    }
 
     #[test]
     fn test_snapshot_create_and_save() {

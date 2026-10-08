@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use inquire::Confirm;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::artifacts::registry::CategoryId;
 use crate::filter::FilterConfig;
 use crate::history::{
     ConversationSummary, OperationHistory, OperationRecord, OperationType, SyncOperation,
@@ -160,6 +161,7 @@ pub fn push_history(
     exclude_attachments: bool,
     interactive: bool,
     verbosity: crate::VerbosityLevel,
+    skip_artifact_paths: &HashSet<(CategoryId, PathBuf)>,
 ) -> Result<PushReport> {
     use crate::VerbosityLevel;
 
@@ -175,6 +177,13 @@ pub fn push_history(
     if exclude_attachments {
         filter.exclude_attachments = true;
     }
+
+    // A `kept_local` (or `kept_local_delete`) file from the previous
+    // pull is held back per-file: the push's `push_artifacts` consults
+    // the `skip_artifact_paths` set and does not touch the repo copy
+    // for any entry. Other files in the same category (and other
+    // categories entirely) are unaffected — the held file is one
+    // surgical skip, not a category-wide hold.
 
     // Set up LFS if enabled
     if filter.enable_lfs {
@@ -279,6 +288,7 @@ pub fn push_history(
         &claude_home_dir()?,
         &state.sync_repo_path,
         &filter,
+        skip_artifact_paths,
     )?;
     crate::artifacts::engine::ensure_ignore_files(&state.sync_repo_path, filter.backend()?)?;
 
@@ -299,13 +309,18 @@ pub fn push_history(
             total_with_cwd
         );
         if !artifact_report.counts.is_empty() {
+            // "skipped" (unreadable / over-size / refused), NOT "held
+            // back" — the pull's banner owns that word for the
+            // per-file skip set, and files the skip set held count as
+            // unchanged here. Two labels, two sets.
             println!(
-                "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged",
+                "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged, {} skipped",
                 "•".cyan(),
                 artifact_report.total_added(),
                 artifact_report.total_modified(),
                 artifact_report.total_deleted(),
-                artifact_report.total_unchanged()
+                artifact_report.total_unchanged(),
+                artifact_report.total_skipped(),
             );
         }
         println!();

@@ -44,13 +44,24 @@ fn local_destination(
     Some(local_project_dir.join(inside_project))
 }
 
-/// Pull and merge history from sync repository
+/// Whether the artifact counts say anything worth a line: a kept-local-only
+/// pull has zeros everywhere else, and all-zero rows read as "artifacts did
+/// nothing". ONE rule for the early counts line and the summary row.
+fn artifact_counts_say_something(report: &crate::artifacts::engine::ArtifactReport) -> bool {
+    report.total_added() > 0 || report.total_modified() > 0 || report.total_deleted() > 0
+}
+
+/// Run a pull. Returns the number of artifact files kept local — what
+/// `sync` gates its push step on, straight from the apply that just ran
+/// instead of a second plan (which would re-read everything and could
+/// fail after the pull has already mutated the machine).
 pub fn pull_history(
     fetch_remote: bool,
     branch: Option<&str>,
     interactive: bool,
     verbosity: crate::VerbosityLevel,
-) -> Result<()> {
+    cancel_is_error: bool,
+) -> Result<crate::artifacts::engine::ArtifactReport> {
     use crate::VerbosityLevel;
 
     if verbosity != VerbosityLevel::Quiet {
@@ -136,7 +147,7 @@ pub fn pull_history(
     // ============================================================================
     // ARTIFACT PULL PLAN (read-only, so the snapshot below can cover it)
     // ============================================================================
-    let artifact_plan =
+    let mut artifact_plan =
         crate::artifacts::engine::plan_pull(&claude_home_dir()?, &state.sync_repo_path, &filter)?;
 
     // ============================================================================
@@ -147,13 +158,95 @@ pub fn pull_history(
     // or unchanged don't need backup — created artifact paths are recorded as
     // deleted_files so undo removes them again.
     // This reduces snapshot size from potentially gigabytes to typically <1MB.
-    let snapshot_path = if detector.has_conflicts() || !artifact_plan.is_empty() {
+    // Only snapshot when the apply will actually change machine state:
+    // conflicted conversations, artifact writes, or shared-record writes
+    // (a pull whose only effect is creating a record still needs its
+    // undo; a fully no-op pull must not churn a snapshot). Kept-local
+    // files count as writes because an interactive apply may take the
+    // repository copy over the local edit.
+    // The same effective flag apply_pull gates prompts on: `-i` without a
+    // TTY (cron, CI) cannot write kept-local files, and must not mint a
+    // throwaway snapshot on every run for an unresolved edit.
+    let prompts_possible = interactive && crate::interactive_conflict::is_interactive();
+    // The snapshot object stays at hand after the apply: the apply learns
+    // which creates actually EXECUTED, and the snapshot's undo-delete
+    // list must be narrowed to them before the record is written.
+    let mut created_snapshot: Option<(crate::undo::Snapshot, PathBuf)> = None;
+    // Set once the snapshot is taken (and left None when nothing will
+    // touch the machine); the narrowing below re-saves the snapshot
+    // file in place — a failed narrowing pins the snapshot and warns
+    // rather than dropping the undo hint.
+    let snapshot_path: Option<PathBuf>;
+    let mut session_unsnapshotted: Vec<std::path::PathBuf> = Vec::new();
+    // Set when a shared record was unreadable at snapshot time and is
+    // therefore not carried: if the apply still moves its keys (the file
+    // became readable again), the undo cannot restore them and the
+    // restored files will read as locally edited — the user needs the
+    // recovery path, not just the snapshot-time note.
+    let mut record_not_carried = false;
+    if detector.has_conflicts() || artifact_plan.changes_machine_state(prompts_possible) {
         let mut files_to_snapshot: Vec<PathBuf> = detector
             .conflicts()
             .iter()
             .map(|c| c.local_file.clone())
             .collect();
-        files_to_snapshot.extend(artifact_plan.paths_to_snapshot());
+        files_to_snapshot.extend(artifact_plan.paths_to_snapshot(prompts_possible));
+        // The fail-open record contract: an unreadable shared record (a
+        // root-owned or 0o000 file, say) reads as EMPTY everywhere else —
+        // letting it abort the whole pull at snapshot time would make
+        // every sync on that machine fatal over a file the records layer
+        // itself ignores. Drop it from the snapshot instead: the undo
+        // then treats the record as not carried and says so.
+        //
+        // Only the EXACT record paths this plan can write — the SAME
+        // collapsed predicates the snapshot gate and the concurrent-sync
+        // warnings use (a record is either carried or created, and each
+        // pair collapses to one predicate): matching by name alone would
+        // also drop an ordinary artifact that happens to share a
+        // record's file name (the decoy case).
+        let claude_dir = claude_home_dir()?;
+        let declared_record_paths: Vec<PathBuf> = [
+            artifact_plan
+                .can_write_bases(prompts_possible)
+                .then(|| crate::artifacts::bases::record_path(&claude_dir)),
+            artifact_plan
+                .rewrites_tracked
+                .then(|| crate::artifacts::tracked::record_path(&claude_dir)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        files_to_snapshot.retain(|path| {
+            if !declared_record_paths.contains(path) {
+                return true;
+            }
+            // Open, not read: the bytes are discarded here (the snapshot
+            // reads the file itself moments later) — only the
+            // absent/unreadable/readable triage matters.
+            match std::fs::File::open(path) {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+                Err(_) => {
+                    // log::warn reaches the log file at any verbosity; the
+                    // console line honors Quiet like its neighbors.
+                    record_not_carried = true;
+                    log::warn!(
+                        "unreadable shared record {} — not snapshotted; undo pull cannot \
+                         restore its entries",
+                        path.display()
+                    );
+                    if verbosity != VerbosityLevel::Quiet {
+                        println!(
+                            "  {} unreadable shared record {} — not snapshotted; {}",
+                            "⚠".yellow(),
+                            path.display(),
+                            "undo pull cannot restore its entries".yellow()
+                        );
+                    }
+                    false
+                }
+            }
+        });
 
         println!(
             "  {} snapshot of {} files to be modified...",
@@ -175,6 +268,12 @@ pub fn pull_history(
         // Artifact files the pull will create: undo deletes them again.
         snapshot.deleted_files = artifact_plan.created_paths();
 
+        // The shared records (bases, tracked) are never deleted or
+        // restored wholesale — other repositories may hold newer state in
+        // the same files. Declare which ones this snapshot carries (or may
+        // create); `undo pull` restores just this repository's entry.
+        snapshot.attach_record_bookkeeping(&artifact_plan, &claude_dir, prompts_possible);
+
         // Save snapshot to disk
         let path = snapshot
             .save_to_disk(None)
@@ -191,10 +290,32 @@ pub fn pull_history(
             );
         }
 
-        Some(path)
+        // Whatever the snapshot could not read is now on the plan: the
+        // apply will refuse to modify those files — nothing is modified
+        // without a backup, so a permission error at snapshot time that
+        // recovers before the apply cannot become an unbackupable
+        // modification.
+        artifact_plan.unsnapshotted = snapshot
+            .unreadable_files
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+        // Session-merge needs the same refusal the artifact apply gets:
+        // a conversation file whose backup failed is not rewritten by the
+        // merge either.
+        session_unsnapshotted = snapshot
+            .unreadable_files
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+        created_snapshot = Some((snapshot, path.clone()));
+        snapshot_path = Some(path);
     } else {
-        println!("  {} No conflicts - skipping snapshot", "✓".green());
-        None
+        println!(
+            "  {} Nothing to snapshot - skipping (no files change on disk)",
+            "✓".green()
+        );
+        snapshot_path = None;
     };
 
     // ============================================================================
@@ -247,7 +368,22 @@ pub fn pull_history(
 
         if !confirm {
             println!("\n{}", "Pull cancelled.".yellow());
-            return Ok(());
+            // Under `sync`, a cancelled pull must abort the whole command:
+            // returning "nothing kept" would send the gate straight into
+            // a full push that publishes local edits over the
+            // repository's newer versions. A bare pull stays a friendly
+            // Ok — cancelling is a normal outcome there.
+            // The snapshot was written before the confirmation: it is
+            // owned by no operation record now (the pull never applied,
+            // no record is written) — delete it instead of leaving an
+            // orphan for age/count cleanup to find.
+            if let Some(orphan) = snapshot_path.as_ref() {
+                let _ = std::fs::remove_file(orphan);
+            }
+            if cancel_is_error {
+                return Err(anyhow::anyhow!("Pull cancelled"));
+            }
+            return Ok(crate::artifacts::engine::ArtifactReport::default());
         }
     }
 
@@ -278,6 +414,20 @@ pub fn pull_history(
         let mut smart_merge_failed_conflicts = Vec::new();
 
         for conflict in detector.conflicts_mut() {
+            // No backup, no merge (see `session_unsnapshotted`): the
+            // conflict is left unresolved — reported as failed — instead
+            // of overwriting a file nothing could restore.
+            if session_unsnapshotted.contains(&conflict.local_file) {
+                // Not added to the failed-conflicts list either: the
+                // interactive resolver would rewrite the same unbacked
+                // file. The conflict stays detected-but-unresolved, said
+                // in the log.
+                log::warn!(
+                    "Leaving conflict {} unresolved (no pre-pull backup could be taken)",
+                    conflict.session_id
+                );
+                continue;
+            }
             // The two transcripts this conflict is between, by their own paths:
             // an interior session id is shared by every subagent of a session,
             // and by a session resumed in another project.
@@ -544,7 +694,54 @@ pub fn pull_history(
     // APPLY ARTIFACT PULL PLAN (remote wins; snapshot already covers changes)
     // ============================================================================
     let artifact_report = crate::artifacts::engine::apply_pull(&artifact_plan, interactive)?;
-    if !artifact_plan.is_empty() {
+    // Undo deletes only what the apply actually CREATED: a user-written
+    // file that appeared mid-pull is deliberately skipped (a push
+    // publishes it) and must survive the undo.
+    if let Some((snapshot, path)) = created_snapshot.as_mut() {
+        let executed: Vec<String> = artifact_report
+            .created_abs_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        // Only a SKIPPED create needs the rewrite (it spares the skipped
+        // path from the undo's delete list); an unchanged list skips the
+        // full re-serialize of what can be megabytes entirely.
+        if executed != snapshot.deleted_files {
+            snapshot.deleted_files = executed;
+            if let Err(e) = snapshot.save_to_disk(path.parent()) {
+                // The re-save failed, so the on-disk snapshot keeps its
+                // PLANNED delete list — undo could then delete a file the
+                // pull never wrote (a mid-pull create). Deleting the file
+                // would discard the only backups of files the pull DID
+                // overwrite — a worse, unconditional loss. Keep it, pin
+                // it in memory if the re-save allows, and say exactly
+                // what to check before undoing.
+                let reason = "the snapshot could not be updated; undo pull would restore \
+                              the overwritten files but its delete list was NOT narrowed — \
+                              check it for files this pull never wrote before undoing";
+                log::warn!("Snapshot undo-delete list not narrowed: {e}; {reason}");
+                if verbosity != VerbosityLevel::Quiet {
+                    println!("  {} {}", "⚠".yellow(), reason.yellow());
+                }
+                // Pin it so the regular cleanup spares the sole backups
+                // — the re-save may have failed transiently, so one
+                // pinned re-write is worth attempting; if even that
+                // fails, the warning above is all the user gets.
+                snapshot.pinned = true;
+                if let Err(pin_err) = snapshot.save_to_disk(path.parent()) {
+                    log::warn!(
+                        "Snapshot could not be pinned either: {pin_err} — it may be \
+                         deleted by the regular cleanup"
+                    );
+                }
+            }
+        }
+    }
+    // The counts line only when it says something: a kept-local-only
+    // pull has zeros everywhere else, and "0 created, 0 overwritten,
+    // 0 deleted" reads as "artifacts did nothing". The kept-local hint
+    // itself must survive every outcome — it IS the pull's result.
+    if !artifact_plan.is_empty() && artifact_counts_say_something(&artifact_report) {
         println!(
             "  {} Artifacts: {} created, {} overwritten locally, {} deleted locally",
             "✓".green(),
@@ -552,11 +749,121 @@ pub fn pull_history(
             artifact_report.total_modified(),
             artifact_report.total_deleted()
         );
-        if artifact_report.total_modified() > 0 || artifact_report.total_deleted() > 0 {
-            println!("    {}", "Undo with: claude-code-sync undo pull".dimmed());
+    }
+    if verbosity != VerbosityLevel::Quiet && artifact_report.total_kept_local() > 0 {
+        let kept = artifact_report.total_kept_local();
+        let clean = artifact_report.kept_local_clean;
+        let plural = if kept == 1 { "" } else { "s" };
+        if clean == kept {
+            // Every keep protected nothing — a write that failed, an edit
+            // reverted while the pull ran. `sync`'s push skips these files
+            // per-file, so the older local bytes cannot overwrite a newer
+            // repository copy — but a BARE `push` has no skip set and
+            // would republish the older local bytes over the repo's newer
+            // version. Say both facts.
+            println!(
+                "  {} {} file{plural} held local with no edit to publish — \
+                 sync holds them back; a bare push would republish their older bytes",
+                "✋".yellow(),
+                kept,
+            );
+        } else if clean > 0 {
+            // Mixed: the dirty subset has real local edits to
+            // publish; the clean subset matches the base. No command
+            // selectively publishes one subset: a bare `push`
+            // publishes the edits AND republishes the clean files'
+            // older bytes over the repo's newer versions. Advise
+            // pulling again first so the transient ones settle, then
+            // pushing.
+            println!(
+                "  {} {} file{plural} kept local: {} edited, {} transient — \
+                 pull again to settle the transient ones, then push to publish the edits",
+                "✋".yellow(),
+                kept,
+                kept - clean,
+                clean,
+            );
+        } else {
+            println!(
+                "  {} {} file{plural} kept local: edited here since the last sync — push to publish",
+                "✋".yellow(),
+                kept,
+            );
         }
     }
-
+    // KeptLocalDelete: the repo's deletion was honored (the local
+    // edit is gone) — the standalone `pull` is the place to mention
+    // it because the next `sync` would have nothing to publish for
+    // these files. Skipping this block when the previous kept-local
+    // block already ran would suppress the deletion notice.
+    let kept_local_deletes = artifact_report.total_kept_local_deletes();
+    if verbosity != VerbosityLevel::Quiet && kept_local_deletes > 0 {
+        let plural = if kept_local_deletes == 1 { "" } else { "s" };
+        println!(
+            "  {} {} file{plural} removed locally: the repo's deletion was honored — the next pull will prune the record",
+            "🗑".yellow(),
+            kept_local_deletes,
+        );
+    }
+    // Only when THIS pull has a snapshot: a snapshotless record (the
+    // demotion above) is skipped by undo, which would silently target
+    // the previous pull and revert changes the user did not ask about.
+    if (artifact_report.total_modified() > 0 || artifact_report.total_deleted() > 0)
+        && snapshot_path.is_some()
+    {
+        println!("    {}", "Undo with: claude-code-sync undo pull".dimmed());
+    }
+    // The snapshot gate predicts at plan time; the apply re-decides from a
+    // fresh load. When a concurrent same-repo sync made the apply move
+    // record keys the snapshot never carried, this pull's undo cannot
+    // restore that record's pre-pull state — say so instead of leaving a
+    // silently weaker undo.
+    // `prompts_possible`, not `interactive`: the snapshot gate and the
+    // declarations used it, and `pull -i` without a TTY mints nothing —
+    // evaluating the kept-local term here would suppress the warning
+    // exactly when it applies.
+    // ONE shape for both records: the apply moved keys the snapshot's
+    // declarations never carried (a concurrent sync's commits), so this
+    // pull's undo cannot restore that record's pre-pull state. The bases
+    // gate keeps the interactive term (the snapshot gate used
+    // prompts_possible, and `pull -i` without a TTY mints nothing);
+    // tracked writes are fully predictable, so rewrites_tracked alone.
+    let warn_concurrent = |keys_moved: &[String], carried: bool, record: &str| {
+        if verbosity != VerbosityLevel::Quiet && !keys_moved.is_empty() && !carried {
+            println!(
+                "  {} a concurrent sync changed the artifact {record} record during this pull; {}",
+                "⚠".yellow(),
+                "undo pull cannot restore its pre-pull state".yellow()
+            );
+        }
+    };
+    if record_not_carried
+        && (!artifact_report.bases_keys_written.is_empty()
+            || !artifact_report.tracked_keys_written.is_empty())
+    {
+        // The record the apply DID move is the one the snapshot cannot
+        // restore: after an undo, the restored files read as locally
+        // edited (their bases still say post-pull). One push re-records
+        // the true bases and clears it — say so instead of leaving the
+        // warned-but-destructive path to be discovered.
+        println!(
+            "  {} a shared record was unreadable this pull and the apply still updated it; \
+             after an undo, run {} to re-record the bases (restored files would otherwise \
+             read as locally edited)",
+            "⚠".yellow(),
+            "claude-code-sync push".cyan()
+        );
+    }
+    warn_concurrent(
+        &artifact_report.bases_keys_written,
+        artifact_plan.can_write_bases(prompts_possible),
+        "base",
+    );
+    warn_concurrent(
+        &artifact_report.tracked_keys_written,
+        artifact_plan.rewrites_tracked,
+        "tracked",
+    );
     // ============================================================================
     // CREATE AND SAVE OPERATION RECORD
     // ============================================================================
@@ -569,6 +876,14 @@ pub fn pull_history(
     // Attach the snapshot path to the operation record (only if we created one)
     operation_record.snapshot_path = snapshot_path;
     operation_record.artifact_counts = artifact_report.counts.clone();
+    // Exactly the keys the apply moved in each shared record: the undo
+    // restores those and only those — a superset would revert entries a
+    // later push legitimately recorded. None on older records reads as
+    // the snapshot's full declared set (the conservative superset).
+    operation_record.bases_keys_written = Some(artifact_report.bases_keys_written.clone());
+    operation_record.tracked_keys_written = Some(artifact_report.tracked_keys_written.clone());
+    // Undo scopes its artifact-record surgery to this repository alone.
+    operation_record.repo_path = Some(state.sync_repo_path.clone());
 
     // Load operation history and add this operation
     let mut history = match OperationHistory::load() {
@@ -607,7 +922,10 @@ pub fn pull_history(
             skipped_no_local_match
         );
     }
-    if !artifact_report.counts.is_empty() || artifact_plan.unchanged > 0 {
+    // Same zero-noise rule as the earlier counts line (plus unchanged,
+    // which the summary row carries): a kept-local-only pull prints its
+    // KEEP hint, not an all-zeros summary row.
+    if artifact_counts_say_something(&artifact_report) || artifact_plan.unchanged > 0 {
         println!(
             "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged",
             "•".cyan(),
@@ -692,5 +1010,5 @@ pub fn pull_history(
         log::warn!("Failed to cleanup old snapshots: {}", e);
     }
 
-    Ok(())
+    Ok(artifact_report)
 }

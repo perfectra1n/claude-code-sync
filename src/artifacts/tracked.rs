@@ -8,10 +8,11 @@
 //! The record is per machine and never enters the repository. An absent or
 //! unreadable record reads as empty, which propagates no deletions at all.
 
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use anyhow::Result;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+use super::repo_record::RepoRecord;
 
 /// Repo-relative artifact paths, sorted.
 pub type TrackedPaths = BTreeSet<String>;
@@ -19,63 +20,56 @@ pub type TrackedPaths = BTreeSet<String>;
 /// File name under `~/.claude` holding the record for every sync repository.
 const TRACKED_FILE_NAME: &str = ".claude-code-sync-tracked.json";
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct TrackedRecord {
-    #[serde(default)]
-    repos: BTreeMap<String, TrackedPaths>,
+// The mechanical record wrappers — one source in `repo_record`.
+crate::repo_record_wrappers!(TRACKED_FILE_NAME, TrackedPaths);
+
+/// Whether the record files `repo_root` under a non-canonical (legacy raw)
+/// spelling — the next save rewrites the file to retire it.
+pub fn has_aliased_entry(claude_dir: &Path, repo_root: &Path) -> bool {
+    RepoRecord::<TrackedPaths>::read(claude_dir, TRACKED_FILE_NAME).has_aliased_entry(repo_root)
 }
 
-/// Where the record lives for a given Claude directory.
-pub fn record_path(claude_dir: &Path) -> PathBuf {
-    claude_dir.join(TRACKED_FILE_NAME)
+/// Merge a delta into whatever the record holds NOW, under ONE lock —
+/// see [`bases::save_delta`] for why the load, merge, and write must be
+/// a single unit.
+pub fn save_delta(
+    claude_dir: &Path,
+    repo_root: &Path,
+    inserts: TrackedPaths,
+    removals: Vec<String>,
+) -> Result<()> {
+    RepoRecord::<TrackedPaths>::merge_under_lock(
+        claude_dir,
+        TRACKED_FILE_NAME,
+        repo_root,
+        |current| {
+            for rel in &removals {
+                current.remove(rel);
+            }
+            for rel in inserts {
+                current.insert(rel);
+            }
+        },
+    )
 }
 
-fn read_record(claude_dir: &Path) -> TrackedRecord {
-    let Ok(text) = std::fs::read_to_string(record_path(claude_dir)) else {
-        return TrackedRecord::default();
-    };
-    serde_json::from_str(&text).unwrap_or_default()
-}
-
-fn repo_key(repo_root: &Path) -> String {
-    repo_root.to_string_lossy().to_string()
-}
-
-/// The paths this machine last synced with `repo_root`.
-pub fn load(claude_dir: &Path, repo_root: &Path) -> TrackedPaths {
-    read_record(claude_dir)
-        .repos
-        .remove(&repo_key(repo_root))
-        .unwrap_or_default()
-}
-
-/// Forget everything this machine recorded about `repo_root`.
-///
-/// Used when the repository is rewound under this machine's feet (`undo push`):
-/// the record would claim paths the repo no longer has, and the next pull would
-/// read that as a deletion. Forgetting restores the fresh-machine state, which
-/// deletes nothing and re-learns on the next sync.
-pub fn forget(claude_dir: &Path, repo_root: &Path) -> Result<()> {
-    let mut record = read_record(claude_dir);
-    if record.repos.remove(&repo_key(repo_root)).is_none() {
-        return Ok(());
-    }
-    write_record(claude_dir, &record)
-}
-
-/// Record the paths this machine now holds in common with `repo_root`.
-pub fn save(claude_dir: &Path, repo_root: &Path, paths: TrackedPaths) -> Result<()> {
-    let mut record = read_record(claude_dir);
-    record.repos.insert(repo_key(repo_root), paths);
-    write_record(claude_dir, &record)
-}
-
-fn write_record(claude_dir: &Path, record: &TrackedRecord) -> Result<()> {
-    let path = record_path(claude_dir);
-    std::fs::create_dir_all(claude_dir)?;
-    let text = serde_json::to_string_pretty(record)?;
-    std::fs::write(&path, text).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
+/// Undo-side counterpart of `save`, with the same per-key contract as
+/// [`bases::restore_keys`]: only the keys the undone pull touched go back
+/// to their pre-pull state; entries a later push recorded keep their
+/// owner. An entry that empties out is forgotten.
+pub fn restore_keys(
+    claude_dir: &Path,
+    repo_root: &Path,
+    pre_pull: &TrackedPaths,
+    touched: &[String],
+) -> Result<()> {
+    RepoRecord::<TrackedPaths>::restore_keys_under_lock(
+        claude_dir,
+        TRACKED_FILE_NAME,
+        repo_root,
+        pre_pull,
+        touched,
+    )
 }
 
 #[cfg(test)]
@@ -90,6 +84,31 @@ mod tests {
     fn an_absent_record_tracks_nothing() {
         let claude = tempfile::tempdir().unwrap();
         assert!(load(claude.path(), Path::new("/repo")).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_legacy_raw_spelling_entry_is_an_aliased_one() {
+        let real = tempfile::tempdir().unwrap();
+        let via = tempfile::tempdir().unwrap();
+        let link = via.path().join("linked-repo");
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
+        let claude = tempfile::tempdir().unwrap();
+
+        // Modern save: keyed canonically, nothing to retire.
+        save(claude.path(), &link, paths(&["a"])).unwrap();
+        assert!(!has_aliased_entry(claude.path(), &link));
+
+        // A pre-canonicalization version filed the repo under its raw
+        // spelling: the next save rewrites the file to retire it.
+        std::fs::write(
+            record_path(claude.path()),
+            format!(r#"{{"repos": {{ "{}": ["a"] }}}}"#, link.display()),
+        )
+        .unwrap();
+        // Detected through the spelling family the machine actually uses
+        // (that of the path plan_pull is given).
+        assert!(has_aliased_entry(claude.path(), &link));
     }
 
     #[test]

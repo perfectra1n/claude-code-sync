@@ -36,6 +36,7 @@ fn test_undo_preview_display_quiet() {
         conversation_count: 5,
         commit_hash: None,
         snapshot_timestamp: Some(chrono::Utc::now()),
+        record_surgery: false,
     };
 
     // Should not panic - just verify it runs
@@ -52,6 +53,7 @@ fn test_undo_preview_display_normal() {
         conversation_count: 3,
         commit_hash: Some("abc123def456".to_string()),
         snapshot_timestamp: Some(chrono::Utc::now()),
+        record_surgery: false,
     };
 
     // Should not panic
@@ -72,6 +74,7 @@ fn test_undo_preview_display_verbose() {
         conversation_count: 10,
         commit_hash: None,
         snapshot_timestamp: Some(chrono::Utc::now()),
+        record_surgery: false,
     };
 
     // Should not panic
@@ -93,6 +96,7 @@ fn test_undo_preview_many_files_verbose() {
         conversation_count: 50,
         commit_hash: None,
         snapshot_timestamp: Some(chrono::Utc::now()),
+        record_surgery: false,
     };
 
     // Should handle many files without panic
@@ -110,6 +114,7 @@ fn test_undo_preview_push_with_commit() {
         conversation_count: 7,
         commit_hash: Some("1234567890abcdef1234567890abcdef12345678".to_string()),
         snapshot_timestamp: Some(chrono::Utc::now() - chrono::Duration::hours(2)),
+        record_surgery: false,
     };
 
     // Should display commit hash in verbose mode
@@ -254,6 +259,7 @@ fn test_undo_preview_field_access() {
         conversation_count: 42,
         commit_hash: Some("abc123".to_string()),
         snapshot_timestamp: Some(snapshot_time),
+        record_surgery: false,
     };
 
     // Test field access
@@ -275,6 +281,7 @@ fn test_undo_preview_empty_files() {
         conversation_count: 0,
         commit_hash: Some("def456".to_string()),
         snapshot_timestamp: Some(chrono::Utc::now()),
+        record_surgery: false,
     };
 
     // Should handle empty files gracefully

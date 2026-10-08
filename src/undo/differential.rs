@@ -110,6 +110,13 @@ impl Snapshot {
             branch: None,
             base_snapshot_id,
             deleted_files,
+            record_files: Vec::new(),
+            created_record_files: Vec::new(),
+            record_touched_bases: None,
+            record_touched_tracked: None,
+            unreadable_files: Vec::new(),
+            stripped_blobs: Vec::new(),
+            pinned: false,
         })
     }
 
