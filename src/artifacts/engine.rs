@@ -748,13 +748,15 @@ pub fn push_artifacts(
                     // Push-side merge dispatch. UnionMemoryIndex is
                     // tombstone-aware (5-arg); other union strategies
                     // use the `union_for` dispatch (UnionPluginBindings,
-                    // etc.).
+                    // etc.). A fresh file (no repo copy yet) has no
+                    // union source — the local bytes are the full
+                    // content and the !existed branch below writes
+                    // them as-is.
                     let is_tombstoned_memory = desc.merge
                         == MergeStrategy::UnionMemoryIndex
                         && is_memory_index(&file.rel);
-                    if is_tombstoned_memory
-                        || union_for(desc.merge, &file.rel).is_some()
-                    {
+                    let is_other_union = union_for(desc.merge, &file.rel).is_some();
+                    if (is_tombstoned_memory || is_other_union) && existed {
                         match fs::read(&dest) {
                             Ok(dest_bytes) => {
                                 let (merged, new_entries) = if is_tombstoned_memory {
@@ -776,7 +778,7 @@ pub fn push_artifacts(
                                     )
                                 } else {
                                     let merge_fn = union_for(desc.merge, &file.rel)
-                                        .expect("Some by the outer guard");
+                                        .expect("Some by the is_other_union guard");
                                     merge_fn(&dest_bytes, &src_bytes)
                                 };
                                 pending_entries = new_entries;
@@ -785,6 +787,9 @@ pub fn push_artifacts(
                             Err(e) => {
                                 hold_back(&mut counts, &file.abs, "repo copy unreadable", &e);
                                 continue;
+                            }
+                        }
+                    }
                             }
                         }
                     }

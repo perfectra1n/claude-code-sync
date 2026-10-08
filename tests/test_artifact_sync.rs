@@ -325,7 +325,7 @@ fn test_push_unions_plugin_bindings() {
     )
     .unwrap();
 
-    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     let names = binding_names(&fs::read(&repo_bindings).unwrap());
     assert!(
