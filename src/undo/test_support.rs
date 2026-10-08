@@ -62,6 +62,13 @@ pub(super) fn metadata_only_snapshot(
         branch: None,
         base_snapshot_id: None,
         deleted_files: Vec::new(),
+        record_files: Vec::new(),
+        created_record_files: Vec::new(),
+        record_touched_bases: None,
+        record_touched_tracked: None,
+        unreadable_files: Vec::new(),
+        stripped_blobs: Vec::new(),
+        pinned: false,
     }
 }
 
@@ -86,10 +93,24 @@ impl HistoryBuilder {
     /// Append one operation. `snapshot` is the snapshot file it can be undone
     /// from; `None` models an operation recorded without one.
     pub(super) fn push(
+        self,
+        operation_type: OperationType,
+        branch: &str,
+        snapshot: Option<&Path>,
+    ) -> Self {
+        self.push_on_repo(operation_type, branch, snapshot, None)
+    }
+
+    /// Append one operation. `snapshot` is the snapshot file it can be undone
+    /// from; `None` models an operation recorded without one. `repo_root`,
+    /// when given, is the sync repository it ran against — what every pull
+    /// records, and what `undo pull` scopes its artifact record surgery to.
+    pub(super) fn push_on_repo(
         mut self,
         operation_type: OperationType,
         branch: &str,
         snapshot: Option<&Path>,
+        repo_root: Option<&Path>,
     ) -> Self {
         let sync_op = match operation_type {
             OperationType::Pull => SyncOperation::Modified,
@@ -107,6 +128,7 @@ impl HistoryBuilder {
         let mut record =
             OperationRecord::new(operation_type, Some(branch.to_string()), vec![summary]);
         record.snapshot_path = snapshot.map(Path::to_path_buf);
+        record.repo_path = repo_root.map(Path::to_path_buf);
 
         self.history.add_operation(record).unwrap();
         self

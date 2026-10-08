@@ -81,7 +81,7 @@ fn test_push_creates_expected_layout() {
     let repo = TempDir::new().unwrap();
     seed_claude_dir(claude.path());
 
-    let report = push_artifacts(claude.path(), repo.path(), &all_on_filter()).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
 
     let a = repo.path().join("artifacts");
     assert!(a.join("settings/settings.json").is_file());
@@ -128,8 +128,8 @@ fn test_second_push_is_all_unchanged() {
     seed_claude_dir(claude.path());
     let filter = all_on_filter();
 
-    push_artifacts(claude.path(), repo.path(), &filter).unwrap();
-    let second = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    let second = push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     let added: usize = second.counts.iter().map(|c| c.added).sum();
     let modified: usize = second.counts.iter().map(|c| c.modified).sum();
@@ -146,13 +146,13 @@ fn test_modified_detection_on_changed_settings() {
     seed_claude_dir(claude.path());
     let filter = all_on_filter();
 
-    push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
     fs::write(
         claude.path().join("settings.json"),
         b"{\"model\":\"sonnet\"}",
     )
     .unwrap();
-    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     let settings = report
         .counts
@@ -181,7 +181,7 @@ fn test_disabled_categories_untouched() {
         ..Default::default()
     };
 
-    push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     let a = repo.path().join("artifacts");
     assert!(a.join("settings/settings.json").is_file());
@@ -195,7 +195,7 @@ fn test_missing_sources_are_silent_noops() {
     let claude = TempDir::new().unwrap(); // empty ~/.claude
     let repo = TempDir::new().unwrap();
 
-    let report = push_artifacts(claude.path(), repo.path(), &all_on_filter()).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
     let total: usize = report
         .counts
         .iter()
@@ -226,7 +226,7 @@ fn test_denied_files_inside_categories_never_pushed() {
     let mut filter = all_on_filter();
     filter.include_patterns = vec!["*credentials*".to_string(), "*.pem".to_string()];
 
-    push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     for entry in walkdir::WalkDir::new(repo.path()) {
         let entry = entry.unwrap();
@@ -258,7 +258,7 @@ fn test_push_unions_prompt_history() {
     )
     .unwrap();
 
-    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     let merged = fs::read_to_string(&repo_history).unwrap();
     assert!(
@@ -287,7 +287,7 @@ fn test_oversized_files_are_skipped() {
     let mut filter = all_on_filter();
     filter.max_file_size_bytes = 1024;
 
-    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     assert!(!repo.path().join("artifacts/skills/big.md").exists());
     assert!(repo.path().join("artifacts/skills/small.md").is_file());
@@ -349,7 +349,7 @@ fn test_pull_restores_artifacts_to_fresh_machine() {
     seed_claude_dir(machine_a.path());
     let filter = all_on_filter();
 
-    push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
+    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert!(!plan.is_empty());
@@ -384,7 +384,7 @@ fn test_pull_remote_wins_when_bytes_differ() {
     let repo = TempDir::new().unwrap();
     seed_claude_dir(machine_a.path());
     let filter = all_on_filter();
-    push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
+    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     // Machine B has its own, different settings.
     fs::write(
@@ -415,13 +415,20 @@ fn test_pull_does_not_rewrite_identical_files() {
     let repo = TempDir::new().unwrap();
     seed_claude_dir(machine_a.path());
     let filter = all_on_filter();
-    push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
+    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     // Pulling straight back into the same machine: everything identical.
     let plan = plan_pull(machine_a.path(), repo.path(), &filter).unwrap();
+    // No artifact writes — the only planned effect is recording base
+    // hashes for the unchanged files (is_empty covers writes only).
     assert!(
         plan.is_empty(),
         "no writes planned when bytes match: {plan:?}"
+    );
+    assert!(!plan.base_hashes.is_empty(), "bases are (re)recorded");
+    assert!(
+        !plan.changes_machine_state(false),
+        "records already converge"
     );
     assert!(plan.unchanged >= 12);
 }
@@ -518,7 +525,7 @@ fn test_pull_plan_snapshot_paths_enable_exact_undo() {
     let repo = TempDir::new().unwrap();
     seed_claude_dir(machine_a.path());
     let filter = all_on_filter();
-    push_artifacts(machine_a.path(), repo.path(), &filter).unwrap();
+    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     // Machine B: one file that will be overwritten, everything else created.
     fs::write(
@@ -529,8 +536,12 @@ fn test_pull_plan_snapshot_paths_enable_exact_undo() {
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
 
-    let mut snapshot =
-        Snapshot::create(OperationType::Pull, plan.paths_to_snapshot().iter(), None).unwrap();
+    let mut snapshot = Snapshot::create(
+        OperationType::Pull,
+        plan.paths_to_snapshot(false).iter(),
+        None,
+    )
+    .unwrap();
     snapshot.deleted_files = plan.created_paths();
 
     apply_pull(&plan, false).unwrap();
@@ -581,7 +592,7 @@ fn test_attachments_push_copies_non_jsonl_into_session_tree() {
 
     // Default config: no artifact toggles, attachments NOT excluded.
     let filter = FilterConfig::default();
-    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     let proj = repo.path().join("projects/-home-user-myproj");
     assert!(
@@ -619,7 +630,7 @@ fn test_attachments_respect_exclude_attachments_flag() {
         exclude_attachments: true,
         ..Default::default()
     };
-    let report = push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    let report = push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
 
     assert!(!repo.path().join("projects").exists());
     assert!(report
@@ -673,7 +684,7 @@ fn test_attachments_map_project_names_in_name_only_mode() {
         use_project_name_only: true,
         ..Default::default()
     };
-    push_artifacts(claude.path(), repo.path(), &filter).unwrap();
+    push_artifacts(claude.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
     assert!(
         repo.path().join("projects/myproj/diagram.png").is_file(),
         "encoded dir collapses to the bare project name on push"

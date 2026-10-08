@@ -41,6 +41,23 @@ pub struct OperationRecord {
     /// files stay readable by older versions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifact_counts: Vec<crate::artifacts::engine::CategoryCounts>,
+
+    /// The sync repository the operation ran against. Undo scopes its
+    /// artifact-record surgery to this repository alone — the records are
+    /// one file shared by every repository. Absent on records written by
+    /// older versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<std::path::PathBuf>,
+    /// The repo-relative keys the pull's apply actually moved in the
+    /// bases record. `None` on records written by older versions reads as
+    /// "the snapshot's full declared set" (the conservative superset);
+    /// `Some(list)` is exact — restoring keys nobody moved would revert
+    /// entries a later push legitimately recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bases_keys_written: Option<Vec<String>>,
+    /// The tracked record's counterpart of `bases_keys_written`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_keys_written: Option<Vec<String>>,
 }
 
 impl OperationRecord {
@@ -58,6 +75,9 @@ impl OperationRecord {
             snapshot_path: None,
             commit_hash: None,
             artifact_counts: Vec::new(),
+            repo_path: None,
+            bases_keys_written: None,
+            tracked_keys_written: None,
         }
     }
 
@@ -127,6 +147,7 @@ mod tests {
             skipped: 0,
             merged_entries: 0,
             deleted: 0,
+            kept_local: 0,
         }];
         let json = serde_json::to_string(&record).unwrap();
         let back: OperationRecord = serde_json::from_str(&json).unwrap();

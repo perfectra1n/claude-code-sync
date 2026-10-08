@@ -1,7 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use colored::Colorize;
 use semver::Version;
-use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
 
@@ -117,13 +116,6 @@ fn tag_from_location(location: &str) -> Option<&str> {
 fn parse_checksum(contents: &str) -> Option<String> {
     let hash = contents.split_whitespace().next()?.to_ascii_lowercase();
     (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hash)
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 fn agent(follow_redirects: bool) -> ureq::Agent {
@@ -297,7 +289,7 @@ pub fn self_update(check_only: bool, target: Option<&str>, force: bool) -> Resul
         .context("checksum file is not valid UTF-8")?;
     let expected = parse_checksum(&checksum_file)
         .ok_or_else(|| anyhow!("malformed checksum file for {asset}"))?;
-    let actual = sha256_hex(&archive);
+    let actual = crate::digest::sha256_hex(&archive);
     if expected != actual {
         bail!("checksum mismatch for {asset}: expected {expected}, got {actual}");
     }
@@ -366,7 +358,7 @@ mod tests {
     #[test]
     fn sha256_hex_matches_known_digest() {
         assert_eq!(
-            sha256_hex(b"abc"),
+            crate::digest::sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }

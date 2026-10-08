@@ -87,8 +87,15 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
                 .chain(plan.creates.iter())
                 .chain(plan.unions.iter())
                 .chain(plan.mode_fixes.iter())
+                .chain(plan.kept_local.iter())
                 .filter(|w| w.category == desc.id)
-                .count();
+                .count()
+                + plan
+                    .deletes
+                    .iter()
+                    .chain(plan.kept_local_deletes.iter())
+                    .filter(|d| d.category == desc.id)
+                    .count();
             if differing == 0 {
                 println!("  {}: {}", desc.name, "in sync".green());
             } else {
@@ -98,6 +105,22 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
                     format!("{differing} file(s) differ from sync repo").yellow()
                 );
             }
+        }
+        // Skipped files (over the size limit, unreadable) are outside sync
+        // but permanently divergent — "in sync" everywhere would hide that.
+        if plan.skipped > 0 {
+            println!(
+                "  {}: {}",
+                "skipped".yellow(),
+                format!(
+                    // Unmapped-project files DO increment plan.skipped
+                    // (and are also warned per project) — the taxonomy
+                    // must match the number.
+                    "{} file(s) skipped (size limit, unreadable, refused name, or unmapped project) — see logs",
+                    plan.skipped
+                )
+                .yellow()
+            );
         }
     } else {
         println!(

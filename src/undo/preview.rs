@@ -22,6 +22,10 @@ pub struct UndoPreview {
     /// Snapshot creation timestamp (None when the operation has no snapshot,
     /// e.g. modern push records that only store a commit hash)
     pub snapshot_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// Artifact record entries this undo forgets (this repository's only)
+    /// instead of restoring record files wholesale — surfaced so the
+    /// preview matches what the undo actually does.
+    pub record_surgery: bool,
 }
 
 /// Verbosity level for preview display
@@ -50,6 +54,11 @@ impl UndoPreview {
                 );
                 if !self.affected_files.is_empty() {
                     println!("  {} files will be restored", self.affected_files.len());
+                }
+                if self.record_surgery {
+                    println!(
+                        "  artifact record entries for this repository may be forgotten or re-applied"
+                    );
                 }
             }
 
@@ -93,6 +102,12 @@ impl UndoPreview {
                     self.conversation_count.to_string().yellow()
                 );
 
+                if self.record_surgery {
+                    println!(
+                        "\n{} artifact record entries (this repository's) may be forgotten or re-applied",
+                        "Record surgery:".bold()
+                    );
+                }
                 if !self.affected_files.is_empty() {
                     println!("\n{}", "Files to be restored:".bold());
                     let display_count = self.affected_files.len().min(10);
@@ -225,10 +240,22 @@ pub fn preview_undo_pull(history_path: Option<PathBuf>) -> Result<UndoPreview> {
     // Load operation history
     let history = OperationHistory::from_path(history_path)?;
 
-    // Find the last pull operation
-    let last_pull = history
-        .get_last_operation_by_type(OperationType::Pull)
-        .ok_or_else(|| anyhow!("No pull operation found in history to undo"))?;
+    // Find the last pull an undo can act on (snapshotless records are
+    // skipped, matching undo_pull).
+    let last_pull = history.get_last_undoable_pull().ok_or_else(|| {
+        if history
+            .list_operations()
+            .iter()
+            .any(|op| op.operation_type == OperationType::Pull)
+        {
+            anyhow!(
+                "No pull to undo: the recorded pulls changed no machine state \
+                 (kept local only), so there is nothing to restore"
+            )
+        } else {
+            anyhow!("No pull operation found in history to undo")
+        }
+    })?;
 
     // Get the snapshot path
     let snapshot_path = last_pull.snapshot_path.as_ref().ok_or_else(|| {
@@ -248,10 +275,27 @@ pub fn preview_undo_pull(history_path: Option<PathBuf>) -> Result<UndoPreview> {
     }
 
     // Load the snapshot
-    let snapshot = Snapshot::load_from_disk(snapshot_path)?;
+    let mut snapshot = Snapshot::load_from_disk(snapshot_path)?;
 
-    // Get list of affected files
-    let affected_files: Vec<String> = snapshot.files.keys().cloned().collect();
+    // Legacy snapshots (no declarations) get their record files
+    // recognized by the same rule undo applies, so this preview and the
+    // undo itself agree on what is restored surgically.
+    // A stripped record blob is exactly what the undo will warn and pin
+    // about — the preview must announce the same surgery (and the blob
+    // already left `files`, so it does not preview as a plain restore).
+    let stripped = snapshot.promote_legacy_records();
+
+    // Affected files. Record files the snapshot declares are restored
+    // surgically (this repository's entry only), so listing them as "will
+    // be restored" would overstate the blast radius on files every sync
+    // repository shares; an artifact sharing a record's file name is a
+    // plain file as far as undo is concerned.
+    let affected_files: Vec<String> = snapshot
+        .files
+        .keys()
+        .filter(|k| !snapshot.record_files.iter().any(|r| r == *k))
+        .cloned()
+        .collect();
 
     Ok(UndoPreview {
         operation_type: OperationType::Pull,
@@ -261,6 +305,9 @@ pub fn preview_undo_pull(history_path: Option<PathBuf>) -> Result<UndoPreview> {
         conversation_count: last_pull.affected_conversations.len(),
         commit_hash: None,
         snapshot_timestamp: Some(snapshot.timestamp),
+        record_surgery: stripped
+            || !snapshot.record_files.is_empty()
+            || !snapshot.created_record_files.is_empty(),
     })
 }
 
@@ -292,6 +339,7 @@ pub fn preview_undo_push(history_path: Option<PathBuf>) -> Result<UndoPreview> {
             conversation_count: last_push.affected_conversations.len(),
             commit_hash: Some(hash.clone()),
             snapshot_timestamp: None,
+            record_surgery: false,
         });
     }
 
@@ -323,6 +371,7 @@ pub fn preview_undo_push(history_path: Option<PathBuf>) -> Result<UndoPreview> {
         conversation_count: last_push.affected_conversations.len(),
         commit_hash: snapshot.git_commit_hash.clone(),
         snapshot_timestamp: Some(snapshot.timestamp),
+        record_surgery: false,
     })
 }
 
@@ -352,5 +401,81 @@ mod tests {
         assert_eq!(preview.branch.as_deref(), Some("main"));
         assert!(preview.affected_files.is_empty());
         assert!(preview.snapshot_timestamp.is_none());
+    }
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use super::*;
+    use crate::undo::test_support::HistoryBuilder;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn preview_agrees_with_undo_on_a_legacy_snapshot() {
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+        let snapshots_dir = temp_dir.path().join("snapshots");
+        let repo_root = temp_dir.path().join("sync-repo");
+
+        fs::create_dir_all(temp_dir.path().join("projects/x")).unwrap();
+        let artifact = temp_dir.path().join("projects/x/fact.md");
+        fs::write(&artifact, "pre-pull").unwrap();
+
+        // A legacy snapshot: the shared record rides among `files` with no
+        // declarations. The preview must agree with the undo — record
+        // surgery, not a wholesale restore listing.
+        let record_path = temp_dir.path().join(".claude-code-sync-tracked.json");
+        let record = format!(
+            "{{\"repos\": {{\"{}\": [\"projects/x/fact.md\"]}}}}",
+            repo_root.display()
+        );
+        let mut snapshot = Snapshot::create(OperationType::Pull, vec![&artifact], None).unwrap();
+        snapshot.files.insert(
+            record_path.to_string_lossy().to_string(),
+            record.into_bytes(),
+        );
+        let snapshot_path = snapshot.save_to_disk(Some(&snapshots_dir)).unwrap();
+
+        HistoryBuilder::new(&history_path)
+            .push_on_repo(
+                OperationType::Pull,
+                "main",
+                Some(&snapshot_path),
+                Some(&repo_root),
+            )
+            .save();
+
+        let preview = preview_undo_pull(Some(history_path)).unwrap();
+        assert!(
+            preview.record_surgery,
+            "the preview announces the surgical record restore the undo performs"
+        );
+        assert!(
+            !preview
+                .affected_files
+                .iter()
+                .any(|f| f.contains(".claude-code-sync-tracked.json")),
+            "the shared record is not listed as an ordinary wholesale restore"
+        );
+        assert!(preview.affected_files.iter().any(|f| f.contains("fact.md")));
+    }
+
+    #[test]
+    fn snapshotless_pulls_get_an_honest_error() {
+        let temp_dir = tempdir().unwrap();
+        let history_path = temp_dir.path().join("history.json");
+        HistoryBuilder::new(&history_path)
+            .push(OperationType::Pull, "main", None)
+            .push(OperationType::Pull, "main", None)
+            .save();
+
+        let err = preview_undo_pull(Some(history_path))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("changed no machine state"),
+            "the error says WHY there is nothing to undo: {err}"
+        );
     }
 }

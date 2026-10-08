@@ -44,6 +44,9 @@ pub enum VerbosityLevel {
 // `artifacts` documents itself in artifacts/mod.rs.
 pub mod artifacts;
 
+/// SHA-256 digests, hex-encoded: the one helper every hashing caller uses.
+pub mod digest;
+
 /// Platform-agnostic configuration directory management for claude-code-sync.
 ///
 /// Provides utilities for locating and managing configuration files and directories

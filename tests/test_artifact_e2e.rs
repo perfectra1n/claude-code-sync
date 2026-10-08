@@ -174,6 +174,7 @@ fn test_full_pipeline_push_pull_undo_across_two_machines() {
         false,
         false,
         VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
     )
     .unwrap();
     assert_eq!(report.added, 1, "one session pushed");
@@ -201,7 +202,7 @@ fn test_full_pipeline_push_pull_undo_across_two_machines() {
     let machine_b = Machine::new(repo.path());
     machine_b.activate();
 
-    pull_history(false, None, false, VerbosityLevel::Quiet).unwrap();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
     let b = machine_b.claude();
     assert_eq!(
         fs::read(b.join("settings.json")).unwrap(),
@@ -227,7 +228,7 @@ fn test_full_pipeline_push_pull_undo_across_two_machines() {
     assert!(!b.join("CLAUDE.md").exists());
 
     // ---- Pull again: environment restored once more ----
-    pull_history(false, None, false, VerbosityLevel::Quiet).unwrap();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
     assert!(b.join("settings.json").is_file());
 }
 
@@ -249,6 +250,7 @@ fn test_full_pipeline_second_push_creates_no_commit() {
         false,
         false,
         VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
     )
     .unwrap();
     let report = push_history(
@@ -258,6 +260,7 @@ fn test_full_pipeline_second_push_creates_no_commit() {
         false,
         false,
         VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
     )
     .unwrap();
 
@@ -282,7 +285,16 @@ fn test_full_pipeline_sync_converges_prompt_history() {
     let machine_a = Machine::new(repo.path());
     machine_a.activate();
     seed_full_claude_home(&machine_a.claude());
-    push_history(Some("A"), false, None, false, false, VerbosityLevel::Quiet).unwrap();
+    push_history(
+        Some("A"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // Machine B has its own prompt history and runs a bidirectional sync.
     let machine_b = Machine::new(repo.path());
@@ -296,7 +308,7 @@ fn test_full_pipeline_sync_converges_prompt_history() {
 
     // Machine A pulls; both machines now hold the identical superset.
     machine_a.activate();
-    pull_history(false, None, false, VerbosityLevel::Quiet).unwrap();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
 
     let a_history = fs::read_to_string(machine_a.claude().join("history.jsonl")).unwrap();
     let b_history = fs::read_to_string(machine_b.claude().join("history.jsonl")).unwrap();
@@ -374,7 +386,16 @@ fn test_pull_warns_once_for_a_project_this_machine_never_mapped() {
         PathBuf::from("/home/user/webapp"), // what -home-user-webapp encodes
     );
     machine_a.write_filter(&mapped);
-    push_history(Some("A"), false, None, false, false, VerbosityLevel::Quiet).unwrap();
+    push_history(
+        Some("A"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert!(repo.path().join("projects/webapp").is_dir());
 
     // Machine B has never mapped "webapp": one transcript, one attachment and
@@ -382,7 +403,7 @@ fn test_pull_warns_once_for_a_project_this_machine_never_mapped() {
     let machine_b = Machine::new(repo.path());
     machine_b.activate();
     reset_collected_warnings();
-    pull_history(false, None, false, VerbosityLevel::Quiet).unwrap();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
 
     let warnings = collected_warnings_since_reset();
     let unplaceable = lines_about_unplaceable_files(&warnings);
@@ -407,12 +428,165 @@ fn test_pull_warns_once_for_a_project_this_machine_never_mapped() {
     warn_each.warn_each_skipped_file = true;
     machine_b.write_filter(&warn_each);
     reset_collected_warnings();
-    pull_history(false, None, false, VerbosityLevel::Quiet).unwrap();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
 
     let warnings = collected_warnings_since_reset();
     assert_eq!(
         lines_about_unplaceable_files(&warnings).len(),
         3,
         "warn_each_skipped_file restores the line per file: {warnings:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn test_sync_with_kept_local_still_pushes_sessions() {
+    let _restore = EnvRestore::capture();
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+
+    // Machine A seeds everything and pushes.
+    let machine_a = Machine::new(repo.path());
+    machine_a.activate();
+    seed_full_claude_home(&machine_a.claude());
+    push_history(
+        Some("A"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+
+    // Machine B pulls, then edits an artifact and gains a new session.
+    let machine_b = Machine::new(repo.path());
+    machine_b.activate();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
+    fs::write(
+        machine_b.claude().join("skills/deploy/SKILL.md"),
+        b"# deploy\nB's local edit\n",
+    )
+    .unwrap();
+    fs::write(
+        machine_b
+            .claude()
+            .join("projects/-home-user-webapp/bbbb-2222.jsonl"),
+        "{\"type\":\"user\",\"sessionId\":\"bbbb-2222\",\"uuid\":\"u9\",\"timestamp\":\"2025-01-02T00:00:00Z\",\"cwd\":\"/home/user/webapp\"}\n",
+    )
+    .unwrap();
+
+    // The kept-local artifact must not stop the sessions from travelling.
+    sync_bidirectional(Some("B sync"), None, false, false, VerbosityLevel::Quiet).unwrap();
+
+    let files = git(repo.path(), &["ls-files"]);
+    assert!(
+        files.contains("bbbb-2222.jsonl"),
+        "the new session reached the repository: {files}"
+    );
+    let repo_skill = fs::read_to_string(repo.path().join("artifacts/skills/deploy/SKILL.md"))
+        .unwrap_or_default();
+    assert_eq!(
+        repo_skill, "# deploy\n",
+        "the conflicting artifact was NOT pushed over the repository copy"
+    );
+    assert_eq!(
+        fs::read_to_string(machine_b.claude().join("skills/deploy/SKILL.md")).unwrap(),
+        "# deploy\nB's local edit\n",
+        "the local edit survived untouched"
+    );
+}
+
+#[test]
+#[serial]
+fn test_sync_keeps_a_clean_held_file_from_overwriting_repo() {
+    use std::os::unix::fs::PermissionsExt;
+    let _restore = EnvRestore::capture();
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+
+    // Machine A seeds the repo: one skill, one CLAUDE.md, no extras.
+    let machine_a = Machine::new(repo.path());
+    machine_a.activate();
+    seed_full_claude_home(&machine_a.claude());
+    push_history(
+        Some("A seeds"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+
+    // Machine B pulls. Now B has skill v1, base v1.
+    let machine_b = Machine::new(repo.path());
+    machine_b.activate();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
+
+    // A edits the skill and pushes. Repo now has skill v2.
+    machine_a.activate();
+    fs::write(
+        machine_a.claude().join("skills/deploy/SKILL.md"),
+        b"# deploy\nv2 from A\n",
+    )
+    .unwrap();
+    push_history(
+        Some("A edits skill"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+    machine_b.activate();
+
+    // On B: make the skill overwrite FAIL (read-only dir) so the
+    // pull's keep path fires with nothing_to_publish=true
+    // (kept_local_clean). The local file still matches the base.
+    let skill_dir = machine_b.claude().join("skills/deploy");
+    fs::set_permissions(&skill_dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+    // B also creates a DIFFERENT skill in the SAME category. The OLD
+    // session-only gate would have held this back along with the held
+    // skill. The NEW per-file skip must let it through (its decision
+    // is unrelated to the held skill).
+    fs::create_dir_all(machine_b.claude().join("skills/other")).unwrap();
+    fs::write(
+        machine_b.claude().join("skills/other/SKILL.md"),
+        b"# other\nB's new skill\n",
+    )
+    .unwrap();
+
+    // sync_bidirectional: the per-file skip should skip the held
+    // skill but publish the unrelated new skill.
+    sync_bidirectional(Some("B sync"), None, false, false, VerbosityLevel::Quiet).unwrap();
+
+    // Restore the permission so the test cleanup can read the file
+    // if needed.
+    fs::set_permissions(&skill_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // The held skill: local==base, repo has the newer v2. The push
+    // must NOT have written local (== base, the OLDER bytes) over
+    // the repo's v2.
+    let repo_skill =
+        fs::read_to_string(repo.path().join("artifacts/skills/deploy/SKILL.md")).unwrap();
+    assert_eq!(
+        repo_skill, "# deploy\nv2 from A\n",
+        "the held skill was NOT overwritten by the push: {repo_skill}"
+    );
+
+    // The unrelated new skill: B's local file IS in the repo
+    // (the per-file skip only affects the held file, not the
+    // whole category).
+    let repo_other =
+        fs::read_to_string(repo.path().join("artifacts/skills/other/SKILL.md")).unwrap();
+    assert_eq!(
+        repo_other, "# other\nB's new skill\n",
+        "B's unrelated new skill reached the repo: {repo_other}"
     );
 }

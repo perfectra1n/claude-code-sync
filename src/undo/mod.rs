@@ -4,6 +4,7 @@
 //! Snapshots enable undoing pull operations (by restoring files) and push operations
 //! (by resetting Git commits). Includes validation and security checks for safe restoration.
 
+mod allowed_base;
 mod cleanup;
 mod differential;
 mod operations;
