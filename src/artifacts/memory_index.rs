@@ -372,19 +372,53 @@ mod tests {
         // across the union-merge. Two machines deleting the same id
         // at the same time must produce byte-identical files so git
         // three-way-merge treats them as a trivial no-op. The
-        // production body is `deleted\ngit-3way-merge-stable\nwas: <line>\n`
-        // — no wall-clock fields, by design.
-        let body1 = "deleted\ngit-3way-merge-stable\nwas: - [a](a.md) hook A\n";
-        let body2 = "deleted\ngit-3way-merge-stable\nwas: - [a](a.md) hook A\n";
+        // production body is byte-stable: identical inputs produce
+        // identical bytes regardless of who wrote the marker.
+        //
+        // This test exercises the real `record_memory_deletion_marker`
+        // (the production writer), not a hand-typed format string:
+        // the same MEMORY.md entry + same sibling path on two
+        // independent directories must produce the same bytes.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let mem_a = dir_a.path().join("projects/-home-a/memory");
+        let mem_b = dir_b.path().join("projects/-home-a/memory");
+        let setup = |dir: &std::path::Path| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(
+                dir.join("MEMORY.md"),
+                "- [a](a.md) hook A\n- [b](b.md) hook B\n",
+            )
+            .unwrap();
+            std::fs::write(dir.join("a.md"), "fact a\n").unwrap();
+        };
+        setup(&mem_a);
+        setup(&mem_b);
+        // Two machines "concurrently" delete entry [a]: each calls
+        // the production marker writer for the same sibling.
+        crate::artifacts::engine::record_memory_deletion_marker(&mem_a.join("a.md"))
+            .expect("machine A marker");
+        crate::artifacts::engine::record_memory_deletion_marker(&mem_b.join("a.md"))
+            .expect("machine B marker");
+        let body_a = std::fs::read(mem_a.join("deleted/a.md")).unwrap();
+        let body_b = std::fs::read(mem_b.join("deleted/a.md")).unwrap();
         assert_eq!(
-            body1, body2,
-            "the deterministic body must reproduce byte-for-byte"
+            body_a, body_b,
+            "concurrent deletes must produce byte-identical markers so \
+             git three-way-merge treats them as a trivial no-op"
         );
-        // Different was-text, same id: bodies differ (intentional —
-        // distinct entries produce distinct markers; a 3-way merge
-        // sees the conflict and the user resolves).
-        let body3 = "deleted\ngit-3way-merge-stable\nwas: - [a](a.md) hook A from B\n";
-        assert_ne!(body1, body3);
+        // And the body matches the documented format: deterministic,
+        // no wall-clock fields, the original entry preserved.
+        let body_str = std::str::from_utf8(&body_a).unwrap();
+        assert!(body_str.contains("deleted"), "body must mark as deleted");
+        assert!(
+            body_str.contains("git-3way-merge-stable"),
+            "body must carry the merge-stable marker"
+        );
+        assert!(
+            body_str.contains("was: - [a](a.md) hook A"),
+            "body must carry the original entry text"
+        );
     }
 
     #[test]
