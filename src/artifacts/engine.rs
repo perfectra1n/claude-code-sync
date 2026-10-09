@@ -186,8 +186,12 @@ pub struct CategoryCounts {
     pub kept_local: usize,
     /// Files the push refused to re-publish because the remote lost them
     /// since the last sync (adversarial review 2026-10-09, 5ff1d62 hole).
-    /// The local copy is preserved; the user is told to use --force to
-    /// override via the higher-level `sync` command.
+    /// The local copy is preserved on disk. Re-introducing a file the
+    /// remote intentionally lost is not exposed as a CLI override on
+    /// purpose: the safe default is to honor the deletion, and the
+    /// user can re-publish by `rm`-ing the local copy (the next push
+    /// sees `tracked_seen` no longer contains the path and writes
+    /// the file as a fresh `Added`).
     #[serde(default)]
     pub held_back_remote_lost: usize,
 }
@@ -287,6 +291,15 @@ impl ArtifactReport {
             .iter()
             .filter(|c| c.kind == ArtifactChangeKind::KeptLocalDelete)
             .count()
+    }
+
+    /// Files the push refused to re-publish because the remote lost
+    /// them since the last sync (adversarial review 2026-10-09, 5ff1d62
+    /// hole). Surfaced in the push summary and the history so the
+    /// user can see that a deletion they made (or that the remote
+    /// received) was preserved.
+    pub fn total_held_back_remote_lost(&self) -> usize {
+        self.counts.iter().map(|c| c.held_back_remote_lost).sum()
     }
 
     fn record(&mut self, category: CategoryId, kind: ArtifactChangeKind, path: &Path) {
@@ -559,8 +572,10 @@ pub fn push_artifacts(
         // the remote lost between syncs (adversarial review 2026-10-09,
         // 5ff1d62 hole): a fresh-looking "Added" on the push report
         // would otherwise silently rewrite the remote's deletion. The
-        // local copy is preserved on disk; the user can pass --force
-        // via the higher-level `sync` command to override.
+        // local copy is preserved on disk; re-introducing it is a
+        // separate action (the user `rm`s the local copy, the next
+        // push sees `tracked_seen` no longer contains the path, the
+        // file lands as a fresh `Added`).
         let tracked_seen = tracked::load(claude_dir, repo_root);
         let mut pushed: TrackedPaths = TrackedPaths::new();
         // Files kept back for their size are still here: count them as
@@ -806,19 +821,21 @@ pub fn push_artifacts(
         report.counts.push(counts);
     }
 
-    if active_categories(filter).any(|desc| desc.mirror_deletes) {
-        // ONE locked delta merge (see `tracked::save_delta`): a same-repo
-        // pull that rewrites the record while this push runs keeps its
-        // entries, and so do the entries of categories this push did not
-        // scan (disabled ones) — their files still exist, and forgetting
-        // them would silently stop their deletion mirroring. A
-        // record-save failure must not discard the report and strand a
-        // half-applied push.
-        if let Err(e) =
-            tracked::save_delta(claude_dir, repo_root, tracked_now, deltas.tracked_removals)
-        {
-            log::warn!("Tracked record NOT saved (files are already pushed): {e}");
-        }
+    // ONE locked delta merge (see `tracked::save_delta`), unconditional:
+    // a same-repo pull that rewrites the record while this push runs
+    // keeps its entries, and so do the entries of categories this push
+    // did not scan (disabled ones) — their files still exist, and
+    // forgetting them would silently stop their deletion mirroring.
+    // Unconditional also covers mirror_deletes:false categories, whose
+    // pushed paths need to land in the tracked set so the 5ff1d62
+    // guard (refuse to resurrect a remote-lost file) is effective
+    // even when the filter enables only those categories. A
+    // record-save failure must not discard the report and strand a
+    // half-applied push.
+    if let Err(e) =
+        tracked::save_delta(claude_dir, repo_root, tracked_now, deltas.tracked_removals)
+    {
+        log::warn!("Tracked record NOT saved (files are already pushed): {e}");
     }
     // Gated on what this push OWNS (its computed inserts and removals),
     // not on `bases_changed`'s start-of-push movement comparison: a
