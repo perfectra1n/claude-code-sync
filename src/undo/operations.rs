@@ -915,11 +915,13 @@ mod tests {
         // with no declarations at all, carrying pre-pull entries for TWO
         // repositories.
         let record_path = temp_dir.path().join(".claude-code-sync-tracked.json");
-        let pre_pull_record = format!(
-            "{{\"repos\": {{\"{}\": [\"projects/x/fact.md\"], \"{}\": [\"other/file.md\"]}}}}",
-            repo_root.display(),
-            other_repo.display()
-        );
+        // Built with serde_json so a Windows path's backslashes are escaped.
+        let key = |path: &Path| path.to_string_lossy().into_owned();
+        let pre_pull_record = serde_json::json!({ "repos": {
+            key(&repo_root): ["projects/x/fact.md"],
+            key(&other_repo): ["other/file.md"],
+        }})
+        .to_string();
         let mut snapshot = Snapshot::create(OperationType::Pull, vec![&artifact], None).unwrap();
         snapshot.files.insert(
             record_path.to_string_lossy().to_string(),
@@ -939,10 +941,8 @@ mod tests {
         // The pull "ran" (the artifact changed) and the OTHER repository
         // recorded an entry of its own in the meantime.
         fs::write(&artifact, "post-pull").unwrap();
-        let post_pull_record = format!(
-            "{{\"repos\": {{\"{}\": [\"later/entry.md\"]}}}}",
-            other_repo.display()
-        );
+        let post_pull_record =
+            serde_json::json!({ "repos": { key(&other_repo): ["later/entry.md"] } }).to_string();
         fs::write(&record_path, post_pull_record).unwrap();
 
         let summary = undo_pull(Some(history_path.clone()), Some(temp_dir.path())).unwrap();
@@ -1559,27 +1559,34 @@ mod tests {
         // Err (the history is already rewritten — an Err would strand a
         // partially-restored machine silently): the undo succeeds, says
         // so, and KEEPS the snapshot, pinned, as the only copy of the
-        // pre-pull files.
+        // pre-pull files. Only Unix can make the restore fail (above), so
+        // only there is the kept snapshot asserted.
         let summary = result.unwrap();
+        #[cfg(not(unix))]
+        let _ = summary;
+        #[cfg(unix)]
         assert!(
             summary.contains("KEPT"),
             "the summary announces the kept snapshot"
         );
-        assert!(
-            snapshot_path.exists(),
-            "a failed restore keeps the snapshot file"
-        );
-        let reloaded = Snapshot::load_from_disk(&snapshot_path).unwrap();
-        assert!(
-            reloaded.pinned,
-            "the kept snapshot is pinned against cleanup"
-        );
-        assert!(
-            reloaded
-                .files
-                .contains_key(&file1.to_string_lossy().to_string()),
-            "the kept snapshot still carries the pre-pull files"
-        );
+        #[cfg(unix)]
+        {
+            assert!(
+                snapshot_path.exists(),
+                "a failed restore keeps the snapshot file"
+            );
+            let reloaded = Snapshot::load_from_disk(&snapshot_path).unwrap();
+            assert!(
+                reloaded.pinned,
+                "the kept snapshot is pinned against cleanup"
+            );
+            assert!(
+                reloaded
+                    .files
+                    .contains_key(&file1.to_string_lossy().to_string()),
+                "the kept snapshot still carries the pre-pull files"
+            );
+        }
 
         // Restore write permission so the TempDir can be removed.
         #[cfg(unix)]

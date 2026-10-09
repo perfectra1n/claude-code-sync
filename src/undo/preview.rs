@@ -426,10 +426,11 @@ mod legacy_tests {
         // declarations. The preview must agree with the undo — record
         // surgery, not a wholesale restore listing.
         let record_path = temp_dir.path().join(".claude-code-sync-tracked.json");
-        let record = format!(
-            "{{\"repos\": {{\"{}\": [\"projects/x/fact.md\"]}}}}",
-            repo_root.display()
-        );
+        // Built with serde_json so a Windows path's backslashes are escaped.
+        let record = serde_json::json!({ "repos": {
+            repo_root.to_string_lossy().into_owned(): ["projects/x/fact.md"],
+        }})
+        .to_string();
         let mut snapshot = Snapshot::create(OperationType::Pull, vec![&artifact], None).unwrap();
         snapshot.files.insert(
             record_path.to_string_lossy().to_string(),
