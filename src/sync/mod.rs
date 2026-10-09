@@ -60,6 +60,7 @@ pub(crate) fn print_artifact_changes(report: &ArtifactReport) {
                 ArtifactChangeKind::Deleted => "DEL".red(),
                 ArtifactChangeKind::KeptLocal => "KEEP".yellow(),
                 ArtifactChangeKind::KeptLocalDelete => "KEEP".yellow(),
+                ArtifactChangeKind::HeldBackRemoteLost => "HOLD".magenta(),
             };
             println!("    {} {}", kind_label, change.path.display());
         }
@@ -204,6 +205,7 @@ pub fn sync_bidirectional(
         interactive,
         verbosity,
         &skip_artifact_paths,
+        &[], // resurrect: no CLI flag exposed in the sync path
     )?;
 
     if verbosity == VerbosityLevel::Quiet && kept_local > 0 {

@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ use crate::scm::Backend;
 
 use super::bases::{self, BaseHashes};
 use super::denylist::{is_denied, is_unsafe_rel_path};
-use super::memory_index::{is_memory_index, merge_memory_index};
+use super::memory_index::{is_memory_index, merge_memory_index_with_tombstones};
 use super::registry::{
     CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR, REGISTRY,
 };
@@ -228,6 +228,13 @@ pub enum ArtifactChangeKind {
     /// removal has been accepted, and the next pull's
     /// gone-from-both-sides pass is what clears the record entry.
     KeptLocalDelete,
+    /// The push refused to re-publish a file the remote lost since the
+    /// last sync (adversarial review 2026-10-09, 5ff1d62 hole). The
+    /// local copy is preserved on disk; the file path is in
+    /// `ArtifactChange.path` (repo-relative). The user-facing escape
+    /// hatch is `claude-code-sync push --resurrect <path>` (see
+    /// `engine::prepare_resurrection`).
+    HeldBackRemoteLost,
 }
 
 /// One file a push or pull actually added, modified or deleted.
@@ -301,6 +308,22 @@ impl ArtifactReport {
     /// received) was preserved.
     pub fn total_held_back_remote_lost(&self) -> usize {
         self.counts.iter().map(|c| c.held_back_remote_lost).sum()
+    }
+
+    /// The repo-relative paths of every file the 5ff1d62 push guard
+    /// refused, in push-iteration order. Each entry is paired with the
+    /// category whose push would have published the file. The push summary
+    /// lists these so the user can see exactly which files were held back
+    /// (the `status --held-back` command lists the same set without
+    /// performing a push).
+    pub fn held_back_paths(&self) -> impl Iterator<Item = (&CategoryId, &PathBuf, ArtifactChangeKind)> {
+        self.changes.iter().filter_map(|c| {
+            if c.kind == ArtifactChangeKind::HeldBackRemoteLost {
+                Some((&c.category, &c.path, c.kind))
+            } else {
+                None
+            }
+        })
     }
 
     fn record(&mut self, category: CategoryId, kind: ArtifactChangeKind, path: &Path) {
@@ -439,6 +462,12 @@ fn write_atomic(path: &Path, content: &[u8], mode_source: &Path) -> Result<()> {
     fs::create_dir_all(parent)?;
     let tmp = tempfile::NamedTempFile::new_in(parent)?;
     fs::write(tmp.path(), content)?;
+    // Durability: without fsync, `rename(2)` is not durable across power
+    // loss — the data can be in the page cache but not on disk when the
+    // machine loses power. The file fsync flushes the data; the directory
+    // fsync (Unix only) commits the rename entry itself. Both required
+    // for crash-and-power-loss-safe writes.
+    tmp.as_file().sync_all()?;
     #[cfg(unix)]
     {
         if let Some(mode) = get_mode_for_copy(path, mode_source) {
@@ -447,6 +476,12 @@ fn write_atomic(path: &Path, content: &[u8], mode_source: &Path) -> Result<()> {
     }
     tmp.persist(path)
         .with_context(|| format!("Failed to persist {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 
@@ -696,8 +731,28 @@ pub fn push_artifacts(
                     if existed && unions_index {
                         match fs::read(&dest) {
                             Ok(dest_bytes) => {
+                                // Push-side tombstone-aware merge. The
+                                // local side (incoming in merge terms) is
+                                // `file.abs`; the repo side (dest) is `dest`.
+                                // Sibling + deleted sets on both sides are
+                                // needed to honor per-record tombstones.
+                                let dest_siblings =
+                                    collect_memory_sibling_targets(&dest);
+                                let incoming_siblings =
+                                    collect_memory_sibling_targets(&file.abs);
+                                let dest_deleted =
+                                    collect_memory_deleted_ids(&dest);
+                                let incoming_deleted =
+                                    collect_memory_deleted_ids(&file.abs);
                                 let (merged, new_entries) =
-                                    merge_memory_index(&dest_bytes, &src_bytes);
+                                    merge_memory_index_with_tombstones(
+                                        &dest_bytes,
+                                        &src_bytes,
+                                        &dest_siblings,
+                                        &incoming_siblings,
+                                        &dest_deleted,
+                                        &incoming_deleted,
+                                    );
                                 pending_entries = new_entries;
                                 src_bytes = merged;
                             }
@@ -731,6 +786,16 @@ pub fn push_artifacts(
                                 file.rel.display()
                             );
                             counts.held_back_remote_lost += 1;
+                            // Record the file identity (repo-relative) so the
+                            // push summary can list which files were held back
+                            // and `push --resurrect <path>` can target them.
+                            // The escape hatch lives in
+                            // `engine::prepare_resurrection`.
+                            report.record(
+                                desc.id,
+                                ArtifactChangeKind::HeldBackRemoteLost,
+                                &file.rel,
+                            );
                             continue;
                         }
                         if let Err(e) = write_atomic(&dest, &src_bytes, &file.abs) {
@@ -868,6 +933,108 @@ pub fn push_artifacts(
 fn hold_back(counts: &mut CategoryCounts, abs: &Path, why: &str, e: &dyn std::fmt::Display) {
     log::warn!("Holding back {} ({}): {e}", abs.display(), why);
     counts.skipped += 1;
+}
+
+/// Write a `deleted/<id>.md` marker for a memory index entry whose sibling
+/// `.md` was just deleted. The marker is the durable carrier of the
+/// deletion across the union-merge. The marker body is byte-stable for
+/// identical concurrent deletes, so git three-way-merges them trivially.
+/// A no-op (the deleted path is not a memory sibling) returns Ok without
+/// writing.
+pub fn record_memory_deletion_marker(deleted_sibling: &Path) -> Result<()> {
+    use crate::artifacts::memory_index::DELETED_DIR;
+    let parent = match deleted_sibling.parent() {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    let index_path = parent.join(crate::artifacts::memory_index::MEMORY_INDEX_FILE);
+    if !index_path.is_file() {
+        // Not a memory directory — nothing to mark.
+        return Ok(());
+    }
+    let stem = match deleted_sibling.file_stem().and_then(|s| s.to_str()) {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    let deleted_dir = parent.join(DELETED_DIR);
+    std::fs::create_dir_all(&deleted_dir)
+        .with_context(|| format!("Failed to create {}", deleted_dir.display()))?;
+    let marker = deleted_dir.join(format!("{stem}.md"));
+    // The body intentionally does NOT include the wall-clock: identical
+    // concurrent deletes from two machines produce identical bytes, so
+    // git three-way-merges them as a no-op (vs. the conflict that
+    // divergent timestamps would produce). The "was:" line is the
+    // original entry text from the index, if it was parseable — empty
+    // for the parse-failed case.
+    let was = std::fs::read_to_string(&index_path)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find(|l| l.contains(&format!("]({stem}.md)")))
+                .map(|l| l.to_string())
+        })
+        .unwrap_or_default();
+    let body = format!("deleted\ngit-3way-merge-stable\nwas: {was}\n");
+    write_atomic(&marker, body.as_bytes(), deleted_sibling)?;
+    Ok(())
+}
+
+/// Collect the link-target filenames of every `*.md` sibling of the
+/// `MEMORY.md` at `path`'s parent. Used by the tombstone-aware merge to
+/// know which entries have a live sibling. Returns an empty set when the
+/// path is not under a memory index directory.
+fn collect_memory_sibling_targets(path: &Path) -> BTreeSet<String> {
+    use crate::artifacts::memory_index::MEMORY_INDEX_FILE;
+    let parent = match path.parent() {
+        Some(p) => p,
+        None => return BTreeSet::new(),
+    };
+    let index_path = parent.join(MEMORY_INDEX_FILE);
+    if !index_path.is_file() {
+        return BTreeSet::new();
+    }
+    let mut targets = BTreeSet::new();
+    let entries = match std::fs::read_dir(parent) {
+        Ok(e) => e,
+        Err(_) => return BTreeSet::new(),
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".md") && name != MEMORY_INDEX_FILE {
+            targets.insert(name.to_string());
+        }
+    }
+    targets
+}
+
+/// Collect the deletion-marker ids present at `path`'s parent. The id
+/// is the stem of each file in `deleted/`. An empty set when the
+/// directory is missing or the path is not under a memory index.
+fn collect_memory_deleted_ids(path: &Path) -> BTreeSet<String> {
+    use crate::artifacts::memory_index::DELETED_DIR;
+    let parent = match path.parent() {
+        Some(p) => p,
+        None => return BTreeSet::new(),
+    };
+    let deleted_dir = parent.join(DELETED_DIR);
+    let entries = match std::fs::read_dir(&deleted_dir) {
+        Ok(e) => e,
+        Err(_) => return BTreeSet::new(),
+    };
+    let mut ids = BTreeSet::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".md") {
+            if let Some(stem) = std::path::Path::new(&*name).file_stem() {
+                if let Some(s) = stem.to_str() {
+                    ids.insert(s.to_string());
+                }
+            }
+        }
+    }
+    ids
 }
 
 /// The record deltas one push owns: entries its own writes add or remove,
@@ -1631,7 +1798,26 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         plan.skipped += 1;
                         continue;
                     };
-                    let (merged, _) = merge_memory_index(&local_bytes, &repo_bytes);
+                    // Tombstone-aware plan-time check: the local side
+                    // is `local_path`, the repo side is `repo_path`. If
+                    // either carries a `deleted/<id>.md` marker that
+                    // matches an entry here, the merged MEMORY.md drops
+                    // the entry — the local "is this unchanged?" check
+                    // must see the post-merge output, not the raw
+                    // local bytes (otherwise the apply's 5-arg merge
+                    // never runs because the plan sees nothing to do).
+                    let dest_siblings = collect_memory_sibling_targets(&local_path);
+                    let incoming_siblings = collect_memory_sibling_targets(&repo_path);
+                    let dest_deleted = collect_memory_deleted_ids(&local_path);
+                    let incoming_deleted = collect_memory_deleted_ids(&repo_path);
+                    let (merged, _) = merge_memory_index_with_tombstones(
+                        &local_bytes,
+                        &repo_bytes,
+                        &dest_siblings,
+                        &incoming_siblings,
+                        &dest_deleted,
+                        &incoming_deleted,
+                    );
                     if merged != local_bytes {
                         plan.unions.push(write);
                     } else {
@@ -2359,6 +2545,50 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     continue;
                 }
             };
+            // KEEP_BOTH: write the remote bytes to a sibling conflict
+            // copy (Syncthing naming) and leave the local file untouched.
+            // The local file is dirty by user-edit definition; the
+            // conflict copy is a side artifact, not a synced value, so
+            // we do NOT call record_base. PROMPT→ANSWER re-check still
+            // applies (the file could have been deleted during the
+            // prompt) and the write failure path is the same.
+            if let crate::merge_tool::ResolutionOutcome::ConflictCopy { rename } = resolution {
+                if !write.local_path.is_file() {
+                    log::warn!(
+                        "Skipping conflict copy for {} (deleted during prompt; held for next pull)",
+                        write.local_path.display()
+                    );
+                    counts_for(&mut by_category, write.category).skipped += 1;
+                    continue;
+                }
+                if let Err(e) = write_atomic(&rename, &repo_bytes, &write.repo_path) {
+                    log::warn!(
+                        "Could not save repo version of {} to {}: {e}",
+                        write.local_path.display(),
+                        rename.display()
+                    );
+                    report_kept(
+                        &mut by_category,
+                        &mut report,
+                        write.category,
+                        &write.category_path,
+                        false,
+                    );
+                    continue;
+                }
+                log::info!(
+                    "Saved repo version of '{}' as {} (conflicting local edit)",
+                    write.local_path.display(),
+                    rename.display()
+                );
+                counts_for(&mut by_category, write.category).modified += 1;
+                report.record(
+                    write.category,
+                    ArtifactChangeKind::Modified,
+                    &write.category_path,
+                );
+                continue;
+            }
             if let crate::merge_tool::ResolutionOutcome::Write(bytes) = resolution {
                 // PROMPT→ANSWER re-check: a file deleted during the
                 // multi-second merge-tool session must not be
@@ -2651,6 +2881,46 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     );
                     continue;
                 }
+                Ok(crate::merge_tool::ResolutionOutcome::ConflictCopy { rename }) => {
+                    // KEEP_BOTH: write the remote bytes to a sibling
+                    // conflict copy and leave the local file untouched.
+                    // The local file is dirty by user-edit definition;
+                    // the conflict copy is a side artifact, so we do
+                    // NOT call record_base. The change is reported as
+                    // Modified against the original local path so the
+                    // summary is intelligible (the conflict copy is a
+                    // side effect, not a separate file the user
+                    // tracks).
+                    if let Err(e) =
+                        write_atomic(&rename, &repo_bytes, &write.repo_path)
+                    {
+                        log::warn!(
+                            "Could not save repo version of {} to {}: {e}",
+                            write.local_path.display(),
+                            rename.display()
+                        );
+                        report_kept(
+                            &mut by_category,
+                            &mut report,
+                            write.category,
+                            &write.category_path,
+                            true,
+                        );
+                        continue;
+                    }
+                    log::info!(
+                        "Saved repo version of '{}' as {} (conflicting local edit)",
+                        write.local_path.display(),
+                        rename.display()
+                    );
+                    counts_for(&mut by_category, write.category).modified += 1;
+                    report.record(
+                        write.category,
+                        ArtifactChangeKind::Modified,
+                        &write.category_path,
+                    );
+                    continue;
+                }
                 Ok(crate::merge_tool::ResolutionOutcome::Write(resolved)) => Some(resolved),
                 Ok(crate::merge_tool::ResolutionOutcome::KeepLocal) => {
                     // A decline IS a keep: counted kept-local (not
@@ -2783,7 +3053,27 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             }
         };
         let (merged, new_entries) = match desc.merge {
-            MergeStrategy::UnionMemoryIndex => merge_memory_index(&local_bytes, &repo_bytes),
+            MergeStrategy::UnionMemoryIndex => {
+                // Collect sibling-file sets for the tombstone-aware
+                // 5-arg merge. The local parent is the dest side; the
+                // repo side is read via the recorded repo_path's parent.
+                let dest_siblings = collect_memory_sibling_targets(
+                    &write.local_path,
+                );
+                let incoming_siblings = collect_memory_sibling_targets(
+                    &write.repo_path,
+                );
+                let dest_deleted = collect_memory_deleted_ids(&write.local_path);
+                let incoming_deleted = collect_memory_deleted_ids(&write.repo_path);
+                merge_memory_index_with_tombstones(
+                    &local_bytes,
+                    &repo_bytes,
+                    &dest_siblings,
+                    &incoming_siblings,
+                    &dest_deleted,
+                    &incoming_deleted,
+                )
+            }
             _ => {
                 // Strict UTF-8 decode — `from_utf8_lossy` would silently
                 // substitute invalid sequences with U+FFFD, corrupting
@@ -3050,6 +3340,20 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             ArtifactChangeKind::Deleted,
             &delete.category_path,
         );
+        // Hole 1 (memory-index deletion propagation): when the deleted
+        // file is a sibling .md of a MEMORY.md, write a deterministic
+        // `deleted/<id>.md` marker so the next union merge propagates
+        // the deletion to the other machine. Idempotent — the merge
+        // consults the marker set, not the absence of the sibling, so
+        // a re-write is harmless. The marker's body is byte-stable for
+        // identical concurrent deletes, so git three-way-merges them
+        // trivially.
+        if let Err(e) = record_memory_deletion_marker(&delete.local_path) {
+            log::warn!(
+                "Could not write deletion marker for {}: {e}",
+                delete.local_path.display()
+            );
+        }
     }
 
     // Base hashes verified at plan time: recorded as-is, without re-reading
@@ -3324,4 +3628,84 @@ pub fn ensure_ignore_files(repo_root: &Path, backend: Backend) -> Result<bool> {
     }
     fs::write(&path, updated)?;
     Ok(true)
+}
+
+/// Remove a list of repo-relative paths from the per-machine tracked record.
+///
+/// The 5ff1d62 push guard (engine.rs:711-759) refuses to re-publish a file
+/// the remote lost when the file is in the tracked record. The user-facing
+/// escape hatch `claude-code-sync push --resurrect <path>` calls this helper
+/// to drop the path from the record first; the next push then sees no entry
+/// and publishes the file as a fresh `Added`.
+///
+/// Defense in depth: returns `Err` if any path is NOT in the current tracked
+/// record. The CLI flag should have validated against the held-back set, but
+/// if it didn't, refuse rather than silently no-op. The exception is the
+/// initial install case (record empty): an empty tracked record is exactly
+/// the state this helper is meant to set, so a no-op is correct there.
+pub fn prepare_resurrection(
+    claude_dir: &Path,
+    repo_root: &Path,
+    paths: &[String],
+) -> Result<()> {
+    let current = tracked::load(claude_dir, repo_root);
+    let unknown: Vec<&str> = paths
+        .iter()
+        .filter(|p| !current.contains(*p))
+        .map(|p| p.as_str())
+        .collect();
+    if !unknown.is_empty() {
+        anyhow::bail!(
+            "cannot resurrect paths that are not in the tracked record: {}",
+            unknown.join(", ")
+        );
+    }
+    if paths.is_empty() {
+        return Ok(());
+    }
+    // `save_delta` is a locked load-merge-write: a concurrent same-repo
+    // pull that records entries while this runs keeps them. The empty
+    // insert set is the no-op case for the inserts half; only the removals
+    // half matters.
+    let empty: TrackedPaths = TrackedPaths::new();
+    tracked::save_delta(claude_dir, repo_root, empty, paths.to_vec())
+}
+
+/// Plan which files the 5ff1d62 push guard would refuse for a given filter,
+/// without performing any writes. Drives `status --held-back` without
+/// running a full push (which is the only place the guard normally fires).
+///
+/// Returns `(category, repo-relative-path)` pairs in push-iteration order.
+/// The category is the one whose push would have refused the file.
+pub fn plan_held_back_remote_lost(
+    claude_dir: &Path,
+    repo_root: &Path,
+    filter: &FilterConfig,
+) -> Result<Vec<(CategoryId, PathBuf)>> {
+    let mut held_back: Vec<(CategoryId, PathBuf)> = Vec::new();
+    let tracked_seen = tracked::load(claude_dir, repo_root);
+    for desc in active_categories(filter) {
+        let category_root = category_repo_root(desc, repo_root, filter);
+        let mut counts = CategoryCounts::new(desc.id);
+        let mut held_back_local: Vec<PathBuf> = Vec::new();
+        let files = collect(
+            desc,
+            claude_dir,
+            filter,
+            &mut counts.skipped,
+            &mut held_back_local,
+        )?;
+        for file in files {
+            let dest = category_root.join(&file.rel);
+            // Mirror the push guard's "is the remote missing this file" test.
+            if !dest.is_file() {
+                if let Some(rel) = repo_relative(repo_root, &dest) {
+                    if tracked_seen.contains(&rel) {
+                        held_back.push((desc.id, PathBuf::from(rel)));
+                    }
+                }
+            }
+        }
+    }
+    Ok(held_back)
 }
