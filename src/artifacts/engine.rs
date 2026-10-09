@@ -184,6 +184,12 @@ pub struct CategoryCounts {
     /// last sync — a `push` is what publishes them.
     #[serde(default)]
     pub kept_local: usize,
+    /// Files the push refused to re-publish because the remote lost them
+    /// since the last sync (adversarial review 2026-10-09, 5ff1d62 hole).
+    /// The local copy is preserved; the user is told to use --force to
+    /// override via the higher-level `sync` command.
+    #[serde(default)]
+    pub held_back_remote_lost: usize,
 }
 
 impl CategoryCounts {
@@ -197,6 +203,7 @@ impl CategoryCounts {
             merged_entries: 0,
             deleted: 0,
             kept_local: 0,
+            held_back_remote_lost: 0,
         }
     }
 }
@@ -547,6 +554,14 @@ pub fn push_artifacts(
             &mut held_back,
         )?;
         let category_root = category_repo_root(desc, repo_root, filter);
+        // The tracked record is the durable "this machine has seen this
+        // file" set. The push consults it to refuse resurrecting a file
+        // the remote lost between syncs (adversarial review 2026-10-09,
+        // 5ff1d62 hole): a fresh-looking "Added" on the push report
+        // would otherwise silently rewrite the remote's deletion. The
+        // local copy is preserved on disk; the user can pass --force
+        // via the higher-level `sync` command to override.
+        let tracked_seen = tracked::load(claude_dir, repo_root);
         let mut pushed: TrackedPaths = TrackedPaths::new();
         // Files kept back for their size are still here: count them as
         // present so the repo copy (if any) is neither deleted nor forgotten.
@@ -676,6 +691,30 @@ pub fn push_artifacts(
                     }
 
                     if !existed {
+                        // If this machine has a `tracked` entry for the
+                        // file, the remote lost it since the last sync
+                        // (or since this machine last fetched it). The
+                        // local copy is preserved on disk; refusing to
+                        // re-publish it is the safe default — the
+                        // user's intent on the other side was a real
+                        // deletion, and resurrecting it silently
+                        // rewrites the remote history. The
+                        // higher-level `sync` command exposes an
+                        // explicit way to override; here we just
+                        // hold back, count, and warn.
+                        let repo_rel = repo_relative(repo_root, &category_root.join(&file.rel));
+                        if repo_rel
+                            .as_ref()
+                            .map(|r| tracked_seen.contains(r))
+                            .unwrap_or(false)
+                        {
+                            log::warn!(
+                                "Not re-publishing {}: the remote lost this file since the last sync; the local copy is preserved",
+                                file.rel.display()
+                            );
+                            counts.held_back_remote_lost += 1;
+                            continue;
+                        }
                         if let Err(e) = write_atomic(&dest, &src_bytes, &file.abs) {
                             hold_back(&mut counts, &file.abs, "repo write failed", &e);
                             continue;
@@ -754,6 +793,14 @@ pub fn push_artifacts(
                 );
                 tracked_now.extend(tracked_under(&tracked_before, &category_root, repo_root));
             }
+        } else {
+            // mirror_deletes:false categories still need the pushed paths
+            // recorded in the `tracked` set — the push consults it to
+            // refuse resurrecting a file the remote lost since this
+            // machine last fetched it (adversarial review 2026-10-09,
+            // 5ff1d62 hole). The gone-scan skips these categories
+            // anyway, so recording here cannot trigger a future delete.
+            tracked_now.extend(pushed);
         }
 
         report.counts.push(counts);

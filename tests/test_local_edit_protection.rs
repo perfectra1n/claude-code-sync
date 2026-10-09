@@ -2792,3 +2792,74 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
         "no incoming text was union-merged in: {after}"
     );
 }
+
+#[test]
+fn a_push_does_not_resurrect_a_file_the_remote_lost() {
+    // Adversarial review 2026-10-09 (5ff1d62 hole): with
+    // `mirror_deletes: false` (e.g. ProjectAttachments), the push
+    // arm unconditionally `write_atomic`s a local file into the repo
+    // whenever the repo is missing it. If the user `git rm`-ed the
+    // file on another machine and that deletion was committed +
+    // pushed, the next push from this machine silently resurrects
+    // the file — the "Added: 1" line in the push report gives no
+    // hint that the remote history was just rewritten.
+    //
+    // The contract the fix targets: a push MUST NOT re-publish a
+    // file the remote no longer has, when this machine has a
+    // `tracked` record for it (meaning this machine has synced it
+    // before, and the remote's loss is recent and intentional).
+    // The local copy is preserved on disk; the user is told
+    // explicitly to use `--force` if they really want to override.
+    let repo = TempDir::new().unwrap();
+    let machine = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    // Seed: machine has a per-project memory file and has synced it
+    // before (so `tracked` contains its repo-relative path).
+    let mem = |claude: &Path, body: &str| {
+        let path = claude.join("projects/-home-x/memory/feedback_x.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    };
+    mem(machine.path(), "first version\n");
+    push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+
+    // Simulate the remote losing the file (e.g. another machine
+    // `git rm`-ed and pushed). The local copy is preserved on disk
+    // because `mirror_deletes: false` (and the user has not edited
+    // it locally — same bytes as last sync).
+    let repo_path = repo.path().join("projects/-home-x/memory/feedback_x.md");
+    fs::remove_file(&repo_path).unwrap();
+    assert!(
+        !repo_path.exists(),
+        "the repo is now missing the file (simulating a remote deletion)"
+    );
+
+    // Push again — the contract: do NOT resurrect the file. The
+    // local copy stays on disk; the repo stays missing the file.
+    push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+
+    assert!(
+        !repo_path.exists(),
+        "the push MUST NOT resurrect a file the remote lost"
+    );
+    assert!(
+        machine
+            .path()
+            .join("projects/-home-x/memory/feedback_x.md")
+            .exists(),
+        "the local copy is preserved on disk"
+    );
+}

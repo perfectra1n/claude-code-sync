@@ -148,6 +148,7 @@ mod tests {
             merged_entries: 0,
             deleted: 0,
             kept_local: 0,
+            held_back_remote_lost: 0,
         }];
         let json = serde_json::to_string(&record).unwrap();
         let back: OperationRecord = serde_json::from_str(&json).unwrap();
