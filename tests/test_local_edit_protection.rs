@@ -2145,6 +2145,8 @@ fn a_no_op_base_recording_reports_no_key() {
     );
 }
 
+// Unix only: it needs an executable bit that differs, which Windows lacks.
+#[cfg(unix)]
 #[test]
 fn a_mode_fix_over_converged_bases_mints_no_snapshot() {
     let repo = TempDir::new().unwrap();
@@ -2790,7 +2792,8 @@ fn a_declined_deletion_is_only_asked_once() {
                                    // the targeted reviewer's proof was structural: confirm_deletion must
                                    // appear in the deletes-arm block exactly once. Assert here via
                                    // grep of the compiled path so a future re-introduction is caught.
-    let src = include_str!("../src/artifacts/engine.rs");
+                                   // Line endings normalised: Windows checkouts convert them to CRLF.
+    let src = include_str!("../src/artifacts/engine.rs").replace("\r\n", "\n");
     let deletes_arm_start = src
         .find("for delete in &plan.deletes {")
         .expect("deletes arm");
