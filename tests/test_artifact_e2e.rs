@@ -330,6 +330,194 @@ fn test_full_pipeline_sync_converges_prompt_history() {
     assert_eq!(ts, vec![1000, 2000], "chronological order");
 }
 
+/// Ported from #106 (FluffyDiscord): the full `sync` entry point keeps an
+/// edit and a deletion made since the last sync, and publishes both.
+#[test]
+#[serial]
+fn test_sync_keeps_local_edits_and_deletions_made_since_the_last_sync() {
+    let _restore = EnvRestore::capture();
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let machine = Machine::new(repo.path());
+    machine.activate();
+    let claude = machine.claude();
+    seed_full_claude_home(&claude);
+    fs::create_dir_all(claude.join("skills/review")).unwrap();
+    fs::write(claude.join("skills/review/SKILL.md"), b"# review\n").unwrap();
+    push_history(
+        Some("first"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+        &[] as &[String],
+    )
+    .unwrap();
+
+    fs::write(
+        claude.join("skills/deploy/SKILL.md"),
+        b"# deploy, edited here\n",
+    )
+    .unwrap();
+    fs::remove_file(claude.join("skills/review/SKILL.md")).unwrap();
+    sync_bidirectional(Some("sync"), None, false, false, VerbosityLevel::Quiet).unwrap();
+
+    assert_eq!(
+        fs::read(claude.join("skills/deploy/SKILL.md")).unwrap(),
+        b"# deploy, edited here\n",
+        "the local edit survives the pull half of the sync"
+    );
+    assert_eq!(
+        fs::read(repo.path().join("artifacts/skills/deploy/SKILL.md")).unwrap(),
+        b"# deploy, edited here\n",
+        "and the push half sends it"
+    );
+    assert!(
+        !claude.join("skills/review/SKILL.md").exists(),
+        "the local deletion stands"
+    );
+    let tracked = git(repo.path(), &["ls-files"]);
+    assert!(
+        !tracked.contains("skills/review/SKILL.md"),
+        "and reaches the repo: {tracked}"
+    );
+}
+
+/// Ported from #106 (FluffyDiscord): a pull takes what only the remote
+/// changed, and a file that differs only in dates keeps the later ones.
+#[test]
+#[serial]
+fn test_pull_takes_what_only_the_remote_changed_and_the_later_dates() {
+    let _restore = EnvRestore::capture();
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let skill = |claude: &Path, name: &str| claude.join("skills").join(name).join("SKILL.md");
+    let write_skill = |claude: &Path, name: &str, text: &str| {
+        fs::create_dir_all(claude.join("skills").join(name)).unwrap();
+        fs::write(skill(claude, name), text).unwrap();
+    };
+    let push = |message: &str| {
+        push_history(
+            Some(message),
+            false,
+            None,
+            false,
+            false,
+            VerbosityLevel::Quiet,
+            &std::collections::HashSet::new(),
+            &[] as &[String],
+        )
+        .unwrap();
+    };
+
+    let machine_a = Machine::new(repo.path());
+    machine_a.activate();
+    let a = machine_a.claude();
+    write_skill(&a, "remote-only", "v1\n");
+    write_skill(&a, "dates", "updated: 2026-01-01T00:00:00Z\n");
+    push("A1");
+
+    let machine_b = Machine::new(repo.path());
+    machine_b.activate();
+    let b = machine_b.claude();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
+    write_skill(&b, "dates", "updated: 2026-01-03T00:00:00Z\n");
+
+    machine_a.activate();
+    write_skill(&a, "remote-only", "v2 from A\n");
+    write_skill(&a, "dates", "updated: 2026-01-02T00:00:00Z\n");
+    push("A2");
+
+    machine_b.activate();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(skill(&b, "remote-only")).unwrap(),
+        "v2 from A\n",
+        "a change only the remote made arrives"
+    );
+    assert_eq!(
+        fs::read_to_string(skill(&b, "dates")).unwrap(),
+        "updated: 2026-01-03T00:00:00Z\n",
+        "a file that differs only in dates keeps the later one"
+    );
+}
+
+/// Both machines edited the same skill: the full `sync` neither reverts this
+/// machine's edit nor commits it over the other machine's, and the sessions
+/// still travel.
+#[test]
+#[serial]
+fn test_sync_holds_a_file_both_machines_edited_without_losing_either() {
+    let _restore = EnvRestore::capture();
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let push = |message: &str| {
+        push_history(
+            Some(message),
+            false,
+            None,
+            false,
+            false,
+            VerbosityLevel::Quiet,
+            &std::collections::HashSet::new(),
+            &[] as &[String],
+        )
+        .unwrap();
+    };
+
+    let machine_a = Machine::new(repo.path());
+    machine_a.activate();
+    seed_full_claude_home(&machine_a.claude());
+    push("A seeds");
+
+    let machine_b = Machine::new(repo.path());
+    machine_b.activate();
+    pull_history(false, None, false, VerbosityLevel::Quiet, false).unwrap();
+
+    machine_a.activate();
+    fs::write(
+        machine_a.claude().join("skills/deploy/SKILL.md"),
+        b"# deploy\nA's edit\n",
+    )
+    .unwrap();
+    push("A edits");
+
+    machine_b.activate();
+    fs::write(
+        machine_b.claude().join("skills/deploy/SKILL.md"),
+        b"# deploy\nB's edit\n",
+    )
+    .unwrap();
+    fs::write(
+        machine_b
+            .claude()
+            .join("projects/-home-user-webapp/bbbb-2222.jsonl"),
+        "{\"type\":\"user\",\"sessionId\":\"bbbb-2222\",\"uuid\":\"u9\",\"timestamp\":\"2025-01-02T00:00:00Z\",\"cwd\":\"/home/user/webapp\"}\n",
+    )
+    .unwrap();
+
+    for round in 0..3 {
+        sync_bidirectional(Some("B sync"), None, false, false, VerbosityLevel::Quiet).unwrap();
+        assert_eq!(
+            fs::read_to_string(machine_b.claude().join("skills/deploy/SKILL.md")).unwrap(),
+            "# deploy\nB's edit\n",
+            "round {round}: B's edit is untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path().join("artifacts/skills/deploy/SKILL.md")).unwrap(),
+            "# deploy\nA's edit\n",
+            "round {round}: A's edit is not overwritten"
+        );
+    }
+    assert!(
+        git(repo.path(), &["ls-files"]).contains("bbbb-2222.jsonl"),
+        "the held artifact does not stop the sessions"
+    );
+}
+
 /// Collects what the tool warns about, so a test can count the lines a pull
 /// prints rather than trust that it prints the right number.
 struct WarningCollector;
