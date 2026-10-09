@@ -163,7 +163,10 @@ pub fn build_conflict_path(local_path: &Path) -> PathBuf {
     // YYYYMMDD-HHMMSS without external chrono dep: simple time math from
     // a known epoch anchor. Good enough for a unique-enough suffix.
     let (date_part, time_part) = epoch_seconds_to_ymd_hms(now);
-    let base_name = format!("{stem}.sync-conflict-{date_part}-{time_part}-{host}");
+    let base_name = format!(
+        "{stem}{}{date_part}-{time_part}-{host}",
+        crate::artifacts::denylist::CONFLICT_COPY_INFIX
+    );
     let mut candidate: PathBuf = if ext.is_empty() {
         parent.join(&base_name)
     } else {

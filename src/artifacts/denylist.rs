@@ -23,6 +23,12 @@ const DENIED_EXTENSIONS: &[&str] = &["pem", "key"];
 /// Name prefixes that must never sync (`.env*`, `daemon`, `daemon.lock`, ...).
 const DENIED_NAME_PREFIXES: &[&str] = &[".env", "daemon"];
 
+/// The infix of a "keep both" conflict copy (`<stem>.sync-conflict-<date>-
+/// <time>-<host>.<ext>`): the other machine's version, saved beside this
+/// machine's for the user to compare. It stays on this machine — synced, it
+/// would land on every machine as an extra skill, command or agent.
+pub const CONFLICT_COPY_INFIX: &str = ".sync-conflict-";
+
 /// Directory names that are machine-local or cache-like; any path containing
 /// one of these components is denied.
 const DENIED_DIR_COMPONENTS: &[&str] = &[
@@ -53,6 +59,7 @@ pub fn is_denied(rel_path: &Path) -> bool {
         if DENIED_NAME_PREFIXES
             .iter()
             .any(|prefix| name.starts_with(prefix))
+            || name.contains(CONFLICT_COPY_INFIX)
         {
             return true;
         }
@@ -87,6 +94,17 @@ pub fn is_unsafe_rel_path(rel_path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn keep_both_conflict_copies_never_sync() {
+        assert!(is_denied(Path::new(
+            "commands/deploy.sync-conflict-20261009-120000-host.md"
+        )));
+        assert!(is_denied(Path::new(
+            "skills/s/SKILL.sync-conflict-20261009-120000-host.md"
+        )));
+        assert!(!is_denied(Path::new("commands/sync-conflict-notes.md")));
+    }
 
     #[test]
     fn test_denies_credential_files_anywhere() {

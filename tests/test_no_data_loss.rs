@@ -826,3 +826,20 @@ fn resolve_against_the_repository(claude: &Path, repo: &Path, resolution: &str) 
     bases::save(claude, repo, recorded).unwrap();
     write(&claude.join(SKILL), resolution);
 }
+
+/// A "keep both" conflict copy (the other machine's version, saved beside
+/// this machine's) stays on this machine: syncing it would plant an extra
+/// command, skill or agent on every machine.
+#[test]
+fn a_keep_both_conflict_copy_is_not_pushed() {
+    let (repo, _a, b) = two_machines_in_sync(&[("commands/deploy.md", "deploy\n")]);
+    let copy = "commands/deploy.sync-conflict-20261009-120000-host.md";
+    write(&b.path().join(copy), "the other machine's deploy\n");
+
+    sync(b.path(), repo.path());
+    assert!(!repo.path().join("artifacts").join(copy).exists());
+    assert!(
+        b.path().join(copy).exists(),
+        "the copy itself is left alone"
+    );
+}
