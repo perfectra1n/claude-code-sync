@@ -1,3 +1,16 @@
+//! Settling a file both machines changed only in its date-times.
+//!
+//! Claude Code rewrites timestamps such as `lastUpdated` in
+//! `plugins/known_marketplaces.json` and skill manifests on every machine, so
+//! those files differ between machines without anyone editing them. Such a
+//! difference settles on the later date-time, with no prompt.
+//!
+//! The settle silently picks one side, so it must never fire on real content:
+//! a value only counts as a timestamp when it is the whole value of a key
+//! whose name says it is a time (`lastUpdated`, `modified`, `createdAt`,
+//! `expires_at`, ...). An ISBN, an account number or a date written in prose
+//! is content, and a difference in it is a real conflict.
+
 use chrono::{DateTime, NaiveDateTime};
 
 const ISO_DATE_TIME_SHAPE: &[u8] = b"dddd-dd-ddTdd:dd:dd";
@@ -49,14 +62,64 @@ pub fn keep_later_timestamps(local: &[u8], remote: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn read_timestamp(text: &str, position: usize) -> Option<Timestamp<'_>> {
-    let previous_character = text[..position].chars().next_back();
-    let inside_a_number = previous_character.is_some_and(|character| character.is_ascii_digit());
-    if inside_a_number {
+    if !is_the_value_of_a_time_key(&text[..position]) {
         return None;
     }
-
     let rest = &text[position..];
-    read_iso_date_time(rest).or_else(|| read_epoch_milliseconds(rest))
+    let timestamp = read_iso_date_time(rest).or_else(|| read_epoch_milliseconds(rest))?;
+    // The whole value, not the start of a longer word or number.
+    let next_character = rest[timestamp.text.len()..].chars().next();
+    if next_character.is_some_and(|character| character.is_alphanumeric()) {
+        return None;
+    }
+    Some(timestamp)
+}
+
+/// Whether the text just before a value is `key: ` (YAML) or `"key": `
+/// (JSON), optionally followed by the value's opening quote, with a key name
+/// that says it holds a time.
+fn is_the_value_of_a_time_key(before: &str) -> bool {
+    let before = before
+        .strip_suffix('"')
+        .or_else(|| before.strip_suffix('\''))
+        .unwrap_or(before);
+    let Some(before) = before.trim_end_matches([' ', '\t']).strip_suffix(':') else {
+        return false;
+    };
+    let before = before
+        .strip_suffix('"')
+        .or_else(|| before.strip_suffix('\''))
+        .unwrap_or(before);
+    let key_start = before
+        .rfind(|character: char| {
+            !(character.is_ascii_alphanumeric() || character == '_' || character == '-')
+        })
+        .map_or(0, |index| index + 1);
+    names_a_time(&before[key_start..])
+}
+
+fn names_a_time(key: &str) -> bool {
+    const TIME_WORDS: &[&str] = &[
+        "time",
+        "date",
+        "updated",
+        "modified",
+        "created",
+        "seen",
+        "stamp",
+        "epoch",
+        "expires",
+        "synced",
+        "fetched",
+        "installed",
+    ];
+    let lowercase = key.to_ascii_lowercase();
+    !key.is_empty()
+        && (TIME_WORDS.iter().any(|word| lowercase.contains(word))
+            || key.ends_with("At")
+            || lowercase.ends_with("_at")
+            || lowercase.ends_with("-at")
+            || lowercase == "at")
 }
 
 fn read_iso_date_time(text: &str) -> Option<Timestamp<'_>> {
@@ -155,15 +218,45 @@ mod tests {
             ),
             (
                 "each date settles on its own",
-                "a 2026-01-02T00:00:00Z b 1790137212675",
-                "a 2026-01-01T00:00:00Z b 1790837225831",
-                Some("a 2026-01-02T00:00:00Z b 1790837225831"),
+                "{\"createdAt\": \"2026-01-02T00:00:00Z\", \"lastSeen\": 1790137212675}",
+                "{\"createdAt\": \"2026-01-01T00:00:00Z\", \"lastSeen\": 1790837225831}",
+                Some("{\"createdAt\": \"2026-01-02T00:00:00Z\", \"lastSeen\": 1790837225831}"),
             ),
             (
                 "numeric offset compared as an instant",
-                "at 2026-10-01T08:00:00+02:00",
-                "at 2026-10-01T07:00:00Z",
-                Some("at 2026-10-01T07:00:00Z"),
+                "updated_at: 2026-10-01T08:00:00+02:00",
+                "updated_at: 2026-10-01T07:00:00Z",
+                Some("updated_at: 2026-10-01T07:00:00Z"),
+            ),
+            (
+                "a date-time in prose is content",
+                "met at 2026-10-01T08:00:00Z",
+                "met at 2026-10-02T08:00:00Z",
+                None,
+            ),
+            (
+                "an ISBN is content, not epoch milliseconds",
+                "\"isbn\": \"9780134685991\"",
+                "\"isbn\": \"9780201633610\"",
+                None,
+            ),
+            (
+                "an id that looks like epoch milliseconds is content",
+                "{\"accountId\": 1790137212675}",
+                "{\"accountId\": 1790837225831}",
+                None,
+            ),
+            (
+                "a 13-digit number after a letter is content",
+                "token: a1790137212675",
+                "token: a1790837225831",
+                None,
+            ),
+            (
+                "a time key followed by more digits is content",
+                "\"lastUpdated\": 17901372126751",
+                "\"lastUpdated\": 17908372258312",
+                None,
             ),
             (
                 "text differs besides the dates",

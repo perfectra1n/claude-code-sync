@@ -679,3 +679,31 @@ fn an_overwrite_without_a_backup_does_not_publish_the_stale_local_copy() {
         "the next pull takes it"
     );
 }
+
+/// A number that merely looks like a timestamp is content: two different
+/// values are a conflict to hold, not a date difference to settle silently
+/// on the larger one.
+#[test]
+fn a_number_shaped_like_a_timestamp_is_not_settled_silently() {
+    let (repo, a, b) = two_machines_in_sync(&[("settings.json", "{\"accountId\": 1700000000000}")]);
+    write(
+        &a.path().join("settings.json"),
+        "{\"accountId\": 1790837225831}",
+    );
+    sync(a.path(), repo.path());
+    write(
+        &b.path().join("settings.json"),
+        "{\"accountId\": 1790137212675}",
+    );
+
+    let report = sync(b.path(), repo.path());
+    assert_eq!(kept_local(&report), 1, "held, not settled");
+    assert_eq!(
+        read(&b.path().join("settings.json")).as_deref(),
+        Some("{\"accountId\": 1790137212675}")
+    );
+    assert_eq!(
+        read(&repo.path().join("artifacts/settings/settings.json")).as_deref(),
+        Some("{\"accountId\": 1790837225831}")
+    );
+}
