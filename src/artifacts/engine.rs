@@ -1708,6 +1708,13 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
     let tracked_before = tracked::load(claude_dir, repo_root);
     plan.tracked_before = tracked_before.clone();
     let base_hashes: BaseHashes = bases::load(claude_dir, repo_root);
+    // A machine that has synced this repository before but holds no base
+    // for a differing file is upgrading from a version that kept no bases
+    // (or lost its record): the difference may be an edit made here, and
+    // with no base nothing tells it apart from a stale copy. Hold it rather
+    // than remote-win over it. Only a machine new to this repository —
+    // nothing tracked, nothing recorded — takes the repository's version.
+    let synced_this_repo_before = !tracked_before.is_empty() || !base_hashes.is_empty();
 
     for desc in active_categories(filter) {
         let category_root = category_repo_root(desc, repo_root, filter);
@@ -1849,7 +1856,8 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                     let f3 = repo_rel
                         .as_ref()
                         .map(|r| f3_class_potentially_dirty(&base_hashes, &plan.tracked_before, r))
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        || (recorded.is_none() && synced_this_repo_before);
                     if f3 || bases::is_dirty(recorded, &local_bytes) {
                         // Edited here. If the repository still holds the
                         // last synced version, only this machine moved on:
@@ -2004,7 +2012,8 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                                         r,
                                     )
                                 })
-                                .unwrap_or(false);
+                                .unwrap_or(false)
+                                || (recorded.is_none() && synced_this_repo_before);
                             if repo_unchanged_since_sync(recorded, &repo_bytes) {
                                 // Only this machine moved on since the last
                                 // sync (local differs from a repository that

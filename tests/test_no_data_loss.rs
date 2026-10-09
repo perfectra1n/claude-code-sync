@@ -519,3 +519,76 @@ fn a_remote_change_to_a_path_bearing_setting_arrives_rendered_for_this_machine()
         Some(setting(b.path(), "sonnet").as_str())
     );
 }
+
+/// Upgrading from 0.4.x: the machine has synced this repository before but
+/// holds no bases yet. A file that differs may be an edit made here, and with
+/// no base nothing tells it apart from a stale copy — so the first sync after
+/// the upgrade holds it instead of overwriting it.
+#[test]
+fn the_first_sync_after_an_upgrade_does_not_overwrite_a_local_edit() {
+    let files = [
+        (SKILL, "v1\n"),
+        ("settings.json", "{\"model\":\"opus\"}"),
+        ("CLAUDE.md", "# global\n"),
+        ("projects/-home-a-work-app/memory/fact.md", "fact v1\n"),
+    ];
+    let (repo, a, b) = two_machines_in_sync(&files);
+    for (relative, _) in files {
+        write(&a.path().join(relative), "from A\n");
+    }
+    sync(a.path(), repo.path());
+    for (relative, _) in files {
+        write(&b.path().join(relative), "edited on B before upgrading\n");
+    }
+    // What 0.4.x leaves behind: the tracked record, no bases.
+    fs::remove_file(bases::record_path(b.path())).unwrap();
+
+    sync(b.path(), repo.path());
+    for (relative, _) in files {
+        assert_eq!(
+            read(&b.path().join(relative)).as_deref(),
+            Some("edited on B before upgrading\n"),
+            "{relative}: the pre-upgrade edit is not overwritten"
+        );
+    }
+}
+
+/// A machine new to this repository (no records at all) takes the
+/// repository's versions: the hold applies only to a machine that synced
+/// before, so onboarding a second machine still works.
+#[test]
+fn a_machine_new_to_the_repository_takes_the_repository_versions() {
+    let (repo, _a, _b) = two_machines_in_sync(&[("settings.json", "{\"model\":\"opus\"}")]);
+    let fresh = TempDir::new().unwrap();
+    write(&fresh.path().join("settings.json"), "{}");
+
+    sync(fresh.path(), repo.path());
+    assert_eq!(
+        read(&fresh.path().join("settings.json")).as_deref(),
+        Some("{\"model\":\"opus\"}")
+    );
+}
+
+/// Both machines created the same path independently — this machine's copy
+/// was never synced, so it has neither a base nor a tracked entry. It is not
+/// overwritten by the other machine's copy; it is held like any both-sides
+/// change.
+#[test]
+fn a_file_created_here_and_on_the_other_machine_is_not_overwritten() {
+    let (repo, a, b) = two_machines_in_sync(&[(SKILL, "v1\n")]);
+    let new_skill = "skills/new/SKILL.md";
+    write(&a.path().join(new_skill), "created on A\n");
+    sync(a.path(), repo.path());
+    write(&b.path().join(new_skill), "created on B\n");
+
+    let report = sync(b.path(), repo.path());
+    assert_eq!(kept_local(&report), 1);
+    assert_eq!(
+        read(&b.path().join(new_skill)).as_deref(),
+        Some("created on B\n")
+    );
+    assert_eq!(
+        read(&repo.path().join("artifacts/skills/new/SKILL.md")).as_deref(),
+        Some("created on A\n")
+    );
+}
