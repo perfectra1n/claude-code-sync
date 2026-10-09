@@ -52,11 +52,6 @@ fn read(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-/// A plain push, the way `claude-code-sync push` runs it.
-fn push(claude: &Path, repo: &Path) {
-    push_artifacts(claude, repo, &all_on_filter(), &HashSet::new()).unwrap();
-}
-
 /// A non-interactive pull, the way a cron-driven `sync` runs it.
 fn pull(claude: &Path, repo: &Path) -> ArtifactReport {
     let plan = plan_pull(claude, repo, &all_on_filter()).unwrap();

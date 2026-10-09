@@ -125,7 +125,7 @@ pub fn merge_memory_index_with_tombstones(
     // says it's deleted AND the local sibling is gone (symmetric:
     // the local deletion was real).
     let mut dropped: BTreeSet<String> = BTreeSet::new();
-    for (target, _) in &incoming_entries {
+    for target in incoming_entries.keys() {
         if let Some(id) = link_target_stem(target) {
             if incoming_deleted.contains(&id) {
                 dropped.insert(id);

@@ -154,6 +154,7 @@ pub fn plan_push(
 }
 
 /// Push local Claude Code history to sync repository
+#[allow(clippy::too_many_arguments)]
 pub fn push_history(
     commit_message: Option<&str>,
     push_remote: bool,

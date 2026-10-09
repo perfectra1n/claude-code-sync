@@ -166,7 +166,7 @@ pub fn build_conflict_path(local_path: &Path) -> PathBuf {
     let (date_part, time_part) = epoch_seconds_to_ymd_hms(now);
     let base_name = format!("{stem}.sync-conflict-{date_part}-{time_part}-{host}");
     let mut candidate: PathBuf = if ext.is_empty() {
-        parent.join(format!("{base_name}"))
+        parent.join(&base_name)
     } else {
         parent.join(format!("{base_name}.{ext}"))
     };
@@ -228,7 +228,7 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
     let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     let y = if m <= 2 { y + 1 } else { y };
-    (y, m as u32, d as u32)
+    (y, m, d)
 }
 
 #[cfg(unix)]
