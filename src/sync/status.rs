@@ -175,10 +175,7 @@ pub fn show_status(show_conflicts: bool, show_files: bool, held_back: bool) -> R
     // record or the repo.
     if held_back {
         println!();
-        println!(
-            "{}",
-            "Files the 5ff1d62 push guard would refuse:".bold()
-        );
+        println!("{}", "Files the 5ff1d62 push guard would refuse:".bold());
         let held = crate::artifacts::engine::plan_held_back_remote_lost(
             &claude_dir,
             &state.sync_repo_path,
@@ -196,10 +193,7 @@ pub fn show_status(show_conflicts: bool, show_files: bool, held_back: bool) -> R
                 by_cat.entry(*cat).or_default().push(path.as_path());
             }
             for (cat, paths) in &by_cat {
-                println!(
-                    "  {}:",
-                    format!("{:?}", cat).bold()
-                );
+                println!("  {}:", format!("{:?}", cat).bold());
                 for path in paths {
                     println!("    {}", path.display());
                 }

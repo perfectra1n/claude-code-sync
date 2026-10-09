@@ -51,7 +51,13 @@ fn a_push_records_the_synced_bytes_as_base() {
     let filter = all_on_filter();
 
     memory(machine.path(), "v1\n");
-    push_artifacts(machine.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let recorded = bases::load(machine.path(), repo.path());
     assert_eq!(
@@ -78,7 +84,13 @@ fn an_edit_made_after_planning_survives_the_apply() {
 
     // B's copy is clean: the plan classifies it as a plain overwrite.
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.overwrites.len(), 1);
 
@@ -108,7 +120,13 @@ fn a_pull_keeps_a_file_edited_locally_since_the_last_sync() {
     // B edits locally; A publishes v2 to the same file.
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // B pulls: the edit must survive instead of being overwritten.
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
@@ -127,13 +145,25 @@ fn an_unknown_base_keeps_the_remote_wins_behavior() {
     let filter = all_on_filter();
 
     memory(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
 
     // A machine upgrading from a version without the record: stale local
     // bytes, no base entry. The pull must behave exactly as before.
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     memory(machine_b.path(), "stale local\n");
     fs::remove_file(bases::record_path(machine_b.path())).unwrap();
 
@@ -156,7 +186,13 @@ fn a_clean_local_file_still_fast_forwards() {
     sync(machine_b.path(), repo.path(), &filter);
 
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(kept_local_of(&plan), 0);
@@ -177,7 +213,13 @@ fn pushing_a_kept_local_file_publishes_it_and_clears_the_window() {
     sync(machine_b.path(), repo.path(), &filter);
 
     memory(machine_b.path(), "b's edit\n");
-    push_artifacts(machine_b.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_b.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // The base now describes the pushed bytes: the next pull is clean.
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
@@ -199,7 +241,13 @@ fn apply_pull_reports_kept_local_files_in_the_counts() {
 
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     let report = apply_pull(&plan, false).unwrap();
@@ -224,7 +272,13 @@ fn a_pull_that_overwrites_records_the_new_bytes_as_base() {
     sync(machine_b.path(), repo.path(), &filter);
 
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     apply_pull(&plan, false).unwrap();
 
@@ -248,7 +302,13 @@ fn an_unchanged_file_pulled_twice_gains_a_base_entry() {
     memory(machine_a.path(), "v1\n");
     sync(machine_a.path(), repo.path(), &filter);
     // B starts with a legacy state: pulled file, but no base record yet.
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     apply_pull(&plan, false).unwrap(); // create path
     fs::remove_file(bases::record_path(machine_b.path())).unwrap();
@@ -285,7 +345,13 @@ fn an_interactive_confirm_of_a_kept_local_deletion_is_undonable() {
     sync(machine_b.path(), repo.path(), &filter);
 
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     skill(machine_b.path(), "b's edit\n");
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
@@ -330,7 +396,13 @@ fn a_pull_keeps_a_file_edited_locally_that_the_repo_deleted() {
     // A deletes the file and pushes: the repo copy is gone (skills mirror
     // deletions).
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // B edits locally: the deletion must not destroy the edit.
     skill(machine_b.path(), "b's edit\n");
@@ -371,7 +443,13 @@ fn a_base_recording_only_pull_changes_machine_state() {
     // (changes_machine_state) must fire or undo pull has nothing to undo
     // from.
     memory(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     memory(machine_b.path(), "v1\n");
     assert!(!bases::record_path(machine_b.path()).is_file());
 
@@ -420,7 +498,13 @@ fn a_kept_local_file_is_snapshotted_so_an_interactive_take_remote_is_undonable()
 
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(kept_local_of(&plan), 1);
@@ -445,7 +529,13 @@ fn a_union_merged_creation_records_no_base_entry() {
     // a base entry describing the creation-time bytes would go permanently
     // stale and read the file as dirty forever.
     fs::write(machine_a.path().join("history.jsonl"), "prompt one\n").unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     apply_pull(&plan, false).unwrap();
@@ -471,7 +561,13 @@ fn pushing_prunes_a_base_entry_whose_repo_copy_was_already_removed() {
     // deleted here too: neither side has it, so the entry must go.
     fs::remove_file(repo.path().join("artifacts/skills/my-skill/SKILL.md")).unwrap();
     fs::remove_file(machine.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     assert!(
         !bases::load(machine.path(), repo.path())
@@ -493,7 +589,13 @@ fn a_pull_whose_only_outcome_is_kept_local_files_is_not_empty() {
 
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(kept_local_of(&plan), 1);
@@ -512,7 +614,13 @@ fn the_shared_base_record_stays_out_of_wholesale_undo_lists() {
 
     // A legacy machine: files synced by an older version, no base record.
     memory(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     let bases_path = bases::record_path(machine_b.path())
         .to_string_lossy()
@@ -562,7 +670,13 @@ fn a_kept_local_only_plan_still_declares_the_record_for_an_interactive_take() {
     // so the record is carried (and declared) for the surgical undo.
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(kept_local_of(&plan), 1);
     assert!(plan.can_write_bases(true));
@@ -591,7 +705,13 @@ fn an_executed_deletion_forgets_its_base_entry() {
     sync(machine_b.path(), repo.path(), &filter);
 
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(
@@ -652,7 +772,13 @@ fn kept_local_files_are_named_in_the_report() {
 
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     let report = apply_pull(&plan, false).unwrap();
@@ -684,7 +810,13 @@ fn pushing_a_deletion_prunes_its_base_entry() {
     // Deleting the file locally and pushing removes the repo copy — the
     // record must stop describing a file neither side has anymore.
     fs::remove_file(machine.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     assert!(
         !bases::load(machine.path(), repo.path())
@@ -706,7 +838,13 @@ fn the_base_record_can_be_forgotten_like_the_tracked_one() {
     let filter = all_on_filter();
 
     memory(machine.path(), "v1\n");
-    push_artifacts(machine.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert!(!bases::load(machine.path(), repo.path()).is_empty());
 
     bases::forget(machine.path(), repo.path()).unwrap();
@@ -728,7 +866,13 @@ fn a_kept_local_delete_rearms_on_every_pull() {
 
     // A deletes and pushes; B holds a local edit.
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     skill(machine_b.path(), "b's edit\n");
 
     // Round 1: the deletion is kept local (the protection).
@@ -775,7 +919,13 @@ fn a_push_that_fails_to_read_a_file_keeps_its_repo_copy() {
     // deletion would propagate to every other machine on their next pull.
     let local = machine.path().join("skills/my-skill/SKILL.md");
     fs::set_permissions(&local, fs::Permissions::from_mode(0o000)).unwrap();
-    let report = push_artifacts(machine.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    let report = push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     fs::set_permissions(&local, fs::Permissions::from_mode(0o644)).unwrap();
 
     assert!(repo_copy.is_file(), "a held-back push keeps the repo copy");
@@ -819,7 +969,13 @@ fn undo_pull_keeps_base_entries_a_later_push_recorded() {
     // snapshots like pull_history would (record carried, touched keys
     // declared), and applies.
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.overwrites.len(), 1);
     let mut snapshot =
@@ -839,7 +995,13 @@ fn undo_pull_keeps_base_entries_a_later_push_recorded() {
     fs::create_dir_all(extra.parent().unwrap()).unwrap();
     fs::write(&extra, "b-only\n").unwrap();
     skill(machine_b.path(), "b's edit too\n");
-    push_artifacts(machine_b.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_b.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert!(
         bases::load(machine_b.path(), repo.path()).contains_key("artifacts/skills/other/SKILL.md")
     );
@@ -929,7 +1091,13 @@ fn a_kept_local_file_declares_its_base_key_for_the_undo() {
     sync(machine_b.path(), repo.path(), &filter);
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(kept_local_of(&plan), 1);
@@ -959,7 +1127,13 @@ fn an_apply_does_not_erase_tracked_paths_recorded_while_it_waited() {
     let second = machine_a.path().join("skills/other/SKILL.md");
     fs::create_dir_all(second.parent().unwrap()).unwrap();
     fs::write(&second, "v1\n").unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.creates.len(), 1);
 
@@ -968,7 +1142,13 @@ fn an_apply_does_not_erase_tracked_paths_recorded_while_it_waited() {
     let b_only = machine_b.path().join("skills/b-only/SKILL.md");
     fs::create_dir_all(b_only.parent().unwrap()).unwrap();
     fs::write(&b_only, "b\n").unwrap();
-    push_artifacts(machine_b.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_b.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // The apply must merge its delta, not save the plan-time scan: the
     // push's path would otherwise leave the record and its future
@@ -1004,7 +1184,13 @@ fn an_unreadable_delete_candidate_does_not_stall_the_sync_gate() {
     // on a file neither a push (read fails) nor a prompt could resolve —
     // the deletion is skipped and retried instead.
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let local = machine_b.path().join("skills/my-skill/SKILL.md");
     fs::set_permissions(&local, fs::Permissions::from_mode(0o000)).unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
@@ -1089,7 +1275,13 @@ fn a_delete_skipped_at_apply_time_keeps_its_tracked_entry() {
     // A deletes and pushes; B plans the delete while the file is still
     // readable...
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.deletes.len(), 1);
 
@@ -1131,7 +1323,13 @@ fn a_kept_local_file_deleted_while_the_pull_waited_is_not_a_phantom_keep() {
     sync(machine_b.path(), repo.path(), &filter);
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(kept_local_of(&plan), 1);
@@ -1173,7 +1371,13 @@ fn a_declined_deletion_is_republished_by_the_next_sync() {
 
     // A deletes and pushes; B declines the deletion (keeps its copy).
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let mut tracked_paths = tracked::load(machine_b.path(), repo.path());
     tracked_paths.remove("artifacts/skills/my-skill/SKILL.md");
     tracked::save(machine_b.path(), repo.path(), tracked_paths).unwrap();
@@ -1186,7 +1390,13 @@ fn a_declined_deletion_is_republished_by_the_next_sync() {
     assert_eq!(report.total_kept_local(), 0);
 
     // ...and the full push republishes the kept file.
-    let push = push_artifacts(machine_b.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    let push = push_artifacts(
+        machine_b.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert_eq!(
         push.total_added(),
         1,
@@ -1207,7 +1417,13 @@ fn a_create_that_failed_at_apply_time_is_not_a_phantom_deletion() {
     // A publishes a skill B has never seen; B plans the create, but the
     // destination directory is unwritable when the apply runs.
     skill(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.creates.len(), 1);
     let skills_dir = machine_b.path().join("skills");
@@ -1225,7 +1441,13 @@ fn a_create_that_failed_at_apply_time_is_not_a_phantom_deletion() {
             .contains("artifacts/skills/my-skill/SKILL.md"),
         "a create that never executed is not tracked"
     );
-    let push = push_artifacts(machine_b.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    let push = push_artifacts(
+        machine_b.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert_eq!(
         push.total_deleted(),
         0,
@@ -1330,7 +1552,13 @@ fn an_edit_made_while_a_deletion_waited_rearms_like_a_kept_delete() {
     // A deletes and pushes; B's copy is CLEAN, so the plan is a plain
     // delete...
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.deletes.len(), 1);
 
@@ -1366,7 +1594,13 @@ fn a_create_the_apply_skipped_is_not_an_undo_delete_candidate() {
     // A publishes a skill B has never seen; B plans the create, then the
     // user writes their OWN version before the apply runs.
     skill(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.creates.len(), 1);
     skill(machine_b.path(), "user's own\n");
@@ -1399,7 +1633,13 @@ fn a_kept_local_delete_whose_file_was_deleted_mid_pull_is_not_a_phantom() {
 
     // A deletes and pushes; B holds an edit → kept-local delete...
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     skill(machine_b.path(), "b's edit\n");
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.kept_local_deletes.len(), 1);
@@ -1444,7 +1684,13 @@ fn a_plain_delete_whose_file_was_deleted_mid_pull_completes_the_deletion() {
 
     // A deletes and pushes; B's copy is clean → plain delete...
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.deletes.len(), 1);
 
@@ -1484,7 +1730,13 @@ fn a_repo_file_held_back_for_size_is_never_tracked_as_received() {
     fs::create_dir_all(big.parent().unwrap()).unwrap();
     fs::write(&big, "x".repeat(50 * 1024)).unwrap();
     skill(machine_a.path(), "small\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter_big, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter_big,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // B pulls with the lower limit from the start: the big file is HELD
     // BACK (skipped, never written locally) — it must not enter the
@@ -1508,7 +1760,13 @@ fn a_repo_file_held_back_for_size_is_never_tracked_as_received() {
         "a held-back repo file is not tracked as received"
     );
 
-    let push = push_artifacts(machine_b.path(), repo.path(), &filter_small, &std::collections::HashSet::new()).unwrap();
+    let push = push_artifacts(
+        machine_b.path(),
+        repo.path(),
+        &filter_small,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert_eq!(
         push.total_deleted(),
         0,
@@ -1533,7 +1791,13 @@ fn a_file_created_mid_pull_stays_protected_on_the_next_pull() {
     // the user's file reading dirty, or the NEXT pull would classify it
     // as a clean fast-forward and destroy it.
     skill(machine_a.path(), "repo's version\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     skill(machine_b.path(), "user's version\n");
     let report = apply_pull(&plan, false).unwrap();
@@ -1568,7 +1832,13 @@ fn an_overwrite_target_unreadable_at_apply_time_is_undecided_not_kept() {
     // a keep gating the sync on a "push to publish" that would publish
     // nothing.
     skill(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(plan.overwrites.len(), 1);
     let local = machine_b.path().join("skills/my-skill/SKILL.md");
@@ -1604,7 +1874,13 @@ fn a_reverted_edit_is_held_one_round_then_self_heals() {
     // not hold a round over an empty conflict.
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(kept_local_of(&plan), 1);
     memory(machine_b.path(), "v1\n");
@@ -1651,7 +1927,13 @@ fn an_unreadable_kept_local_target_is_kept_never_guessed_at() {
     // holds with it, and the round converges once the file is readable.
     memory(machine_b.path(), "b's edit\n");
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     let local = machine_b
         .path()
@@ -1712,7 +1994,13 @@ fn a_mid_pull_create_with_an_unreadable_repo_copy_still_protects_the_next_pull()
     let filter = all_on_filter();
 
     memory(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // The plan sees a plain create on a fresh machine...
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
@@ -1745,7 +2033,13 @@ fn a_failed_tracked_save_reports_no_keys_written() {
     let filter = all_on_filter();
 
     memory(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     // Make the tracked record unwritable (a directory where the file
@@ -1775,7 +2069,13 @@ fn a_keep_from_a_failed_write_has_nothing_to_publish() {
     sync(machine_a.path(), repo.path(), &filter);
     sync(machine_b.path(), repo.path(), &filter);
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // The overwrite's write fails (the destination directory is
     // read-only): the file is kept — the gate stays held, fail-safe —
@@ -1847,7 +2147,13 @@ fn a_mode_fix_over_converged_bases_mints_no_snapshot() {
     let skill_a = machine_a.path().join("skills/mode-test/SKILL.md");
     fs::create_dir_all(skill_a.parent().unwrap()).unwrap();
     fs::write(&skill_a, "skill bytes\n").unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
     let local = machine_b.path().join("skills/mode-test/SKILL.md");
     assert!(local.is_file(), "B received the skill");
@@ -1855,7 +2161,13 @@ fn a_mode_fix_over_converged_bases_mints_no_snapshot() {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&skill_a, fs::Permissions::from_mode(0o755)).unwrap();
-        push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+        push_artifacts(
+            machine_a.path(),
+            repo.path(),
+            &filter,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
     }
 
     // NON-interactively the apply predicts "writes no record": the plan
@@ -1890,7 +2202,13 @@ fn a_mid_pull_edit_is_reported_publishable() {
     sync(machine_a.path(), repo.path(), &filter);
     sync(machine_b.path(), repo.path(), &filter);
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // An overwrite planned; the user edits the file while the pull
     // waits; the apply keeps it — and the edit IS what a push would
@@ -1916,7 +2234,13 @@ fn a_failed_union_write_reports_no_merged_entries() {
     let filter = all_on_filter();
 
     fs::write(machine.path().join("history.jsonl"), "prompt one\n").unwrap();
-    push_artifacts(machine.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // New local lines, and the repo's artifacts directory turned
     // read-only: the union write fails and the file is held back —
@@ -1931,7 +2255,12 @@ fn a_failed_union_write_reports_no_merged_entries() {
         .unwrap()
         .to_path_buf();
     fs::set_permissions(&artifacts_dir, fs::Permissions::from_mode(0o555)).unwrap();
-    let report = push_artifacts(machine.path(), repo.path(), &filter, &std::collections::HashSet::new());
+    let report = push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    );
     fs::set_permissions(&artifacts_dir, fs::Permissions::from_mode(0o755)).unwrap();
     let report = report.unwrap();
     let skipped: usize = report.counts.iter().map(|c| c.skipped).sum();
@@ -1951,7 +2280,13 @@ fn a_file_without_a_backup_is_not_modified_by_the_apply() {
     sync(machine_a.path(), repo.path(), &filter);
     sync(machine_b.path(), repo.path(), &filter);
     memory(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // The snapshot could not read the file (the caller recorded it on
     // the plan): the apply must refuse the overwrite — no modification
@@ -1991,7 +2326,13 @@ fn a_delete_skipped_at_unsnapshotted_keeps_its_tracked_entry() {
     sync(machine_b.path(), repo.path(), &filter);
 
     fs::remove_file(machine_a.path().join("skills/my-skill/SKILL.md")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert!(
         !plan.deletes.is_empty(),
@@ -2044,7 +2385,13 @@ fn an_overwrite_with_concurrently_pruned_base_is_kept_not_silently_overwritten()
     let filter = all_on_filter();
 
     skill(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
 
     // B's local file is still v1 (matches base, matches repo). A
@@ -2056,7 +2403,13 @@ fn an_overwrite_with_concurrently_pruned_base_is_kept_not_silently_overwritten()
     // "remote wins" behavior is reserved for fresh install /
     // upgrade (tracked never recorded the file).
     skill(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     use claude_code_sync::artifacts::bases;
     bases::forget(machine_b.path(), repo.path()).unwrap();
 
@@ -2118,7 +2471,13 @@ fn an_overwrite_for_a_fresh_machine_with_no_base_still_remote_wins() {
     let filter = all_on_filter();
 
     skill(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // B has never synced: it has no tracked entry, no base entry.
     // Local differs from repo (user wrote their own version).
@@ -2160,7 +2519,13 @@ fn a_multi_round_f3_keep_survives_a_repo_repush() {
     let filter = all_on_filter();
 
     skill(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
 
     // Round N: A removes + pushes (B's plan = delete). B's
@@ -2168,7 +2533,13 @@ fn a_multi_round_f3_keep_survives_a_repo_repush() {
     // file locally and the tracked entry survives.
     let a_local = machine_a.path().join("skills/my-skill/SKILL.md");
     fs::remove_file(&a_local).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     use claude_code_sync::artifacts::bases;
     bases::forget(machine_b.path(), repo.path()).unwrap();
     let plan_n = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
@@ -2180,7 +2551,8 @@ fn a_multi_round_f3_keep_survives_a_repo_repush() {
         !plan_n.kept_local_deletes.is_empty(),
         "the F3-class file must be kept (kept_local_deletes), not silently deleted: \
          plan.deletes={:?}, plan.kept_local_deletes={:?}",
-        plan_n.deletes, plan_n.kept_local_deletes
+        plan_n.deletes,
+        plan_n.kept_local_deletes
     );
     let _report_n = apply_pull(&plan_n, false).unwrap();
     // B's file is still "v1" (the F3-keep held it).
@@ -2192,7 +2564,13 @@ fn a_multi_round_f3_keep_survives_a_repo_repush() {
     // the round-N forget). With the new tracked_before check, the
     // file goes to kept_local — B's local "v1" is preserved.
     skill(machine_a.path(), "v2\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan_n1 = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(
         plan_n1
@@ -2232,7 +2610,13 @@ fn undo_does_not_disarm_the_mid_pull_create_protection() {
     let filter = all_on_filter();
 
     memory(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // The user writes their own file at the destination mid-pull: the
     // apply skips and records the repo bytes as base — protection.
@@ -2296,7 +2680,13 @@ fn an_empty_user_file_is_not_lost_to_the_protection_sentinel() {
     let filter = all_on_filter();
 
     memory(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // The user's mid-pull file is EMPTY, and the repo copy is unreadable
     // at apply: the sentinel base (hash of empty) would hash-equal the
@@ -2330,7 +2720,13 @@ fn union_merge_records_the_merged_bytes_as_base() {
     let filter = all_on_filter();
 
     fs::write(machine_a.path().join("history.jsonl"), "line one\n").unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
 
     fs::write(
@@ -2338,7 +2734,13 @@ fn union_merge_records_the_merged_bytes_as_base() {
         "line one\nline two\n",
     )
     .unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     apply_pull(&plan, false).unwrap();
     let content = fs::read_to_string(machine_b.path().join("history.jsonl")).unwrap();
@@ -2491,7 +2893,13 @@ fn a_create_skip_after_first_is_file_records_protection() {
 
     // A pushes the file; B's machine never received it (no sync).
     memory(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // B plans the create (its machine has no local copy yet),
     // then plants its own file, then applies. The apply hits the
@@ -2550,7 +2958,13 @@ fn a_plan_deletes_with_mid_pull_cleared_base_is_kept_not_deleted() {
     let filter = all_on_filter();
 
     skill(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
 
     // Repo deletes its copy (A removes the local file, then pushes —
@@ -2558,7 +2972,13 @@ fn a_plan_deletes_with_mid_pull_cleared_base_is_kept_not_deleted() {
     // must classify the change as a delete target.
     let a_local = machine_a.path().join("skills/my-skill/SKILL.md");
     fs::remove_file(&a_local).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert!(
         !plan.deletes.is_empty(),
@@ -2611,7 +3031,13 @@ fn a_kept_local_with_concurrently_cleared_base_is_not_kept_local_clean() {
     let filter = all_on_filter();
 
     skill(machine_a.path(), "v1\n");
-    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
 
     // B edits locally — a kept_local pull: local != repo bytes.
@@ -2738,7 +3164,10 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
     // A pushes a NEW bullet (the shared key is unchanged on purpose
     // — the test is about the same-key clobber case, which the
     // pre-fix code hit on the per-target "incoming wins" rule).
-    mem(machine_a.path(), "- [shared] from A and B\n- [a-only] new on A\n");
+    mem(
+        machine_a.path(),
+        "- [shared] from A and B\n- [a-only] new on A\n",
+    );
     push_artifacts(
         machine_a.path(),
         repo.path(),
@@ -2768,7 +3197,10 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
         kept_local_of(&plan),
         1,
         "the local edit routes to kept_local: {:?}",
-        plan.kept_local.iter().map(|w| w.category_path.display().to_string()).collect::<Vec<_>>()
+        plan.kept_local
+            .iter()
+            .map(|w| w.category_path.display().to_string())
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         plan.unions.len(),
@@ -2780,7 +3212,9 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
     // text for the shared key.
     apply_pull(&plan, false).unwrap();
     let after = fs::read_to_string(
-        machine_b.path().join("projects/-home-a-work-app/memory/MEMORY.md"),
+        machine_b
+            .path()
+            .join("projects/-home-a-work-app/memory/MEMORY.md"),
     )
     .unwrap();
     assert!(
@@ -2903,8 +3337,8 @@ fn a_memory_index_deletion_writes_a_marker_file() {
     // when called from the apply_pull deletes arm, and the
     // cross-machine path is gated on a future mirror_deletes
     // reclassification (separate design decision).
-    use claude_code_sync::artifacts::memory_index::DELETED_DIR;
     use claude_code_sync::artifacts::engine::record_memory_deletion_marker;
+    use claude_code_sync::artifacts::memory_index::DELETED_DIR;
     let dir = TempDir::new().unwrap();
     let mem_dir = dir.path().join("projects/-home-a/memory");
     fs::create_dir_all(&mem_dir).unwrap();
@@ -2925,8 +3359,14 @@ fn a_memory_index_deletion_writes_a_marker_file() {
     // `was:` line carries the original MEMORY.md entry so the
     // user can recover the original line if needed.
     let expected_was = "was: - [a](a.md) hook A";
-    assert!(body.contains(expected_was), "body must carry the was-line: {body}");
-    assert!(body.contains("deleted"), "body must mark as deleted: {body}");
+    assert!(
+        body.contains(expected_was),
+        "body must carry the was-line: {body}"
+    );
+    assert!(
+        body.contains("deleted"),
+        "body must mark as deleted: {body}"
+    );
 }
 
 #[test]
@@ -2940,8 +3380,7 @@ fn record_memory_deletion_marker_is_a_noop_outside_memory_dirs() {
     let arbitrary = dir.path().join("not-a-memory/some-file.md");
     fs::create_dir_all(arbitrary.parent().unwrap()).unwrap();
     fs::write(&arbitrary, "x").unwrap();
-    record_memory_deletion_marker(&arbitrary)
-        .expect("must succeed for non-memory paths");
+    record_memory_deletion_marker(&arbitrary).expect("must succeed for non-memory paths");
     // No deleted/ dir anywhere under the parent.
     let entries: Vec<_> = fs::read_dir(arbitrary.parent().unwrap())
         .unwrap()

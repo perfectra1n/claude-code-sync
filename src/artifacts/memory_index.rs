@@ -180,7 +180,9 @@ pub fn merge_memory_index_with_tombstones(
         // sibling absence alone. The incoming_deleted set already catches
         // this; the sibling check is a no-op for incoming, but it keeps
         // the rule explicit.
-        if stem.as_ref().is_some_and(|id| incoming_deleted.contains(id))
+        if stem
+            .as_ref()
+            .is_some_and(|id| incoming_deleted.contains(id))
             && !incoming_siblings.contains(*target)
         {
             continue;
@@ -327,14 +329,8 @@ mod tests {
         let dest = b"- [a](a.md) A\n- [b](b.md) B\n";
         let incoming = b"- [a](a.md) A\n- [c](c.md) C\n";
         let empty = set(&[] as &[&str]);
-        let (m5, _) = merge_memory_index_with_tombstones(
-            dest,
-            incoming,
-            &empty,
-            &empty,
-            &empty,
-            &empty,
-        );
+        let (m5, _) =
+            merge_memory_index_with_tombstones(dest, incoming, &empty, &empty, &empty, &empty);
         let (m2, _) = merge_memory_index(dest, incoming);
         assert_eq!(m5, m2);
     }

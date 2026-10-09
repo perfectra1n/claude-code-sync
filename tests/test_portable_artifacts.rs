@@ -111,7 +111,13 @@ fn an_unmapped_project_keeps_its_encoded_directory() {
         "a fact\n",
     );
 
-    push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     assert!(repo
         .path()
@@ -136,7 +142,13 @@ fn a_memory_index_gains_the_other_machines_entries_instead_of_losing_them() {
         "# Index\n\n- [z](z.md) from B\n",
     );
 
-    push_artifacts(machine_a.path(), repo.path(), &filter_a, &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter_a,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync_both_ways(machine_b.path(), repo.path(), &filter_b);
     sync_both_ways(machine_a.path(), repo.path(), &filter_a);
 
@@ -159,7 +171,13 @@ fn settings_paths_are_stored_neutrally_and_rendered_per_machine() {
     let hook = stop_hook_settings(&format!("{}/hooks/stop.sh", machine_a.path().display()));
     fs::write(machine_a.path().join("settings.json"), &hook).unwrap();
 
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let stored = fs::read_to_string(repo.path().join("artifacts/settings/settings.json")).unwrap();
     assert_eq!(stop_hook_command(&stored), "__CLAUDE_DIR__/hooks/stop.sh");
@@ -184,7 +202,13 @@ fn a_settings_file_that_only_differs_by_machine_path_is_not_rewritten() {
     let claude = TempDir::new().unwrap();
     let hook = stop_hook_settings(&format!("{}/hooks/stop.sh", claude.path().display()));
     fs::write(claude.path().join("settings.json"), &hook).unwrap();
-    push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(claude.path(), repo.path(), &all_on_filter()).unwrap();
 
@@ -204,9 +228,21 @@ fn a_skill_deleted_locally_is_removed_from_the_repo_on_the_next_push() {
     write(&claude.path().join("skills/keep/SKILL.md"), "# keep\n");
     write(&claude.path().join("skills/drop/SKILL.md"), "# drop\n");
 
-    push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     fs::remove_dir_all(claude.path().join("skills/drop")).unwrap();
-    let report = push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    let report = push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     assert!(repo.path().join("artifacts/skills/keep/SKILL.md").is_file());
     assert!(!repo.path().join("artifacts/skills/drop/SKILL.md").exists());
@@ -229,7 +265,13 @@ fn a_skill_grown_past_the_size_limit_is_not_mistaken_for_a_deletion() {
     // The skill still exists on machine A; it has only outgrown the limit.
     let mut small_limit = all_on_filter();
     small_limit.max_file_size_bytes = 4;
-    let report = push_artifacts(machine_a.path(), repo.path(), &small_limit, &std::collections::HashSet::new()).unwrap();
+    let report = push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &small_limit,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     assert_eq!(report.counts.iter().map(|c| c.deleted).sum::<usize>(), 0);
     assert!(
@@ -251,12 +293,24 @@ fn a_skill_deleted_on_another_machine_is_removed_here_on_pull() {
     let machine_b = TempDir::new().unwrap();
     write(&machine_a.path().join("skills/gone/SKILL.md"), "# gone\n");
 
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync_both_ways(machine_b.path(), repo.path(), &all_on_filter());
     assert!(machine_b.path().join("skills/gone/SKILL.md").is_file());
 
     fs::remove_dir_all(machine_a.path().join("skills/gone")).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
     let snapshotted = plan.paths_to_snapshot(false);
@@ -285,12 +339,24 @@ fn a_push_lists_each_skill_it_added_modified_and_deleted() {
     write(&claude.path().join("skills/keep/SKILL.md"), "# keep\n");
     write(&claude.path().join("skills/edit/SKILL.md"), "# edit\n");
     write(&claude.path().join("skills/drop/SKILL.md"), "# drop\n");
-    push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     write(&claude.path().join("skills/edit/SKILL.md"), "# edited\n");
     write(&claude.path().join("skills/new/SKILL.md"), "# new\n");
     fs::remove_dir_all(claude.path().join("skills/drop")).unwrap();
-    let report = push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    let report = push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let mut changes = report.changes.clone();
     changes.sort_by(|left, right| left.path.cmp(&right.path));
@@ -310,12 +376,24 @@ fn a_pull_lists_each_skill_it_created_and_deleted_here() {
     let machine_a = TempDir::new().unwrap();
     let machine_b = TempDir::new().unwrap();
     write(&machine_a.path().join("skills/gone/SKILL.md"), "# gone\n");
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync_both_ways(machine_b.path(), repo.path(), &all_on_filter());
 
     fs::remove_dir_all(machine_a.path().join("skills/gone")).unwrap();
     write(&machine_a.path().join("skills/fresh/SKILL.md"), "# fresh\n");
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
     let report = apply_pull(&plan, false).unwrap();
 
@@ -337,12 +415,24 @@ fn a_machine_that_never_synced_deletes_nothing() {
         &machine_a.path().join("skills/shared/SKILL.md"),
         "# shared\n",
     );
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     // B has never received anything, so it has no record and must not read its
     // empty skills directory as "everything was deleted".
     fs::create_dir_all(machine_b.path().join("skills")).unwrap();
-    push_artifacts(machine_b.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_b.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     assert!(repo
         .path()
@@ -355,10 +445,22 @@ fn a_machine_missing_the_category_entirely_leaves_the_repo_alone() {
     let repo = TempDir::new().unwrap();
     let claude = TempDir::new().unwrap();
     write(&claude.path().join("skills/shared/SKILL.md"), "# shared\n");
-    push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     fs::remove_dir_all(claude.path().join("skills")).unwrap();
-    push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     assert!(
         repo.path()
@@ -396,7 +498,13 @@ fn deleting_the_last_file_of_a_category_survives_a_commit_and_clone() {
     write(&machine_a.path().join("skills/only/SKILL.md"), "# only\n");
 
     // A publishes the skill; B picks it up from a clone of the repo.
-    push_artifacts(machine_a.path(), origin.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        origin.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     git(origin.path(), &["add", "-A"]);
     git(origin.path(), &["commit", "-qm", "add skill"]);
     git(
@@ -410,7 +518,13 @@ fn deleting_the_last_file_of_a_category_survives_a_commit_and_clone() {
     // directories, so without a marker the category would vanish from the
     // clone and read as "this repo has no skills" instead of "no skills left".
     fs::remove_dir_all(machine_a.path().join("skills/only")).unwrap();
-    push_artifacts(machine_a.path(), origin.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        origin.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     git(origin.path(), &["add", "-A"]);
     git(origin.path(), &["commit", "-qm", "drop skill"]);
     git(clone.path(), &["pull", "-q", "origin", "main"]);
@@ -425,7 +539,13 @@ fn deleting_the_last_file_of_a_category_survives_a_commit_and_clone() {
     assert_eq!(report.total_deleted(), 1);
     assert!(!machine_b.path().join("skills/only/SKILL.md").exists());
     // And nothing resurrects it: B's next push leaves the repo empty.
-    push_artifacts(machine_b.path(), clone.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_b.path(),
+        clone.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert!(!clone.path().join("artifacts/skills/only/SKILL.md").exists());
 }
 
@@ -436,7 +556,13 @@ fn the_category_marker_never_reaches_a_machine() {
     let machine_b = TempDir::new().unwrap();
     write(&machine_a.path().join("skills/kept/SKILL.md"), "# kept\n");
 
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync_both_ways(machine_b.path(), repo.path(), &all_on_filter());
 
     assert!(repo.path().join("artifacts/skills/.synced").is_file());
@@ -453,7 +579,13 @@ fn a_category_the_repo_does_not_have_deletes_nothing_locally() {
         "# shared\n",
     );
 
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     sync_both_ways(machine_b.path(), repo.path(), &all_on_filter());
     assert!(machine_b.path().join("skills/shared/SKILL.md").is_file());
 
@@ -484,7 +616,13 @@ fn a_home_path_in_settings_is_stored_as_a_token() {
     let settings = stop_hook_settings(&format!("{}/bin/stop.sh", home.display()));
     fs::write(claude.path().join("settings.json"), &settings).unwrap();
 
-    push_artifacts(claude.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        claude.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
 
     let stored = fs::read_to_string(repo.path().join("artifacts/settings/settings.json")).unwrap();
     assert_eq!(stop_hook_command(&stored), "__HOME__/bin/stop.sh");
@@ -498,7 +636,13 @@ fn rules_sync_like_any_other_curated_directory() {
     let machine_b = TempDir::new().unwrap();
     write(&machine_a.path().join("rules/rule_go.md"), "# go rules\n");
 
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
     apply_pull(&plan, false).unwrap();
 
@@ -535,7 +679,13 @@ fn a_hook_arrives_on_the_other_machine_ready_to_run() {
     let script = "#!/bin/bash\nexit 0\n";
     write_executable(&machine_a.path().join("hooks/rule-check.sh"), script);
 
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let stored = repo.path().join("artifacts/hooks/rule-check.sh");
     assert!(
         is_executable(&stored),
@@ -566,7 +716,13 @@ fn a_pull_does_not_widen_a_private_local_file() {
     let private = machine_b.path().join("plans/plan.md");
     fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).unwrap();
 
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
     apply_pull(&plan, false).unwrap();
 
@@ -618,7 +774,13 @@ fn making_a_hook_executable_reaches_the_other_machine_on_its_own() {
     assert!(!is_executable(&landed), "not a script yet");
 
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert!(
         is_executable(&repo.path().join("artifacts/hooks/late.sh")),
         "the bit alone is enough to update the repo copy"
@@ -646,7 +808,13 @@ fn a_hook_deleted_here_is_gone_on_the_other_machine_too() {
     assert!(machine_b.path().join("hooks/stale.sh").is_file());
 
     fs::remove_file(&hook).unwrap();
-    push_artifacts(machine_a.path(), repo.path(), &all_on_filter(), &std::collections::HashSet::new()).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &all_on_filter(),
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &all_on_filter()).unwrap();
     apply_pull(&plan, false).unwrap();
 

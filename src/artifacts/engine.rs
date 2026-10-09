@@ -316,7 +316,9 @@ impl ArtifactReport {
     /// lists these so the user can see exactly which files were held back
     /// (the `status --held-back` command lists the same set without
     /// performing a push).
-    pub fn held_back_paths(&self) -> impl Iterator<Item = (&CategoryId, &PathBuf, ArtifactChangeKind)> {
+    pub fn held_back_paths(
+        &self,
+    ) -> impl Iterator<Item = (&CategoryId, &PathBuf, ArtifactChangeKind)> {
         self.changes.iter().filter_map(|c| {
             if c.kind == ArtifactChangeKind::HeldBackRemoteLost {
                 Some((&c.category, &c.path, c.kind))
@@ -736,23 +738,18 @@ pub fn push_artifacts(
                                 // `file.abs`; the repo side (dest) is `dest`.
                                 // Sibling + deleted sets on both sides are
                                 // needed to honor per-record tombstones.
-                                let dest_siblings =
-                                    collect_memory_sibling_targets(&dest);
-                                let incoming_siblings =
-                                    collect_memory_sibling_targets(&file.abs);
-                                let dest_deleted =
-                                    collect_memory_deleted_ids(&dest);
-                                let incoming_deleted =
-                                    collect_memory_deleted_ids(&file.abs);
-                                let (merged, new_entries) =
-                                    merge_memory_index_with_tombstones(
-                                        &dest_bytes,
-                                        &src_bytes,
-                                        &dest_siblings,
-                                        &incoming_siblings,
-                                        &dest_deleted,
-                                        &incoming_deleted,
-                                    );
+                                let dest_siblings = collect_memory_sibling_targets(&dest);
+                                let incoming_siblings = collect_memory_sibling_targets(&file.abs);
+                                let dest_deleted = collect_memory_deleted_ids(&dest);
+                                let incoming_deleted = collect_memory_deleted_ids(&file.abs);
+                                let (merged, new_entries) = merge_memory_index_with_tombstones(
+                                    &dest_bytes,
+                                    &src_bytes,
+                                    &dest_siblings,
+                                    &incoming_siblings,
+                                    &dest_deleted,
+                                    &incoming_deleted,
+                                );
                                 pending_entries = new_entries;
                                 src_bytes = merged;
                             }
@@ -900,8 +897,7 @@ pub fn push_artifacts(
     // even when the filter enables only those categories. A
     // record-save failure must not discard the report and strand a
     // half-applied push.
-    if let Err(e) =
-        tracked::save_delta(claude_dir, repo_root, tracked_now, deltas.tracked_removals)
+    if let Err(e) = tracked::save_delta(claude_dir, repo_root, tracked_now, deltas.tracked_removals)
     {
         log::warn!("Tracked record NOT saved (files are already pushed): {e}");
     }
@@ -1786,9 +1782,7 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                     let recorded = repo_rel.as_ref().and_then(|r| base_hashes.get(r));
                     let f3 = repo_rel
                         .as_ref()
-                        .map(|r| f3_class_potentially_dirty(
-                            &base_hashes, &plan.tracked_before, r,
-                        ))
+                        .map(|r| f3_class_potentially_dirty(&base_hashes, &plan.tracked_before, r))
                         .unwrap_or(false);
                     if f3 || bases::is_dirty(recorded, &local_bytes) {
                         plan.kept_local.push(write);
@@ -1914,9 +1908,13 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                             // can only be #2 (no tracked entry applies).
                             let f3 = rel
                                 .as_ref()
-                                .map(|r| f3_class_potentially_dirty(
-                                    &base_hashes, &plan.tracked_before, r,
-                                ))
+                                .map(|r| {
+                                    f3_class_potentially_dirty(
+                                        &base_hashes,
+                                        &plan.tracked_before,
+                                        r,
+                                    )
+                                })
                                 .unwrap_or(false);
                             if f3 || bases::is_dirty(recorded, &local_bytes) {
                                 plan.kept_local.push(write);
@@ -2399,11 +2397,8 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             // (which would overwrite it on the next non-interactive pull).
             if records_base(desc.merge, &write.category_path) {
                 if let Some(rel) = repo_relative(&plan.repo_root, &write.repo_path) {
-                    bases_changed |= record_protection_base(
-                        &mut synced_bases,
-                        &mut bases_inserts,
-                        &rel,
-                    );
+                    bases_changed |=
+                        record_protection_base(&mut synced_bases, &mut bases_inserts, &rel);
                     // Mirror the upstream is_file guard: the protection
                     // entry must NOT flow into `bases_keys_written` (the
                     // undo surgery's allowlist) — see the `retain` that
@@ -2896,9 +2891,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     // summary is intelligible (the conflict copy is a
                     // side effect, not a separate file the user
                     // tracks).
-                    if let Err(e) =
-                        write_atomic(&rename, &repo_bytes, &write.repo_path)
-                    {
+                    if let Err(e) = write_atomic(&rename, &repo_bytes, &write.repo_path) {
                         log::warn!(
                             "Could not save repo version of {} to {}: {e}",
                             write.local_path.display(),
@@ -3062,12 +3055,8 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 // Collect sibling-file sets for the tombstone-aware
                 // 5-arg merge. The local parent is the dest side; the
                 // repo side is read via the recorded repo_path's parent.
-                let dest_siblings = collect_memory_sibling_targets(
-                    &write.local_path,
-                );
-                let incoming_siblings = collect_memory_sibling_targets(
-                    &write.repo_path,
-                );
+                let dest_siblings = collect_memory_sibling_targets(&write.local_path);
+                let incoming_siblings = collect_memory_sibling_targets(&write.repo_path);
                 let dest_deleted = collect_memory_deleted_ids(&write.local_path);
                 let incoming_deleted = collect_memory_deleted_ids(&write.repo_path);
                 merge_memory_index_with_tombstones(
@@ -3648,11 +3637,7 @@ pub fn ensure_ignore_files(repo_root: &Path, backend: Backend) -> Result<bool> {
 /// if it didn't, refuse rather than silently no-op. The exception is the
 /// initial install case (record empty): an empty tracked record is exactly
 /// the state this helper is meant to set, so a no-op is correct there.
-pub fn prepare_resurrection(
-    claude_dir: &Path,
-    repo_root: &Path,
-    paths: &[String],
-) -> Result<()> {
+pub fn prepare_resurrection(claude_dir: &Path, repo_root: &Path, paths: &[String]) -> Result<()> {
     let current = tracked::load(claude_dir, repo_root);
     let unknown: Vec<&str> = paths
         .iter()

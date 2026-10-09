@@ -1037,7 +1037,13 @@ mod tests {
             .join("skills/docs/.claude-code-sync-bases.json");
         fs::create_dir_all(skill.parent().unwrap()).unwrap();
         fs::write(&skill, "definitely not a record").unwrap();
-        push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+        push_artifacts(
+            machine_a.path(),
+            repo.path(),
+            &filter,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
 
         let plan = plan_pull(&claude, repo.path(), &filter).unwrap();
         let mut snapshot = Snapshot::create(
@@ -1116,7 +1122,13 @@ mod tests {
         let skill = machine_a.path().join("skills/my-skill/SKILL.md");
         fs::create_dir_all(skill.parent().unwrap()).unwrap();
         fs::write(&skill, "v1\n").unwrap();
-        push_artifacts(machine_a.path(), repo_y.path(), &filter, &std::collections::HashSet::new()).unwrap();
+        push_artifacts(
+            machine_a.path(),
+            repo_y.path(),
+            &filter,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
 
         let plan = plan_pull(&claude, repo_y.path(), &filter).unwrap();
         let mut snapshot = Snapshot::create(
@@ -1139,7 +1151,13 @@ mod tests {
             )
             .save();
 
-        push_artifacts(&claude, repo_x.path(), &filter, &std::collections::HashSet::new()).unwrap();
+        push_artifacts(
+            &claude,
+            repo_x.path(),
+            &filter,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         let x_entry = crate::artifacts::bases::load(&claude, repo_x.path());
         assert!(!x_entry.is_empty(), "repo X recorded its entry");
 
@@ -1199,7 +1217,13 @@ mod tests {
         let skill = machine_a.path().join("skills/my-skill/SKILL.md");
         fs::create_dir_all(skill.parent().unwrap()).unwrap();
         fs::write(&skill, "v1\n").unwrap();
-        push_artifacts(machine_a.path(), repo_y.path(), &filter, &std::collections::HashSet::new()).unwrap();
+        push_artifacts(
+            machine_a.path(),
+            repo_y.path(),
+            &filter,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
 
         let plan = plan_pull(&claude, repo_y.path(), &filter).unwrap();
         let mut snapshot = Snapshot::create(
@@ -1227,7 +1251,13 @@ mod tests {
 
         // A push of repo X afterwards records X's entries into the SAME
         // shared files.
-        push_artifacts(&claude, repo_x.path(), &filter, &std::collections::HashSet::new()).unwrap();
+        push_artifacts(
+            &claude,
+            repo_x.path(),
+            &filter,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert!(!crate::artifacts::bases::load(&claude, repo_y.path()).is_empty());
         let x_bases_entry = crate::artifacts::bases::load(&claude, repo_x.path());
         assert!(!x_bases_entry.is_empty(), "repo X recorded its bases entry");

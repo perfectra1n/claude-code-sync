@@ -367,10 +367,7 @@ pub fn push_history(
                         println!("      {}", path.display());
                     }
                     if held_back_list.len() > shown {
-                        println!(
-                            "      ... and {} more",
-                            held_back_list.len() - shown
-                        );
+                        println!("      ... and {} more", held_back_list.len() - shown);
                     }
                 }
             } else {

@@ -233,17 +233,11 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
 
 #[cfg(unix)]
 unsafe extern "C" {
-    fn gethostname(
-        name: *mut std::os::raw::c_char,
-        len: usize,
-    ) -> std::os::raw::c_int;
+    fn gethostname(name: *mut std::os::raw::c_char, len: usize) -> std::os::raw::c_int;
 }
 
 #[cfg(unix)]
-unsafe fn libc_gethostname(
-    name: *mut std::os::raw::c_char,
-    len: usize,
-) -> std::os::raw::c_int {
+unsafe fn libc_gethostname(name: *mut std::os::raw::c_char, len: usize) -> std::os::raw::c_int {
     gethostname(name, len)
 }
 
