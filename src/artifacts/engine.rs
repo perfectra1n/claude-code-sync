@@ -186,12 +186,13 @@ pub struct CategoryCounts {
     pub kept_local: usize,
     /// Files the push refused to re-publish because the remote lost them
     /// since the last sync (adversarial review 2026-10-09, 5ff1d62 hole).
-    /// The local copy is preserved on disk. Re-introducing a file the
-    /// remote intentionally lost is not exposed as a CLI override on
-    /// purpose: the safe default is to honor the deletion, and the
-    /// user can re-publish by `rm`-ing the local copy (the next push
-    /// sees `tracked_seen` no longer contains the path and writes
-    /// the file as a fresh `Added`).
+    /// The local copy is preserved on disk. There is no CLI override
+    /// by design — re-introducing a file the remote intentionally lost
+    /// is the dangerous operation, and the safe default is to honor
+    /// the deletion. The escape hatch requires a `pull` after the local
+    /// `rm` (the pull sees local and repo both gone, clears the
+    /// tracked entry; the next push on a freshly created local file
+    /// then publishes as `Added`).
     #[serde(default)]
     pub held_back_remote_lost: usize,
 }
@@ -572,10 +573,12 @@ pub fn push_artifacts(
         // the remote lost between syncs (adversarial review 2026-10-09,
         // 5ff1d62 hole): a fresh-looking "Added" on the push report
         // would otherwise silently rewrite the remote's deletion. The
-        // local copy is preserved on disk; re-introducing it is a
-        // separate action (the user `rm`s the local copy, the next
-        // push sees `tracked_seen` no longer contains the path, the
-        // file lands as a fresh `Added`).
+        // local copy is preserved on disk. Re-introducing the file
+        // requires a `pull` after the local `rm` — the pull sees local
+        // and repo both gone and clears the tracked entry, and a
+        // subsequent push on a freshly created local file then lands
+        // as a fresh `Added`. The push itself does not clear tracked
+        // entries; the only way out is the pull.
         let tracked_seen = tracked::load(claude_dir, repo_root);
         let mut pushed: TrackedPaths = TrackedPaths::new();
         // Files kept back for their size are still here: count them as
