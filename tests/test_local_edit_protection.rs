@@ -2843,7 +2843,7 @@ fn a_push_does_not_resurrect_a_file_the_remote_lost() {
 
     // Push again — the contract: do NOT resurrect the file. The
     // local copy stays on disk; the repo stays missing the file.
-    push_artifacts(
+    let report = push_artifacts(
         machine.path(),
         repo.path(),
         &filter,
@@ -2861,5 +2861,14 @@ fn a_push_does_not_resurrect_a_file_the_remote_lost() {
             .join("projects/-home-x/memory/feedback_x.md")
             .exists(),
         "the local copy is preserved on disk"
+    );
+    // The push report must surface the refusal — the counter is the
+    // only live signal a user has that the 5ff1d62 guard fired.
+    // Without this, a future refactor that drops the field (or
+    // stops populating it) silently regresses the protection.
+    assert_eq!(
+        report.total_held_back_remote_lost(),
+        1,
+        "the push report must surface the held-back file so the user can see the refusal"
     );
 }

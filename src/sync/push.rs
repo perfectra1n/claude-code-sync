@@ -313,15 +313,29 @@ pub fn push_history(
             // back" — the pull's banner owns that word for the
             // per-file skip set, and files the skip set held count as
             // unchanged here. Two labels, two sets.
-            println!(
-                "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged, {} skipped",
-                "•".cyan(),
-                artifact_report.total_added(),
-                artifact_report.total_modified(),
-                artifact_report.total_deleted(),
-                artifact_report.total_unchanged(),
-                artifact_report.total_skipped(),
-            );
+            let held_back_remote_lost = artifact_report.total_held_back_remote_lost();
+            if held_back_remote_lost > 0 {
+                println!(
+                    "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged, {} skipped, {} held back (remote lost)",
+                    "•".cyan(),
+                    artifact_report.total_added(),
+                    artifact_report.total_modified(),
+                    artifact_report.total_deleted(),
+                    artifact_report.total_unchanged(),
+                    artifact_report.total_skipped(),
+                    held_back_remote_lost,
+                );
+            } else {
+                println!(
+                    "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged, {} skipped",
+                    "•".cyan(),
+                    artifact_report.total_added(),
+                    artifact_report.total_modified(),
+                    artifact_report.total_deleted(),
+                    artifact_report.total_unchanged(),
+                    artifact_report.total_skipped(),
+                );
+            }
         }
         println!();
     }
