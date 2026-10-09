@@ -68,12 +68,12 @@ fn active_categories(
 /// and skips the merge when nothing new arrived. Prompt history
 /// (`UnionJsonl`) is append-only and does not need per-line
 /// protection.
-pub(crate) fn records_base(strategy: MergeStrategy, rel: &Path) -> bool {
+pub(crate) fn records_base(strategy: MergeStrategy, _rel: &Path) -> bool {
     match strategy {
         MergeStrategy::RawOverwrite => true,
         MergeStrategy::UnionJsonl => false,
-        MergeStrategy::UnionMemoryIndex => !is_memory_index(rel),
-        MergeStrategy::UnionPluginBindings => !is_plugin_bindings(rel),
+        MergeStrategy::UnionMemoryIndex => true,
+        MergeStrategy::UnionPluginBindings => true,
     }
 }
 
@@ -1788,22 +1788,43 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                     }
                 }
                 _ if union_for(desc.merge, &rel).is_some() => {
-                    // No F3-class guard here. The union-merge contract
-                    // is "incoming wins per entry" (memory_index.rs /
-                    // plugin_bindings.rs): for shared targets, the
-                    // incoming (repo) text replaces the dest text;
-                    // for dest-only targets, the dest text is kept;
-                    // for incoming-only targets, the entry is
-                    // appended. This is the user-expected union-merge
-                    // contract — not silent overwrite — so a None
-                    // base + tracked entry is a valid index to merge
-                    // against (the file IS in the tracked record
-                    // after the first pull, via
-                    // `tracked_after.extend(present)` in the
-                    // gone-scan). The F3-class guard in the
-                    // overwrites arm is for RawOverwrite files,
-                    // where local-vs-repo byte equality means the
-                    // local IS the source of truth.
+                    // The union-merge contract is "incoming wins per
+                    // entry" (memory_index.rs / plugin_bindings.rs):
+                    // for shared targets, the incoming (repo) text
+                    // replaces the dest text; for dest-only targets,
+                    // the dest text is kept; for incoming-only
+                    // targets, the entry is appended. That is the
+                    // correct contract for an absent base, but
+                    // WITHOUT a local-edit check it would silently
+                    // clobber a user-curated bullet (the user's
+                    // extended bullet matches the same target key
+                    // in the repo's incoming text, and incoming wins).
+                    //
+                    // Two guards route a locally-edited file to
+                    // kept_local instead of running the merge:
+                    //
+                    //   (a) F3-class: no recorded base (sidecar wiped
+                    //       by a concurrent sync or a fresh install)
+                    //       AND the file is in `tracked_before` (this
+                    //       machine has seen it before, so the local
+                    //       copy may carry edits the sidecar does
+                    //       not know about).
+                    //
+                    //   (b) is_dirty: the base is recorded and the
+                    //       local bytes differ from it — the user
+                    //       has edits not yet published.
+                    //
+                    // Either way, the user must `push` to publish.
+                    let repo_rel = repo_relative(repo_root, &repo_path)
+                        .unwrap_or_else(|| rel.to_string_lossy().into_owned());
+                    if f3_class_potentially_dirty(
+                        &base_hashes,
+                        &plan.tracked_before,
+                        &repo_rel,
+                    ) {
+                        plan.kept_local.push(write);
+                        continue;
+                    }
                     if !local_path.is_file() {
                         plan.creates.push(write);
                         continue;
@@ -1825,6 +1846,15 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         plan.skipped += 1;
                         continue;
                     };
+                    // F3-class guard: if a recorded base exists and the
+                    // local bytes diverge from it, the user has edits
+                    // not yet published. Keep local; user must `push`.
+                    if let Some(base) = base_hashes.get(&repo_rel) {
+                        if bases::is_dirty(Some(base), &local_bytes) {
+                            plan.kept_local.push(write);
+                            continue;
+                        }
+                    }
                     // Plan-time union-merge. UnionMemoryIndex is
                     // tombstone-aware (5-arg); the 2-arg `merge_fn`
                     // (which `union_for` returns for UnionPluginBindings

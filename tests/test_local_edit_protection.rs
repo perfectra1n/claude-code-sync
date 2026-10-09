@@ -2225,6 +2225,133 @@ fn a_multi_round_f3_keep_survives_a_repo_repush() {
 }
 
 #[test]
+fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
+    // Bug report on PR #105: per-project memory files (both the
+    // index `memory/MEMORY.md` and per-fact files like
+    // `memory/claude-code-sync-model.md`) are union-merged. The
+    // "incoming wins per entry" contract means a user-curated
+    // bullet (same target key as the repo's incoming) is
+    // silently replaced by the repo's version on the next pull.
+    //
+    // The fix is two-pronged:
+    //   1. `records_base` returns true for `UnionMemoryIndex` so
+    //      the sidecar records a base for the index file (it
+    //      already did for per-fact files).
+    //   2. The plan's union arm checks `is_dirty(recorded, local)`
+    //      and routes to kept_local when local diverges from the
+    //      recorded base, AND keeps the F3-class guard (None base
+    //      + tracked entry) for the case where the sidecar was
+    //      wiped.
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    // Both machines start with the same index — one bullet, one target.
+    let index_v1 = "- [link](fact.md) the original curated bullet\n";
+    let memory_dir_a = machine_a.path().join("projects/-home-a-work-app/memory");
+    let memory_dir_b = machine_b.path().join("projects/-home-a-work-app/memory");
+    fs::create_dir_all(&memory_dir_a).unwrap();
+    fs::create_dir_all(&memory_dir_b).unwrap();
+    fs::write(memory_dir_a.join("MEMORY.md"), index_v1).unwrap();
+    fs::write(memory_dir_b.join("MEMORY.md"), index_v1).unwrap();
+    memory(machine_a.path(), "v1\n");
+    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    sync(machine_b.path(), repo.path(), &filter);
+
+    // (1) The base IS recorded for the index file (the fix).
+    let recorded = bases::load(machine_b.path(), repo.path());
+    assert!(
+        recorded.contains_key("projects/-home-a-work-app/memory/MEMORY.md"),
+        "the index file's base must be recorded (regression: the \
+         previous `!is_memory_index(rel)` rule skipped it): {recorded:?}"
+    );
+
+    // (2) A second machine edits the repo's bullet. The local user
+    // extends the SAME bullet on their own copy. The local base is
+    // now stale (it was the original bullet); the local bytes
+    // differ from the base. The pull must keep local, not clobber
+    // with the new incoming.
+    fs::write(memory_dir_a.join("MEMORY.md"), "- [link](fact.md) the original curated bullet, A-side edit\n").unwrap();
+    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+
+    let local_extended = "- [link](fact.md) the original curated bullet, B-side edit\n";
+    fs::write(memory_dir_b.join("MEMORY.md"), local_extended).unwrap();
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    let kept_count: usize = plan
+        .kept_local
+        .iter()
+        .filter(|w| w.category_path.ends_with("MEMORY.md"))
+        .count();
+    let unions_count: usize = plan
+        .unions
+        .iter()
+        .filter(|w| w.category_path.ends_with("MEMORY.md"))
+        .count();
+    assert_eq!(
+        kept_count, 1,
+        "the user's local bullet extension must route to kept_local, \
+         NOT to unions (the union merge would silently overwrite the \
+         local edit by incoming-wins-per-entry)"
+    );
+    assert_eq!(
+        unions_count, 0,
+        "no union-merge run for the locally-edited index file"
+    );
+
+    // (3) The apply must NOT touch the local file. The user must
+    // run a standalone `push` to publish their edit.
+    apply_pull(&plan, false).unwrap();
+    let local_after = fs::read_to_string(memory_dir_b.join("MEMORY.md")).unwrap();
+    assert_eq!(
+        local_after, local_extended,
+        "the local bullet extension survives the pull: {local_after}"
+    );
+    assert!(
+        !local_after.contains("A-side edit"),
+        "the pull did NOT adopt the incoming (A's) text: {local_after}"
+    );
+}
+
+#[test]
+fn a_local_edit_to_a_per_fact_memory_file_survives_a_pull() {
+    // Same bug as the index test, but for the per-fact file
+    // (`memory/fact.md`). The fix covers both via the union arm's
+    // is_dirty check; this test pins the per-fact case so a future
+    // change to the strategy match doesn't accidentally re-protect
+    // only the index.
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    memory(machine_a.path(), "v1\n");
+    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    sync(machine_b.path(), repo.path(), &filter);
+
+    // A pushes a different fact. B's local user rewrites the
+    // fact locally. The local fact now diverges from both the
+    // base and the repo.
+    memory(machine_a.path(), "v2 from A\n");
+    push_artifacts(machine_a.path(), repo.path(), &filter, &std::collections::HashSet::new()).unwrap();
+    memory(machine_b.path(), "v2 from B (local edit)\n");
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    let kept_count: usize = plan
+        .kept_local
+        .iter()
+        .filter(|w| w.category_path.ends_with("fact.md"))
+        .count();
+    assert_eq!(
+        kept_count, 1,
+        "the per-fact local edit must route to kept_local"
+    );
+    apply_pull(&plan, false).unwrap();
+    assert_eq!(read_memory(machine_b.path()), "v2 from B (local edit)\n");
+}
+
+#[test]
 fn undo_does_not_disarm_the_mid_pull_create_protection() {
     let repo = TempDir::new().unwrap();
     let machine_a = TempDir::new().unwrap();
