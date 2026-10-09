@@ -790,9 +790,6 @@ pub fn push_artifacts(
                             }
                         }
                     }
-                            }
-                        }
-                    }
 
                     if !existed {
                         // If this machine has a `tracked` entry for the
