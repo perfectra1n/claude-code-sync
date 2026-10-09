@@ -162,6 +162,7 @@ pub fn push_history(
     interactive: bool,
     verbosity: crate::VerbosityLevel,
     skip_artifact_paths: &HashSet<(CategoryId, PathBuf)>,
+    resurrect: &[String],
 ) -> Result<PushReport> {
     use crate::VerbosityLevel;
 
@@ -172,6 +173,22 @@ pub fn push_history(
     let state = SyncState::load()?;
     let repo = scm::open(&state.sync_repo_path)?;
     let mut filter = FilterConfig::load()?;
+
+    // 5ff1d62 escape hatch: drop the listed paths from the local tracked
+    // record BEFORE the push runs, so the push's guard at engine.rs:711-735
+    // sees no tracked entry and publishes the file as a fresh `Added`.
+    // `engine::prepare_resurrection` returns Err if any path is not in the
+    // current record — defense in depth against a typo in the flag value
+    // or a path that was never held back. The user-facing discovery is
+    // `claude-code-sync status --held-back`.
+    if !resurrect.is_empty() {
+        let claude_dir = claude_projects_dir()?;
+        crate::artifacts::engine::prepare_resurrection(
+            &claude_dir,
+            &state.sync_repo_path,
+            resurrect,
+        )?;
+    }
 
     // Override exclude_attachments if specified in command
     if exclude_attachments {
@@ -325,6 +342,30 @@ pub fn push_history(
                     artifact_report.total_skipped(),
                     held_back_remote_lost,
                 );
+                // List the actual file paths so the user can target them
+                // with `push --resurrect <path>`. Capped to 20 with a
+                // trailing "... and N more" to match the verbose list
+                // style used elsewhere in the push summary.
+                let held_back_list: Vec<&PathBuf> = artifact_report
+                    .held_back_paths()
+                    .map(|(_, path, _)| path)
+                    .collect();
+                let shown = held_back_list.len().min(20);
+                if shown > 0 {
+                    println!(
+                        "    {} Files the remote lost (use `claude-code-sync push --resurrect <path>` to override):",
+                        "→".cyan()
+                    );
+                    for path in &held_back_list[..shown] {
+                        println!("      {}", path.display());
+                    }
+                    if held_back_list.len() > shown {
+                        println!(
+                            "      ... and {} more",
+                            held_back_list.len() - shown
+                        );
+                    }
+                }
             } else {
                 println!(
                     "  {} Artifacts: {} added, {} modified, {} deleted, {} unchanged, {} skipped",

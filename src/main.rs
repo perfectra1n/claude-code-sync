@@ -75,6 +75,16 @@ enum Commands {
         /// Show minimal quiet output
         #[arg(short, long, conflicts_with = "verbose")]
         quiet: bool,
+
+        /// Override the 5ff1d62 push guard for specific paths: drops them
+        /// from the local tracked record before this push, so the next
+        /// push publishes them as fresh `Added` instead of holding them
+        /// back because the remote lost them. The path must currently be
+        /// in the held-back set (run `claude-code-sync status
+        /// --held-back` to list). Repo-relative paths (e.g.
+        /// `projects/-home-x/memory/feedback_x.md`).
+        #[arg(long, value_name = "PATH")]
+        resurrect: Vec<String>,
     },
 
     /// Pull and merge history from the sync repository
@@ -144,6 +154,14 @@ enum Commands {
         /// Show which files would be synced
         #[arg(long)]
         show_files: bool,
+
+        /// Show the files the 5ff1d62 push guard would refuse to
+        /// re-publish: per-machine, repo-relative paths that are present
+        /// locally, absent from the remote, AND in the local tracked
+        /// record. These are the files `push --resurrect <path>` can
+        /// override. Read-only — does not perform a push.
+        #[arg(long)]
+        held_back: bool,
     },
 
     /// Delete transcripts past the retention window, here and in the sync repo
@@ -544,6 +562,7 @@ fn main() -> Result<()> {
             interactive,
             verbose,
             quiet,
+            resurrect,
         } => {
             // Determine verbosity level
             let verbosity = if verbose {
@@ -562,6 +581,7 @@ fn main() -> Result<()> {
                 interactive,
                 verbosity,
                 &std::collections::HashSet::new(),
+                &resurrect,
             )?;
         }
         Commands::Pull {
@@ -616,8 +636,9 @@ fn main() -> Result<()> {
         Commands::Status {
             show_conflicts,
             show_files,
+            held_back,
         } => {
-            sync::show_status(show_conflicts, show_files)?;
+            sync::show_status(show_conflicts, show_files, held_back)?;
         }
         Commands::Purge {
             older_than,

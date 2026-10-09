@@ -9,7 +9,7 @@ use super::discovery::{claude_projects_dir, discover_sessions};
 use super::state::SyncState;
 
 /// Show sync status
-pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
+pub fn show_status(show_conflicts: bool, show_files: bool, held_back: bool) -> Result<()> {
     let state = SyncState::load()?;
     let repo = scm::open(&state.sync_repo_path)?;
     let filter = FilterConfig::load()?;
@@ -166,6 +166,49 @@ pub fn show_status(show_conflicts: bool, show_files: bool) -> Result<()> {
             } else {
                 println!("{}", "No conflicts in last sync".green());
             }
+        }
+    }
+
+    // Held-back files (5ff1d62 push guard): only printed when explicitly
+    // requested. Drives the `push --resurrect <path>` discovery flow
+    // without performing a push. Read-only — does not touch the tracked
+    // record or the repo.
+    if held_back {
+        println!();
+        println!(
+            "{}",
+            "Files the 5ff1d62 push guard would refuse:".bold()
+        );
+        let held = crate::artifacts::engine::plan_held_back_remote_lost(
+            &claude_dir,
+            &state.sync_repo_path,
+            &filter,
+        )?;
+        if held.is_empty() {
+            println!("  (none)");
+        } else {
+            // Group by category for readability. HashMap (not BTreeMap)
+            // because CategoryId does not implement Ord.
+            use std::collections::HashMap;
+            let mut by_cat: HashMap<crate::artifacts::registry::CategoryId, Vec<&Path>> =
+                HashMap::new();
+            for (cat, path) in &held {
+                by_cat.entry(*cat).or_default().push(path.as_path());
+            }
+            for (cat, paths) in &by_cat {
+                println!(
+                    "  {}:",
+                    format!("{:?}", cat).bold()
+                );
+                for path in paths {
+                    println!("    {}", path.display());
+                }
+            }
+            println!();
+            println!(
+                "To republish any of these on the next push, run:\n  \
+                 claude-code-sync push --resurrect <path>"
+            );
         }
     }
 

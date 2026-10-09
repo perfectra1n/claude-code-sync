@@ -2872,3 +2872,81 @@ fn a_push_does_not_resurrect_a_file_the_remote_lost() {
         "the push report must surface the held-back file so the user can see the refusal"
     );
 }
+
+/// A deletion in a memory index on one machine propagates to the other
+/// via a `deleted/<id>.md` marker. Without the marker, the union-merge
+/// on the surviving machine would resurrect the deleted entry because
+/// the remote MEMORY.md still has the line and the merge is
+/// structurally grow-only (the 2P-Set problem the marker pattern
+/// solves).
+///
+/// Note: ProjectAttachments is configured with `mirror_deletes: false`
+/// (the deliberate design choice — user files like PDFs and images
+/// must not be silently deleted by a sync), so the production
+/// `plan_pull` gone-scan is skipped for this category and this test
+/// cannot exercise the cross-machine path through that gate. The
+/// tombstone-aware merge in `memory_index.rs` is unit-tested
+/// directly with all four tombstone rules; the marker writer is
+/// tested via `record_memory_deletion_marker`. The cross-machine
+/// end-to-end would require enabling mirror_deletes for
+/// ProjectAttachments, which is a separate design decision tracked
+/// in the same review.
+#[test]
+fn a_memory_index_deletion_writes_a_marker_file() {
+    // Direct unit test of the marker writer. The on-disk format is
+    // the only thing this test asserts (the body bytes); the
+    // cross-machine propagation through plan_pull/apply_pull is
+    // exercised by the tombstone rules in `memory_index.rs` and by
+    // the 5-arg merge in `apply_pull`. ProjectAttachments has
+    // `mirror_deletes: false`, so the production gone-scan skips
+    // this category; the marker writer itself is unconditional
+    // when called from the apply_pull deletes arm, and the
+    // cross-machine path is gated on a future mirror_deletes
+    // reclassification (separate design decision).
+    use claude_code_sync::artifacts::memory_index::DELETED_DIR;
+    use claude_code_sync::artifacts::engine::record_memory_deletion_marker;
+    let dir = TempDir::new().unwrap();
+    let mem_dir = dir.path().join("projects/-home-a/memory");
+    fs::create_dir_all(&mem_dir).unwrap();
+    fs::write(mem_dir.join("MEMORY.md"), "- [a](a.md) hook A\n").unwrap();
+    fs::write(mem_dir.join("a.md"), "fact\n").unwrap();
+
+    // Simulate the apply_pull deletes arm: the sibling a.md is
+    // about to be removed (or already was). Call the marker
+    // writer directly with that sibling path.
+    let sibling = mem_dir.join("a.md");
+    record_memory_deletion_marker(&sibling).expect("marker write");
+
+    // The marker landed in the `deleted/` sibling of MEMORY.md.
+    let marker = mem_dir.join(DELETED_DIR).join("a.md");
+    assert!(marker.is_file(), "marker must exist: {marker:?}");
+    let body = fs::read_to_string(&marker).unwrap();
+    // Body is byte-stable for identical concurrent deletes. The
+    // `was:` line carries the original MEMORY.md entry so the
+    // user can recover the original line if needed.
+    let expected_was = "was: - [a](a.md) hook A";
+    assert!(body.contains(expected_was), "body must carry the was-line: {body}");
+    assert!(body.contains("deleted"), "body must mark as deleted: {body}");
+}
+
+#[test]
+fn record_memory_deletion_marker_is_a_noop_outside_memory_dirs() {
+    // When the deleted file is not under a MEMORY.md directory,
+    // the marker writer must return Ok without writing — the
+    // apply_pull deletes arm calls it for every delete, not just
+    // memory deletes.
+    use claude_code_sync::artifacts::engine::record_memory_deletion_marker;
+    let dir = TempDir::new().unwrap();
+    let arbitrary = dir.path().join("not-a-memory/some-file.md");
+    fs::create_dir_all(arbitrary.parent().unwrap()).unwrap();
+    fs::write(&arbitrary, "x").unwrap();
+    record_memory_deletion_marker(&arbitrary)
+        .expect("must succeed for non-memory paths");
+    // No deleted/ dir anywhere under the parent.
+    let entries: Vec<_> = fs::read_dir(arbitrary.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(!entries.iter().any(|n| n == "deleted"));
+}

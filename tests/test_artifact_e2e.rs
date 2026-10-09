@@ -175,6 +175,7 @@ fn test_full_pipeline_push_pull_undo_across_two_machines() {
         false,
         VerbosityLevel::Quiet,
         &std::collections::HashSet::new(),
+        &[] as &[String],
     )
     .unwrap();
     assert_eq!(report.added, 1, "one session pushed");
@@ -251,6 +252,7 @@ fn test_full_pipeline_second_push_creates_no_commit() {
         false,
         VerbosityLevel::Quiet,
         &std::collections::HashSet::new(),
+        &[] as &[String],
     )
     .unwrap();
     let report = push_history(
@@ -261,6 +263,7 @@ fn test_full_pipeline_second_push_creates_no_commit() {
         false,
         VerbosityLevel::Quiet,
         &std::collections::HashSet::new(),
+        &[] as &[String],
     )
     .unwrap();
 
@@ -293,6 +296,7 @@ fn test_full_pipeline_sync_converges_prompt_history() {
         false,
         VerbosityLevel::Quiet,
         &std::collections::HashSet::new(),
+        &[] as &[String],
     )
     .unwrap();
 
@@ -394,6 +398,7 @@ fn test_pull_warns_once_for_a_project_this_machine_never_mapped() {
         false,
         VerbosityLevel::Quiet,
         &std::collections::HashSet::new(),
+        &[] as &[String],
     )
     .unwrap();
     assert!(repo.path().join("projects/webapp").is_dir());
@@ -457,6 +462,7 @@ fn test_sync_with_kept_local_still_pushes_sessions() {
         false,
         VerbosityLevel::Quiet,
         &std::collections::HashSet::new(),
+        &[] as &[String],
     )
     .unwrap();
 
@@ -518,6 +524,7 @@ fn test_sync_keeps_a_clean_held_file_from_overwriting_repo() {
         false,
         VerbosityLevel::Quiet,
         &std::collections::HashSet::new(),
+        &[] as &[String],
     )
     .unwrap();
 
@@ -541,6 +548,7 @@ fn test_sync_keeps_a_clean_held_file_from_overwriting_repo() {
         false,
         VerbosityLevel::Quiet,
         &std::collections::HashSet::new(),
+        &[] as &[String],
     )
     .unwrap();
     machine_b.activate();

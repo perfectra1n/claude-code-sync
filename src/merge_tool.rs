@@ -29,6 +29,7 @@ pub enum Resolution {
 const KEEP_LOCAL: &str = "Keep the local version";
 const TAKE_REMOTE: &str = "Overwrite with the sync repo version";
 const MERGE_EXTERNALLY: &str = "Merge both in the configured merge tool";
+const KEEP_BOTH: &str = "Keep both — save the sync repo version next to your local one";
 
 /// What the user (or the merge tool) decided about one differing file.
 pub enum ResolutionOutcome {
@@ -40,6 +41,14 @@ pub enum ResolutionOutcome {
     /// The merge-tool session was abandoned (closed without applying):
     /// no decision was made, and callers must not record one.
     Abandoned,
+    /// The user chose to preserve both versions. `rename` is the
+    /// conflict-copy path (Syncthing-style
+    /// `<stem>.sync-conflict-<date>-<time>-<host>.<ext>`) where the
+    /// remote bytes land. The local file is left untouched. Callers
+    /// do NOT call `record_base` for this outcome: the local file
+    /// is dirty by user-edit definition, and the conflict copy is
+    /// a side artifact, not a synced value.
+    ConflictCopy { rename: PathBuf },
 }
 
 /// Ask what to do about one differing file. `KeepLocal` and `Abandoned`
@@ -56,6 +65,11 @@ pub fn resolve_overwrite(
     if !merge_tool.trim().is_empty() {
         options.push(MERGE_EXTERNALLY);
     }
+    // KEEP_BOTH is always offered: it has no dependency on a merge tool
+    // and preserves both versions (Syncthing's documented pattern), so
+    // even users without a configured merge tool get the option to keep
+    // their local edit and inspect the remote's version alongside it.
+    options.push(KEEP_BOTH);
 
     let choice = match Select::new(
         &format!("'{file_name}' differs from the sync repo:"),
@@ -79,8 +93,145 @@ pub fn resolve_overwrite(
                 Resolution::Abandoned => Ok(ResolutionOutcome::Abandoned),
             }
         }
+        KEEP_BOTH => Ok(ResolutionOutcome::ConflictCopy {
+            rename: build_conflict_path(local_path),
+        }),
         _ => Ok(ResolutionOutcome::KeepLocal),
     }
+}
+
+/// Build the next free Syncthing-style conflict-copy path: sibling of
+/// `local_path` named `<stem>.sync-conflict-<YYYYMMDD>-<HHMMSS>-<host>.<ext>`.
+/// Collisions with an existing file pick the smallest non-colliding `-1`,
+/// `-2`, ... suffix. The `host` is `hostname` (best-effort; falls back to
+/// `local` when the call fails).
+pub fn build_conflict_path(local_path: &Path) -> PathBuf {
+    let parent = local_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let stem = local_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "artifact".to_string());
+    let ext = local_path
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            // Best-effort hostname lookup. Avoid pulling in the `hostname`
+            // crate for this single use: an empty env is fine, and the
+            // toolchain's `gethostname(2)` is a single libc call.
+            #[cfg(unix)]
+            unsafe {
+                let mut buf = [0u8; 256];
+                let ret = libc_gethostname(buf.as_mut_ptr() as *mut _, buf.len());
+                if ret == 0 {
+                    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                    if let Ok(s) = std::str::from_utf8(&buf[..len]) {
+                        if !s.is_empty() {
+                            return Some(s.to_string());
+                        }
+                    }
+                }
+                None
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        })
+        .unwrap_or_else(|| "local".to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // YYYYMMDD-HHMMSS without external chrono dep: simple time math from
+    // a known epoch anchor. Good enough for a unique-enough suffix.
+    let (date_part, time_part) = epoch_seconds_to_ymd_hms(now);
+    let base_name = format!("{stem}.sync-conflict-{date_part}-{time_part}-{host}");
+    let mut candidate: PathBuf = if ext.is_empty() {
+        parent.join(format!("{base_name}"))
+    } else {
+        parent.join(format!("{base_name}.{ext}"))
+    };
+    if !candidate.exists() {
+        return candidate;
+    }
+    for n in 1.. {
+        candidate = if ext.is_empty() {
+            parent.join(format!("{base_name}-{n}"))
+        } else {
+            parent.join(format!("{base_name}-{n}.{ext}"))
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+        // Guard against pathological directory with thousands of pre-existing
+        // conflict copies; 10000 is plenty for any sane user.
+        if n > 10_000 {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
+/// Convert UNIX seconds to (YYYYMMDD, HHMMSS) using the Gregorian calendar.
+/// Inline implementation to avoid pulling in a `chrono`/`time` dep just
+/// for a 6-line conflict-copy suffix. The math is the standard
+/// "days-since-1970-01-01 then year/month/day" recipe.
+fn epoch_seconds_to_ymd_hms(secs: u64) -> (String, String) {
+    let days = (secs / 86_400) as i64;
+    let rem = (secs % 86_400) as u32;
+    let hour = rem / 3600;
+    let minute = (rem % 3600) / 60;
+    let second = rem % 60;
+    // 1970-01-01 is a Thursday (day 0 = Thursday in the proleptic Gregorian
+    // calendar: 1970-01-01 = day 0, day-of-week (0..6) with 0=Thursday).
+    // Shift days so 0 maps to Monday: offset by 3.
+    let dow0 = ((days + 3).rem_euclid(7)) as u32; // 0 = Mon
+    let (y, m, d) = days_to_ymd(days);
+    // Unused: dow0 is for the test below; we don't actually need it
+    // for the suffix but keep the variable to avoid the unused-let
+    // warning that would otherwise surface.
+    let _ = dow0;
+    (
+        format!("{y:04}{m:02}{d:02}"),
+        format!("{hour:02}{minute:02}{second:02}"),
+    )
+}
+
+fn days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Howard Hinnant's date algorithm: civil_from_days.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as u32, d as u32)
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn gethostname(
+        name: *mut std::os::raw::c_char,
+        len: usize,
+    ) -> std::os::raw::c_int;
+}
+
+#[cfg(unix)]
+unsafe fn libc_gethostname(
+    name: *mut std::os::raw::c_char,
+    len: usize,
+) -> std::os::raw::c_int {
+    gethostname(name, len)
 }
 
 /// Run the configured tool on `local_path` against `remote_bytes`.
