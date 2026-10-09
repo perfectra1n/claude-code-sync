@@ -2740,11 +2740,9 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             };
             // KEEP_BOTH: write the remote bytes to a sibling conflict
             // copy (Syncthing naming) and leave the local file untouched.
-            // The local file is dirty by user-edit definition; the
-            // conflict copy is a side artifact, not a synced value, so
-            // we do NOT call record_base. PROMPT→ANSWER re-check still
-            // applies (the file could have been deleted during the
-            // prompt) and the write failure path is the same.
+            // PROMPT→ANSWER re-check still applies (the file could have
+            // been deleted during the prompt) and the write failure path
+            // is the same.
             if let crate::merge_tool::ResolutionOutcome::ConflictCopy { rename } = resolution {
                 if !write.local_path.is_file() {
                     log::warn!(
@@ -2769,6 +2767,16 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     );
                     continue;
                 }
+                // Keeping both is a resolution like a merge: the user saw the
+                // repository version (now saved beside the file) and kept
+                // theirs. Recorded the same way, so the next sync publishes it.
+                bases_changed |= record_base(
+                    &mut synced_bases,
+                    &mut bases_inserts,
+                    &plan.repo_root,
+                    &write.repo_path,
+                    &repo_bytes,
+                );
                 log::info!(
                     "Saved repo version of '{}' as {} (conflicting local edit)",
                     write.local_path.display(),
@@ -2809,20 +2817,22 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     );
                     continue;
                 }
-                // A pure take of the repository copy is synced: record it.
-                // A merge-tool result is NOT — it keeps local material the
-                // repository lacks, and recording it would close the very
-                // protection window this file just used, letting the next
-                // non-interactive pull remote-wins over the resolution.
-                if bytes == repo_bytes {
-                    bases_changed |= record_base(
-                        &mut synced_bases,
-                        &mut bases_inserts,
-                        &plan.repo_root,
-                        &write.repo_path,
-                        &bytes,
-                    );
-                }
+                // The base is the repository version the user resolved
+                // against — for a take, exactly what was written; for a
+                // merge-tool result, the version the merge already holds.
+                // Not the merged bytes: those would read as synced, and the
+                // next non-interactive pull would overwrite the resolution
+                // with any repository change. With the repository version
+                // as base, the next sync sees "only this machine changed
+                // it" and publishes the resolution — unless the other
+                // machine changed the file again meanwhile, which holds it.
+                bases_changed |= record_base(
+                    &mut synced_bases,
+                    &mut bases_inserts,
+                    &plan.repo_root,
+                    &write.repo_path,
+                    &repo_bytes,
+                );
                 counts_for(&mut by_category, write.category).modified += 1;
                 report.record(
                     write.category,
@@ -3141,9 +3151,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 Ok(crate::merge_tool::ResolutionOutcome::ConflictCopy { rename }) => {
                     // KEEP_BOTH: write the remote bytes to a sibling
                     // conflict copy and leave the local file untouched.
-                    // The local file is dirty by user-edit definition;
-                    // the conflict copy is a side artifact, so we do
-                    // NOT call record_base. The change is reported as
+                    // The change is reported as
                     // Modified against the original local path so the
                     // summary is intelligible (the conflict copy is a
                     // side effect, not a separate file the user
@@ -3163,6 +3171,14 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                         );
                         continue;
                     }
+                    // Same as the kept-local arm's keep-both.
+                    bases_changed |= record_base(
+                        &mut synced_bases,
+                        &mut bases_inserts,
+                        &plan.repo_root,
+                        &write.repo_path,
+                        &repo_bytes,
+                    );
                     log::info!(
                         "Saved repo version of '{}' as {} (conflicting local edit)",
                         write.local_path.display(),
@@ -3224,10 +3240,6 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         };
         // `None` means the pure repository bytes (the non-interactive
         // default): borrowed, not cloned; only a resolution allocates.
-        let pure_take = match &resolved {
-            None => true,
-            Some(resolved) => *resolved == repo_bytes,
-        };
         let bytes: &[u8] = resolved.as_deref().unwrap_or(&repo_bytes);
         if let Err(e) = write_atomic(&write.local_path, bytes, &write.repo_path) {
             log::warn!("Keeping {} (write failed): {e}", write.local_path.display());
@@ -3240,20 +3252,16 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             );
             continue;
         }
-        // Same rule as the kept-local arm: a pure take of the repository
-        // copy is synced and records its base; a merge-tool result keeps
-        // local material the repository lacks and must NOT be recorded —
-        // the next non-interactive pull would otherwise read it as synced
-        // and overwrite the user's resolution.
-        if pure_take {
-            bases_changed |= record_base(
-                &mut synced_bases,
-                &mut bases_inserts,
-                &plan.repo_root,
-                &write.repo_path,
-                bytes,
-            );
-        }
+        // A take records the repository bytes it wrote; a merge-tool
+        // result records the repository version it resolved against (see
+        // the kept-local arm) — the same value either way.
+        bases_changed |= record_base(
+            &mut synced_bases,
+            &mut bases_inserts,
+            &plan.repo_root,
+            &write.repo_path,
+            &repo_bytes,
+        );
         counts_for(&mut by_category, write.category).modified += 1;
         report.record(
             write.category,

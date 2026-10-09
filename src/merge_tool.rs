@@ -51,10 +51,9 @@ pub enum ResolutionOutcome {
     /// The user chose to preserve both versions. `rename` is the
     /// conflict-copy path (Syncthing-style
     /// `<stem>.sync-conflict-<date>-<time>-<host>.<ext>`) where the
-    /// remote bytes land. The local file is left untouched. Callers
-    /// do NOT call `record_base` for this outcome: the local file
-    /// is dirty by user-edit definition, and the conflict copy is
-    /// a side artifact, not a synced value.
+    /// remote bytes land. The local file is left untouched; callers
+    /// record the repository version as the base, as after a merge, so
+    /// the next sync publishes the kept local file.
     ConflictCopy { rename: PathBuf },
 }
 

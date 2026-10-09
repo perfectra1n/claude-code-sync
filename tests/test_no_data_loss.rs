@@ -761,3 +761,68 @@ fn a_memory_index_union_merge_is_declared_for_undo() {
         );
     }
 }
+
+/// What an interactive merge (or keep-both) leaves: the merged file locally,
+/// with the repository version it was resolved against recorded as the base.
+/// The next cron sync publishes the resolution instead of holding it forever.
+#[test]
+fn a_resolved_conflict_is_published_by_the_next_sync() {
+    let (repo, a, b) = two_machines_in_sync(&[(SKILL, "v1\n")]);
+    write(&a.path().join(SKILL), "edited on A\n");
+    sync(a.path(), repo.path());
+    write(&b.path().join(SKILL), "edited on B\n");
+    assert_eq!(
+        kept_local(&sync(b.path(), repo.path())),
+        1,
+        "held until resolved"
+    );
+
+    resolve_against_the_repository(b.path(), repo.path(), "merged A and B\n");
+    let report = sync(b.path(), repo.path());
+    assert_eq!(kept_local(&report), 0, "the resolution is not held");
+    assert_eq!(
+        read(&repo.path().join(REPO_SKILL)).as_deref(),
+        Some("merged A and B\n")
+    );
+    sync(a.path(), repo.path());
+    assert_eq!(
+        read(&a.path().join(SKILL)).as_deref(),
+        Some("merged A and B\n")
+    );
+}
+
+/// A resolution made against a repository version the other machine has since
+/// replaced is held again: it does not overwrite the newer change.
+#[test]
+fn a_resolution_overtaken_by_a_newer_remote_change_is_held() {
+    let (repo, a, b) = two_machines_in_sync(&[(SKILL, "v1\n")]);
+    write(&a.path().join(SKILL), "edited on A\n");
+    sync(a.path(), repo.path());
+    write(&b.path().join(SKILL), "edited on B\n");
+    sync(b.path(), repo.path());
+
+    resolve_against_the_repository(b.path(), repo.path(), "merged A and B\n");
+    write(&a.path().join(SKILL), "edited on A again\n");
+    sync(a.path(), repo.path());
+
+    let report = sync(b.path(), repo.path());
+    assert_eq!(kept_local(&report), 1);
+    assert_eq!(
+        read(&repo.path().join(REPO_SKILL)).as_deref(),
+        Some("edited on A again\n")
+    );
+    assert_eq!(
+        read(&b.path().join(SKILL)).as_deref(),
+        Some("merged A and B\n")
+    );
+}
+
+/// The state `pull -i` leaves after the user resolves the skill: `resolution`
+/// written locally, the repository version it was made against as the base.
+fn resolve_against_the_repository(claude: &Path, repo: &Path, resolution: &str) {
+    let repo_bytes = fs::read(repo.join(REPO_SKILL)).unwrap();
+    let mut recorded = bases::load(claude, repo);
+    recorded.insert(REPO_SKILL.to_string(), bases::hash_bytes(&repo_bytes));
+    bases::save(claude, repo, recorded).unwrap();
+    write(&claude.join(SKILL), resolution);
+}
