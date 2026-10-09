@@ -61,17 +61,7 @@ fn pull(claude: &Path, repo: &Path) -> ArtifactReport {
 /// What `sync` does: pull, then push everything the pull did not hold back.
 fn sync(claude: &Path, repo: &Path) -> ArtifactReport {
     let report = pull(claude, repo);
-    let held: HashSet<(CategoryId, PathBuf)> = report
-        .changes
-        .iter()
-        .filter(|c| {
-            matches!(
-                c.kind,
-                ArtifactChangeKind::KeptLocal | ArtifactChangeKind::KeptLocalDelete
-            )
-        })
-        .map(|c| (c.category, c.path.clone()))
-        .collect();
+    let held = report.paths_the_push_must_skip();
     push_artifacts(claude, repo, &all_on_filter(), &held).unwrap();
     report
 }
@@ -585,5 +575,107 @@ fn a_file_created_here_and_on_the_other_machine_is_not_overwritten() {
     assert_eq!(
         read(&repo.path().join("artifacts/skills/new/SKILL.md")).as_deref(),
         Some("created on A\n")
+    );
+}
+
+/// A sync whose pull is interrupted between planning and applying (a prompt,
+/// a slow merge tool): `during` runs in that window, the way the user's own
+/// edits would.
+fn sync_with_a_window(
+    claude: &Path,
+    repo: &Path,
+    during: impl FnOnce(&mut claude_code_sync::artifacts::engine::PullPlan),
+) -> ArtifactReport {
+    let mut plan = plan_pull(claude, repo, &all_on_filter()).unwrap();
+    during(&mut plan);
+    let report = apply_pull(&plan, false).unwrap();
+    push_artifacts(
+        claude,
+        repo,
+        &all_on_filter(),
+        &report.paths_the_push_must_skip(),
+    )
+    .unwrap();
+    report
+}
+
+/// The other machine created a file; this machine creates the same path
+/// while the pull waits. The pull must not overwrite it — and the push right
+/// after must not publish it over the other machine's version either.
+#[test]
+fn a_file_created_here_while_the_pull_waits_is_not_published_over_the_other_machines() {
+    let (repo, a, b) = two_machines_in_sync(&[(SKILL, "v1\n")]);
+    let new_skill = "skills/new/SKILL.md";
+    write(&a.path().join(new_skill), "created on A\n");
+    sync(a.path(), repo.path());
+
+    sync_with_a_window(b.path(), repo.path(), |_| {
+        write(&b.path().join(new_skill), "created on B mid-pull\n")
+    });
+    let repo_copy = repo.path().join("artifacts/skills/new/SKILL.md");
+    assert_eq!(
+        read(&b.path().join(new_skill)).as_deref(),
+        Some("created on B mid-pull\n")
+    );
+    assert_eq!(read(&repo_copy).as_deref(), Some("created on A\n"));
+
+    // And it stays that way: later syncs hold it until the user decides.
+    for _ in 0..3 {
+        sync(b.path(), repo.path());
+        assert_eq!(read(&repo_copy).as_deref(), Some("created on A\n"));
+        assert_eq!(
+            read(&b.path().join(new_skill)).as_deref(),
+            Some("created on B mid-pull\n")
+        );
+    }
+}
+
+/// Only the other machine edited the file, and this machine deletes it while
+/// the pull waits. The push must not mirror that deletion over the other
+/// machine's edit.
+#[test]
+fn a_deletion_made_while_the_pull_waits_does_not_delete_the_other_machines_edit() {
+    let (repo, a, b) = two_machines_in_sync(&[(SKILL, "v1\n"), ("skills/k/SKILL.md", "k\n")]);
+    write(&a.path().join(SKILL), "edited on A\n");
+    sync(a.path(), repo.path());
+
+    sync_with_a_window(b.path(), repo.path(), |plan| {
+        assert_eq!(plan.overwrites.len(), 1);
+        fs::remove_file(b.path().join(SKILL)).unwrap();
+    });
+    assert_eq!(
+        read(&repo.path().join(REPO_SKILL)).as_deref(),
+        Some("edited on A\n"),
+        "A's edit is still in the repository"
+    );
+}
+
+/// An overwrite the pull could not back up is not carried out — and the push
+/// must not then publish the stale local copy over the other machine's edit.
+#[test]
+fn an_overwrite_without_a_backup_does_not_publish_the_stale_local_copy() {
+    let (repo, a, b) = two_machines_in_sync(&[(SKILL, "v1\n")]);
+    write(&a.path().join(SKILL), "edited on A\n");
+    sync(a.path(), repo.path());
+
+    let local = b.path().join(SKILL);
+    sync_with_a_window(b.path(), repo.path(), |plan| {
+        plan.unsnapshotted.push(local.clone())
+    });
+    assert_eq!(
+        read(&local).as_deref(),
+        Some("v1\n"),
+        "not modified without a backup"
+    );
+    assert_eq!(
+        read(&repo.path().join(REPO_SKILL)).as_deref(),
+        Some("edited on A\n"),
+        "and the stale v1 is not published over A's edit"
+    );
+    sync(b.path(), repo.path());
+    assert_eq!(
+        read(&local).as_deref(),
+        Some("edited on A\n"),
+        "the next pull takes it"
     );
 }

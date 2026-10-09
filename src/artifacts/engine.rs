@@ -274,6 +274,14 @@ pub enum ArtifactChangeKind {
     /// hatch is `claude-code-sync push --resurrect <path>` (see
     /// `engine::prepare_resurrection`).
     HeldBackRemoteLost,
+    /// A pull planned to write this file but did not (it appeared,
+    /// vanished or became unreadable while the pull ran, had no backup,
+    /// or a write failed). The local side is then not a decision about
+    /// the repository version, so the push that follows must leave the
+    /// path alone — publishing it, or mirroring its absence as a
+    /// deletion, could overwrite a change another machine made. Retried
+    /// by the next pull.
+    Unfinished,
 }
 
 /// One file a push or pull actually added, modified or deleted.
@@ -325,6 +333,26 @@ impl ArtifactReport {
     pub fn total_deleted(&self) -> usize {
         self.counts.iter().map(|c| c.deleted).sum()
     }
+    /// The paths the push right after this pull must leave alone: files the
+    /// pull kept (both machines changed them) or did not finish. `sync`
+    /// passes these to its push, so the push never publishes — or deletes
+    /// from the repository — a version this machine has not reconciled
+    /// with the other machine's.
+    pub fn paths_the_push_must_skip(&self) -> HashSet<(CategoryId, PathBuf)> {
+        self.changes
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.kind,
+                    ArtifactChangeKind::KeptLocal
+                        | ArtifactChangeKind::KeptLocalDelete
+                        | ArtifactChangeKind::Unfinished
+                )
+            })
+            .map(|c| (c.category, c.path.clone()))
+            .collect()
+    }
+
     pub fn total_kept_local(&self) -> usize {
         self.counts.iter().map(|c| c.kept_local).sum()
     }
@@ -895,6 +923,7 @@ pub fn push_artifacts(
                     &category_root,
                     repo_root,
                     &mut deltas,
+                    skip_artifact_paths,
                 );
                 counts.deleted += removed.len();
                 for path in &removed {
@@ -1149,6 +1178,7 @@ fn remove_from_repo(
     category_root: &Path,
     repo_root: &Path,
     deltas: &mut RecordDeltas,
+    skip_artifact_paths: &HashSet<(CategoryId, PathBuf)>,
 ) -> (Vec<PathBuf>, TrackedPaths) {
     let mut removed = Vec::new();
     let mut retained = TrackedPaths::new();
@@ -1195,7 +1225,11 @@ fn remove_from_repo(
                 false
             }
         };
-        if !local_deleted {
+        // A path the pull just held or left unfinished is not this
+        // machine's deletion to publish: the absence may be a deletion
+        // made while the pull waited, set against a change the other
+        // machine made.
+        if !local_deleted || skip_artifact_paths.contains(&(desc.id, category_relative.clone())) {
             retained.insert(gone);
             continue;
         }
@@ -2324,22 +2358,35 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         report.record(category, ArtifactChangeKind::KeptLocal, path);
     }
 
+    /// A planned write the apply did not carry out: counted skipped, and
+    /// reported [`ArtifactChangeKind::Unfinished`] so `sync`'s push leaves
+    /// the path alone too. The caller logs why.
+    fn skip_unfinished_write(
+        map: &mut HashMap<CategoryId, CategoryCounts>,
+        report: &mut ArtifactReport,
+        write: &PlannedWrite,
+    ) {
+        counts_for(map, write.category).skipped += 1;
+        report.record(
+            write.category,
+            ArtifactChangeKind::Unfinished,
+            &write.category_path,
+        );
+    }
+
     /// Refuse a planned write because the snapshot could not read its
-    /// destination (plan.unsnapshotted). The same shape lived in four
-    /// arms before the helper; centralised to keep the message and
-    /// the `counts_for(...).skipped += 1` step in one place. The
-    /// deletes arm still inlines its variant because it also pushes
-    /// to `deletes_to_retry`.
+    /// destination (plan.unsnapshotted). The deletes arm still inlines its
+    /// variant because it also pushes to `deletes_to_retry`.
     fn skip_unsnapshotted_write(
         map: &mut HashMap<CategoryId, CategoryCounts>,
-        category: CategoryId,
-        path: &Path,
+        report: &mut ArtifactReport,
+        write: &PlannedWrite,
     ) {
         log::warn!(
             "Skipping {} (no pre-pull backup could be taken; retried next pull)",
-            path.display()
+            write.local_path.display()
         );
-        counts_for(map, category).skipped += 1;
+        skip_unfinished_write(map, report, write);
     }
 
     let mut report = ArtifactReport::default();
@@ -2451,10 +2498,11 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         // over it (which a baseless skip would let happen).
         if write.local_path.is_file() {
             log::warn!(
-                "Skipping {} (created while the pull ran; a push publishes it)",
+                "Skipping {} (created while the pull ran; held until a pull or an \
+                 explicit push settles it against the repository copy)",
                 write.local_path.display()
             );
-            counts_for(&mut by_category, write.category).skipped += 1;
+            skip_unfinished_write(&mut by_category, &mut report, write);
             // The same file runs every iteration of this arm — lift the
             // repo-relative key once instead of repeating 2-4 times below.
             let rel = repo_relative(&plan.repo_root, &write.repo_path);
@@ -2505,7 +2553,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     "Skipping {} (repo copy unreadable): {e}",
                     write.repo_path.display()
                 );
-                counts_for(&mut by_category, write.category).skipped += 1;
+                skip_unfinished_write(&mut by_category, &mut report, write);
                 creates_to_retry
                     .push(repo_relative(&plan.repo_root, &write.repo_path).unwrap_or_default());
                 continue;
@@ -2521,7 +2569,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 "Skipping {} (user file appeared just before the write)",
                 write.local_path.display()
             );
-            counts_for(&mut by_category, write.category).skipped += 1;
+            skip_unfinished_write(&mut by_category, &mut report, write);
             // Same durable protection as the upstream is_file guard: a
             // user file whose content we cannot read is recorded as a
             // PROTECTION base so the next pull reads it dirty instead of
@@ -2548,7 +2596,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 "Skipping {} (write failed): {e}",
                 write.local_path.display()
             );
-            counts_for(&mut by_category, write.category).skipped += 1;
+            skip_unfinished_write(&mut by_category, &mut report, write);
             creates_to_retry
                 .push(repo_relative(&plan.repo_root, &write.repo_path).unwrap_or_default());
             continue;
@@ -2583,7 +2631,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         // gate the same way via `skip_unsnapshotted_write`; kept_local
         // diverged from the established pattern.
         if plan.unsnapshotted.contains(&write.local_path) {
-            skip_unsnapshotted_write(&mut by_category, write.category, &write.local_path);
+            skip_unsnapshotted_write(&mut by_category, &mut report, write);
             continue;
         }
         // The same mid-pull window the other arms re-check: a file deleted
@@ -2596,7 +2644,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 "Skipping {} (deleted while the pull ran)",
                 write.local_path.display()
             );
-            counts_for(&mut by_category, write.category).skipped += 1;
+            skip_unfinished_write(&mut by_category, &mut report, write);
             continue;
         }
         // The fall-through's FreshRead drives both the report_kept's
@@ -2689,7 +2737,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                         "Skipping conflict copy for {} (deleted during prompt; held for next pull)",
                         write.local_path.display()
                     );
-                    counts_for(&mut by_category, write.category).skipped += 1;
+                    skip_unfinished_write(&mut by_category, &mut report, write);
                     continue;
                 }
                 if let Err(e) = write_atomic(&rename, &repo_bytes, &write.repo_path) {
@@ -2733,7 +2781,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                         "Skipping {} (deleted during prompt; held for next pull)",
                         write.local_path.display()
                     );
-                    counts_for(&mut by_category, write.category).skipped += 1;
+                    skip_unfinished_write(&mut by_category, &mut report, write);
                     continue;
                 }
                 if let Err(e) = write_atomic(&write.local_path, &bytes, &write.repo_path) {
@@ -2808,7 +2856,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     "Skipping {} (deleted between plan and apply; held for next pull)",
                     write.local_path.display()
                 );
-                counts_for(&mut by_category, write.category).skipped += 1;
+                skip_unfinished_write(&mut by_category, &mut report, write);
                 continue;
             }
             FreshRead::Clean => report_kept(
@@ -2836,7 +2884,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
     for write in &plan.date_settles {
         // No backup, no modification (see `unsnapshotted`).
         if plan.unsnapshotted.contains(&write.local_path) {
-            skip_unsnapshotted_write(&mut by_category, write.category, &write.local_path);
+            skip_unsnapshotted_write(&mut by_category, &mut report, write);
             continue;
         }
         let Ok(local_bytes) = fs::read(&write.local_path) else {
@@ -2844,7 +2892,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 "Skipping {} (unreadable or deleted while the pull ran)",
                 write.local_path.display()
             );
-            counts_for(&mut by_category, write.category).skipped += 1;
+            skip_unfinished_write(&mut by_category, &mut report, write);
             continue;
         };
         // Settled against the bytes on disk NOW: an edit saved while the
@@ -2984,7 +3032,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
     for write in &plan.overwrites {
         // No backup, no modification (see `unsnapshotted`).
         if plan.unsnapshotted.contains(&write.local_path) {
-            skip_unsnapshotted_write(&mut by_category, write.category, &write.local_path);
+            skip_unsnapshotted_write(&mut by_category, &mut report, write);
             continue;
         }
         let repo_bytes =
@@ -3038,7 +3086,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     "Skipping {} (unreadable; retried once it is readable)",
                     write.local_path.display()
                 );
-                counts_for(&mut by_category, write.category).skipped += 1;
+                skip_unfinished_write(&mut by_category, &mut report, write);
                 continue;
             }
             // Deleted while the pull ran: the user's deletion stands —
@@ -3050,7 +3098,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     "Skipping {} (deleted while the pull ran)",
                     write.local_path.display()
                 );
-                counts_for(&mut by_category, write.category).skipped += 1;
+                skip_unfinished_write(&mut by_category, &mut report, write);
                 continue;
             }
             FreshRead::Clean => {}
@@ -3203,7 +3251,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
     for write in &plan.unions {
         // No backup, no modification (see `unsnapshotted`).
         if plan.unsnapshotted.contains(&write.local_path) {
-            skip_unsnapshotted_write(&mut by_category, write.category, &write.local_path);
+            skip_unsnapshotted_write(&mut by_category, &mut report, write);
             continue;
         }
         let desc = descriptor(write.category);
@@ -3214,7 +3262,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     "Skipping {} (repo copy unreadable): {e}",
                     write.repo_path.display()
                 );
-                counts_for(&mut by_category, write.category).skipped += 1;
+                skip_unfinished_write(&mut by_category, &mut report, write);
                 continue;
             }
         };
@@ -3233,7 +3281,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     "Skipping {} (deleted while the pull ran)",
                     write.local_path.display()
                 );
-                counts_for(&mut by_category, write.category).skipped += 1;
+                skip_unfinished_write(&mut by_category, &mut report, write);
                 continue;
             }
             Err(e) => {
@@ -3241,7 +3289,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     "Skipping {} (unreadable, cannot union-merge): {e}",
                     write.local_path.display()
                 );
-                counts_for(&mut by_category, write.category).skipped += 1;
+                skip_unfinished_write(&mut by_category, &mut report, write);
                 continue;
             }
         };
@@ -3277,7 +3325,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                             "Skipping {} (local bytes not valid UTF-8; cannot union-merge): {e}",
                             write.local_path.display()
                         );
-                        counts_for(&mut by_category, write.category).skipped += 1;
+                        skip_unfinished_write(&mut by_category, &mut report, write);
                         continue;
                     }
                 };
@@ -3288,7 +3336,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                             "Skipping {} (repo bytes not valid UTF-8; cannot union-merge): {e}",
                             write.local_path.display()
                         );
-                        counts_for(&mut by_category, write.category).skipped += 1;
+                        skip_unfinished_write(&mut by_category, &mut report, write);
                         continue;
                     }
                 };
@@ -3301,7 +3349,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 "Skipping {} (write failed): {e}",
                 write.local_path.display()
             );
-            counts_for(&mut by_category, write.category).skipped += 1;
+            skip_unfinished_write(&mut by_category, &mut report, write);
             continue;
         }
         // Record the MERGED bytes (not the pre-merge local bytes) as the

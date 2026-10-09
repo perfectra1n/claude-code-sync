@@ -61,6 +61,7 @@ pub(crate) fn print_artifact_changes(report: &ArtifactReport) {
                 ArtifactChangeKind::KeptLocal => "KEEP".yellow(),
                 ArtifactChangeKind::KeptLocalDelete => "KEEP".yellow(),
                 ArtifactChangeKind::HeldBackRemoteLost => "HOLD".magenta(),
+                ArtifactChangeKind::Unfinished => "SKIP".dimmed(),
             };
             println!("    {} {}", kind_label, change.path.display());
         }
@@ -152,18 +153,7 @@ pub fn sync_bidirectional(
     // repo copy the user just accepted the deletion of).
     let kept_local = artifact_report.total_kept_local();
     let skip_artifact_paths: HashSet<(crate::artifacts::registry::CategoryId, std::path::PathBuf)> =
-        artifact_report
-            .changes
-            .iter()
-            .filter(|c| {
-                matches!(
-                    c.kind,
-                    crate::artifacts::engine::ArtifactChangeKind::KeptLocal
-                        | crate::artifacts::engine::ArtifactChangeKind::KeptLocalDelete
-                )
-            })
-            .map(|c| (c.category, c.path.clone()))
-            .collect();
+        artifact_report.paths_the_push_must_skip();
 
     if kept_local > 0 && verbosity != VerbosityLevel::Quiet {
         println!();
