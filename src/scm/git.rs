@@ -242,6 +242,63 @@ impl GitScm {
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
+
+    /// The file that marks a merge in the sync repository as started by this
+    /// tool, so a later pull may undo it if an interrupt left it unfinished.
+    fn merge_marker(&self) -> PathBuf {
+        let git_dir = self
+            .run_git(&["rev-parse", "--git-dir"])
+            .unwrap_or_else(|_| ".git".to_string());
+        self.workdir.join(git_dir).join("claude-code-sync-merge")
+    }
+
+    /// Merge the fetched branch, settling conflicts through `resolve_conflict`;
+    /// an unsettled merge is undone.
+    fn merge_fetched(
+        &self,
+        resolve_conflict: ConflictResolver,
+        remote: &str,
+        branch: &str,
+    ) -> Result<()> {
+        let merge = self.git_output(&["merge", "--no-edit", "FETCH_HEAD"])?;
+        if merge.status.success() {
+            return Ok(());
+        }
+
+        // A merge git refused to start — uncommitted work in the sync
+        // repository, unrelated histories — has nothing to abort and changed
+        // nothing.
+        let merge_started = self.has_unfinished_merge();
+        let settled = if merge_started {
+            self.settle_conflicts(resolve_conflict)
+        } else {
+            Ok(false)
+        };
+        if let Ok(true) = settled {
+            return Ok(());
+        }
+
+        let details = match settled {
+            Err(error) => format!("{error:#}"),
+            _ => format!(
+                "{}{}",
+                String::from_utf8_lossy(&merge.stdout),
+                String::from_utf8_lossy(&merge.stderr)
+            ),
+        };
+        let state = if !merge_started {
+            "Nothing was merged; the sync repository is as it was."
+        } else if self.git_succeeds(&["merge", "--abort"]) {
+            "The merge was undone; the sync repository is as it was."
+        } else {
+            "The merge could not be undone; the sync repository needs attention."
+        };
+
+        Err(anyhow!(
+            "Failed to merge '{remote}/{branch}' into the sync repository: {}\n{state}",
+            details.trim()
+        ))
+    }
 }
 
 impl Scm for GitScm {
@@ -257,8 +314,9 @@ impl Scm for GitScm {
         let merge_is_unfinished = self.has_unfinished_merge();
         if merge_is_unfinished {
             return Err(anyhow!(
-                "The sync repository has a merge an interrupted pull left unfinished. \
-                 Run `claude-code-sync pull` to settle or undo it first."
+                "The sync repository has an unfinished merge. If an interrupted pull \
+                 left it, run `claude-code-sync pull` to undo it; if you are resolving \
+                 it by hand, finish it with `git commit` first."
             ));
         }
         self.run_git_ok(&["-c", "core.safecrlf=false", "add", "-A"])
@@ -340,10 +398,21 @@ impl Scm for GitScm {
     /// not own. Merge, not rebase: undo records point at local commit hashes,
     /// and a rebase rewrites them.
     fn pull(&self, remote: &str, branch: &str, resolve_conflict: ConflictResolver) -> Result<()> {
-        let interrupted_merge_left = self.has_unfinished_merge();
-        if interrupted_merge_left {
+        if self.has_unfinished_merge() {
+            // Only a merge this tool started (and an interrupt cut short) is
+            // ours to undo. Any other is someone resolving conflicts by hand,
+            // and aborting it would throw their resolution away.
+            if !self.merge_marker().is_file() {
+                return Err(anyhow!(
+                    "The sync repository {} has a merge in progress that claude-code-sync \
+                     did not start. Finish it (`git commit`) or undo it (`git merge --abort`) \
+                     there, then pull again.",
+                    self.workdir.display()
+                ));
+            }
             self.run_git_ok(&["merge", "--abort"])
                 .context("Failed to undo the merge an interrupted pull left unfinished")?;
+            let _ = std::fs::remove_file(self.merge_marker());
             log::warn!("Undid the merge an interrupted pull left unfinished; merging again");
         }
 
@@ -383,44 +452,15 @@ impl Scm for GitScm {
                 .with_context(|| format!("Failed to check out '{remote}/{branch}'"));
         }
 
-        let merge = self.git_output(&["merge", "--no-edit", "FETCH_HEAD"])?;
-        if merge.status.success() {
-            return Ok(());
+        // Marks the merge as this tool's while it may be left unfinished
+        // (conflicts waiting on a prompt that an interrupt can cut short).
+        std::fs::write(self.merge_marker(), b"")
+            .context("Failed to mark the merge as started by claude-code-sync")?;
+        let outcome = self.merge_fetched(resolve_conflict, remote, branch);
+        if !self.has_unfinished_merge() {
+            let _ = std::fs::remove_file(self.merge_marker());
         }
-
-        // A merge git refused to start — uncommitted work in the sync
-        // repository, unrelated histories — has nothing to abort and changed
-        // nothing.
-        let merge_started = self.has_unfinished_merge();
-        let settled = if merge_started {
-            self.settle_conflicts(resolve_conflict)
-        } else {
-            Ok(false)
-        };
-        if let Ok(true) = settled {
-            return Ok(());
-        }
-
-        let details = match settled {
-            Err(error) => format!("{error:#}"),
-            _ => format!(
-                "{}{}",
-                String::from_utf8_lossy(&merge.stdout),
-                String::from_utf8_lossy(&merge.stderr)
-            ),
-        };
-        let state = if !merge_started {
-            "Nothing was merged; the sync repository is as it was."
-        } else if self.git_succeeds(&["merge", "--abort"]) {
-            "The merge was undone; the sync repository is as it was."
-        } else {
-            "The merge could not be undone; the sync repository needs attention."
-        };
-
-        Err(anyhow!(
-            "Failed to merge '{remote}/{branch}' into the sync repository: {}\n{state}",
-            details.trim()
-        ))
+        outcome
     }
 
     fn has_unfinished_merge(&self) -> bool {
@@ -666,6 +706,9 @@ mod tests {
     fn a_merge_an_interrupted_pull_left_blocks_a_push_and_is_redone_by_the_next_pull() {
         let (_root, machine, workdir, branch) = two_diverged_machines(Some("both-touched.txt"));
         git_in(&workdir, &["fetch", "--quiet", "origin", &branch]);
+        // What a pull interrupted at the conflict prompt leaves behind: its
+        // marker, and the merge stopped at the conflict.
+        std::fs::write(machine.merge_marker(), b"").unwrap();
         let interrupted = machine.git_output(&["merge", "FETCH_HEAD"]).unwrap();
         assert!(
             !interrupted.status.success(),
@@ -687,6 +730,46 @@ mod tests {
         );
         assert!(!machine.has_unfinished_merge());
         assert!(!machine.has_changes().unwrap(), "the merge is committed");
+        assert!(!machine.merge_marker().exists(), "the marker goes with it");
+    }
+
+    #[test]
+    fn a_merge_someone_is_resolving_by_hand_is_left_alone() {
+        let (_root, machine, workdir, branch) = two_diverged_machines(Some("both-touched.txt"));
+        git_in(&workdir, &["fetch", "--quiet", "origin", &branch]);
+        let manual = machine.git_output(&["merge", "FETCH_HEAD"]).unwrap();
+        assert!(!manual.status.success(), "the merge stops at the conflict");
+        std::fs::write(workdir.join("both-touched.txt"), "resolved by hand\n").unwrap();
+
+        let take_remote = |_file: &ConflictedFile| Ok(ConflictChoice::TakeRemote);
+        let error = machine
+            .pull("origin", &branch, &take_remote)
+            .expect_err("a merge this tool did not start is not its to undo")
+            .to_string();
+
+        assert!(error.contains("git commit"), "unexpected: {error}");
+        assert!(
+            machine.has_unfinished_merge(),
+            "the merge is still in progress"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("both-touched.txt")).unwrap(),
+            "resolved by hand\n",
+            "the hand resolution is untouched"
+        );
+    }
+
+    #[test]
+    fn a_settled_or_undone_pull_leaves_no_marker() {
+        let (_root, machine, _workdir, branch) = two_diverged_machines(Some("both-touched.txt"));
+        machine
+            .pull("origin", &branch, &stop_at_conflicts)
+            .expect_err("nobody settled the conflict");
+        assert!(!machine.merge_marker().exists());
+
+        let keep_local = |_file: &ConflictedFile| Ok(ConflictChoice::KeepLocal);
+        machine.pull("origin", &branch, &keep_local).unwrap();
+        assert!(!machine.merge_marker().exists());
     }
 
     #[test]
