@@ -21,15 +21,12 @@
 //! FluffyDiscord) and #105 (by Jerome Revillard) are marked where they came
 //! from.
 
-use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use claude_code_sync::artifacts::bases;
-use claude_code_sync::artifacts::engine::{
-    apply_pull, plan_pull, push_artifacts, ArtifactChangeKind, ArtifactReport,
-};
-use claude_code_sync::artifacts::registry::{ArtifactToggles, CategoryId};
+use claude_code_sync::artifacts::engine::{apply_pull, plan_pull, push_artifacts, ArtifactReport};
+use claude_code_sync::artifacts::registry::ArtifactToggles;
 use claude_code_sync::filter::FilterConfig;
 use tempfile::TempDir;
 
