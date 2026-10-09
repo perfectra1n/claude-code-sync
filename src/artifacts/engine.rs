@@ -1812,6 +1812,18 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                     //       has edits not yet published.
                     //
                     // Either way, the user must `push` to publish.
+                    // Order matters: the absent-file case is a fresh
+                    // CREATE (the user has not edited a file that
+                    // does not exist), so it routes to `plan.creates`
+                    // BEFORE the F3-class guard runs. The F3 guard
+                    // is for files that exist locally with possibly
+                    // unrecorded edits; routing a not-present file to
+                    // kept_local there would be a no-op the user
+                    // could not resolve with a `push`.
+                    if !local_path.is_file() {
+                        plan.creates.push(write);
+                        continue;
+                    }
                     let repo_rel = repo_relative(repo_root, &repo_path)
                         .unwrap_or_else(|| rel.to_string_lossy().into_owned());
                     if f3_class_potentially_dirty(
@@ -1820,10 +1832,6 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         &repo_rel,
                     ) {
                         plan.kept_local.push(write);
-                        continue;
-                    }
-                    if !local_path.is_file() {
-                        plan.creates.push(write);
                         continue;
                     }
                     // Unreadable is never fatal (one bad file must not
