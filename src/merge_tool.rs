@@ -113,134 +113,46 @@ pub fn resolve_overwrite(
 }
 
 /// Build the next free Syncthing-style conflict-copy path: sibling of
-/// `local_path` named `<stem>.sync-conflict-<YYYYMMDD>-<HHMMSS>-<host>.<ext>`.
-/// Collisions with an existing file pick the smallest non-colliding `-1`,
-/// `-2`, ... suffix. The `host` is `hostname` (best-effort; falls back to
-/// `local` when the call fails).
+/// `local_path` named `<stem>.sync-conflict-<YYYYMMDD>-<HHMMSS>-<host>.<ext>`
+/// (UTC). A collision with an existing file takes the smallest free `-1`,
+/// `-2`, ... suffix.
 pub fn build_conflict_path(local_path: &Path) -> PathBuf {
-    let parent = local_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
+    let parent = local_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = local_path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "artifact".to_string());
-    let ext = local_path
+    let extension = local_path
         .extension()
-        .map(|e| e.to_string_lossy().to_string())
+        .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
-    let host = std::env::var("HOSTNAME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            // Best-effort hostname lookup. Avoid pulling in the `hostname`
-            // crate for this single use: an empty env is fine, and the
-            // toolchain's `gethostname(2)` is a single libc call.
-            #[cfg(unix)]
-            unsafe {
-                let mut buf = [0u8; 256];
-                let ret = libc_gethostname(buf.as_mut_ptr() as *mut _, buf.len());
-                if ret == 0 {
-                    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                    if let Ok(s) = std::str::from_utf8(&buf[..len]) {
-                        if !s.is_empty() {
-                            return Some(s.to_string());
-                        }
-                    }
-                }
-                None
-            }
-            #[cfg(not(unix))]
-            {
-                None
-            }
-        })
-        .unwrap_or_else(|| "local".to_string());
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // YYYYMMDD-HHMMSS without external chrono dep: simple time math from
-    // a known epoch anchor. Good enough for a unique-enough suffix.
-    let (date_part, time_part) = epoch_seconds_to_ymd_hms(now);
     let base_name = format!(
-        "{stem}{}{date_part}-{time_part}-{host}",
-        crate::artifacts::denylist::CONFLICT_COPY_INFIX
+        "{stem}{}{}-{}",
+        crate::artifacts::denylist::CONFLICT_COPY_INFIX,
+        chrono::Utc::now().format("%Y%m%d-%H%M%S"),
+        host_name()
     );
-    let mut candidate: PathBuf = if ext.is_empty() {
-        parent.join(&base_name)
-    } else {
-        parent.join(format!("{base_name}.{ext}"))
-    };
+
+    let candidate = parent.join(format!("{base_name}{extension}"));
     if !candidate.exists() {
         return candidate;
     }
-    for n in 1.. {
-        candidate = if ext.is_empty() {
-            parent.join(format!("{base_name}-{n}"))
-        } else {
-            parent.join(format!("{base_name}-{n}.{ext}"))
-        };
-        if !candidate.exists() {
-            return candidate;
-        }
-        // Guard against pathological directory with thousands of pre-existing
-        // conflict copies; 10000 is plenty for any sane user.
-        if n > 10_000 {
-            return candidate;
-        }
-    }
-    unreachable!()
+    (1..)
+        .map(|n| parent.join(format!("{base_name}-{n}{extension}")))
+        .find(|candidate| !candidate.exists())
+        .expect("an unbounded range always yields a free name")
 }
 
-/// Convert UNIX seconds to (YYYYMMDD, HHMMSS) using the Gregorian calendar.
-/// Inline implementation to avoid pulling in a `chrono`/`time` dep just
-/// for a 6-line conflict-copy suffix. The math is the standard
-/// "days-since-1970-01-01 then year/month/day" recipe.
-fn epoch_seconds_to_ymd_hms(secs: u64) -> (String, String) {
-    let days = (secs / 86_400) as i64;
-    let rem = (secs % 86_400) as u32;
-    let hour = rem / 3600;
-    let minute = (rem % 3600) / 60;
-    let second = rem % 60;
-    // 1970-01-01 is a Thursday (day 0 = Thursday in the proleptic Gregorian
-    // calendar: 1970-01-01 = day 0, day-of-week (0..6) with 0=Thursday).
-    // Shift days so 0 maps to Monday: offset by 3.
-    let dow0 = ((days + 3).rem_euclid(7)) as u32; // 0 = Mon
-    let (y, m, d) = days_to_ymd(days);
-    // Unused: dow0 is for the test below; we don't actually need it
-    // for the suffix but keep the variable to avoid the unused-let
-    // warning that would otherwise surface.
-    let _ = dow0;
-    (
-        format!("{y:04}{m:02}{d:02}"),
-        format!("{hour:02}{minute:02}{second:02}"),
-    )
-}
-
-fn days_to_ymd(days: i64) -> (i64, u32, u32) {
-    // Howard Hinnant's date algorithm: civil_from_days.
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u32; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
-#[cfg(unix)]
-unsafe extern "C" {
-    fn gethostname(name: *mut std::os::raw::c_char, len: usize) -> std::os::raw::c_int;
-}
-
-#[cfg(unix)]
-unsafe fn libc_gethostname(name: *mut std::os::raw::c_char, len: usize) -> std::os::raw::c_int {
-    gethostname(name, len)
+/// This machine's name for a conflict-copy suffix, best effort: the usual
+/// environment variables, then `/etc/hostname`, then `local`.
+fn host_name() -> String {
+    ["HOSTNAME", "COMPUTERNAME"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .chain(std::fs::read_to_string("/etc/hostname").ok())
+        .map(|name| name.trim().to_string())
+        .find(|name| !name.is_empty() && !name.contains(['/', '\\']))
+        .unwrap_or_else(|| "local".to_string())
 }
 
 /// Ask which version of a file both machines changed the sync repository keeps.
@@ -453,6 +365,25 @@ fn configured_timeout() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_conflict_copy_sits_beside_the_file_never_syncs_and_never_collides() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("deploy.md");
+        std::fs::write(&local, "mine").unwrap();
+
+        let first = build_conflict_path(&local);
+        assert_eq!(first.parent(), Some(dir.path()));
+        let name = first.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("deploy.sync-conflict-"), "{name}");
+        assert!(name.ends_with(".md"), "{name}");
+        assert!(crate::artifacts::denylist::is_denied(Path::new(&name)));
+
+        std::fs::write(&first, "theirs").unwrap();
+        let second = build_conflict_path(&local);
+        assert_ne!(second, first, "an existing copy is never overwritten");
+        assert!(!second.exists());
+    }
 
     fn local_file(contents: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();

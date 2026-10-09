@@ -843,3 +843,33 @@ fn a_keep_both_conflict_copy_is_not_pushed() {
         "the copy itself is left alone"
     );
 }
+
+/// A user's own `deleted/` folder inside project memory (archived notes, say)
+/// is content, not deletion markers: a memory-index merge must never drop an
+/// entry because a file of the same name sits there.
+#[test]
+fn a_users_deleted_folder_does_not_drop_memory_index_entries() {
+    let memory = "projects/-home-a-work-app/memory";
+    let index = format!("{memory}/MEMORY.md");
+    let (repo, a, b) = two_machines_in_sync(&[
+        (&index, "- [a](a.md) keep me\n"),
+        (&format!("{memory}/a.md"), "a\n"),
+        (&format!("{memory}/deleted/a.md"), "an archived note\n"),
+    ]);
+    write(
+        &a.path().join(&index),
+        "- [a](a.md) keep me\n- [b](b.md) from A\n",
+    );
+    sync(a.path(), repo.path());
+
+    sync(b.path(), repo.path());
+    let on_b = read(&b.path().join(&index)).unwrap();
+    assert!(
+        on_b.contains("[a](a.md) keep me"),
+        "entry a survives: {on_b}"
+    );
+    assert!(
+        on_b.contains("[b](b.md) from A"),
+        "and A's entry arrives: {on_b}"
+    );
+}

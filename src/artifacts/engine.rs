@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ use crate::scm::Backend;
 
 use super::bases::{self, BaseHashes};
 use super::denylist::{is_denied, is_unsafe_rel_path};
-use super::memory_index::{is_memory_index, merge_memory_index_with_tombstones};
+use super::memory_index::{is_memory_index, merge_memory_index};
 use super::registry::{
     CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR, REGISTRY,
 };
@@ -682,8 +682,9 @@ pub fn push_artifacts(
         // and repo both gone and clears the tracked entry, and a
         // subsequent push on a freshly created local file then lands
         // as a fresh `Added`. The push itself does not clear tracked
-        // entries; the only way out is the pull.
-        let tracked_seen = tracked::load(claude_dir, repo_root);
+        // entries; the only way out is the pull. Read once, at the top of
+        // the push (`tracked_before`): the push only saves its record at
+        // the end, so a per-category re-read would see the same set.
         let mut pushed: TrackedPaths = TrackedPaths::new();
         // Files kept back for their size are still here: count them as
         // present so the repo copy (if any) is neither deleted nor forgotten.
@@ -800,23 +801,8 @@ pub fn push_artifacts(
                     if existed && unions_index {
                         match fs::read(&dest) {
                             Ok(dest_bytes) => {
-                                // Push-side tombstone-aware merge. The
-                                // local side (incoming in merge terms) is
-                                // `file.abs`; the repo side (dest) is `dest`.
-                                // Sibling + deleted sets on both sides are
-                                // needed to honor per-record tombstones.
-                                let dest_siblings = collect_memory_sibling_targets(&dest);
-                                let incoming_siblings = collect_memory_sibling_targets(&file.abs);
-                                let dest_deleted = collect_memory_deleted_ids(&dest);
-                                let incoming_deleted = collect_memory_deleted_ids(&file.abs);
-                                let (merged, new_entries) = merge_memory_index_with_tombstones(
-                                    &dest_bytes,
-                                    &src_bytes,
-                                    &dest_siblings,
-                                    &incoming_siblings,
-                                    &dest_deleted,
-                                    &incoming_deleted,
-                                );
+                                let (merged, new_entries) =
+                                    merge_memory_index(&dest_bytes, &src_bytes);
                                 pending_entries = new_entries;
                                 src_bytes = merged;
                             }
@@ -842,7 +828,7 @@ pub fn push_artifacts(
                         let repo_rel = repo_relative(repo_root, &category_root.join(&file.rel));
                         if repo_rel
                             .as_ref()
-                            .map(|r| tracked_seen.contains(r))
+                            .map(|r| tracked_before.contains(r))
                             .unwrap_or(false)
                         {
                             log::warn!(
@@ -997,108 +983,6 @@ pub fn push_artifacts(
 fn hold_back(counts: &mut CategoryCounts, abs: &Path, why: &str, e: &dyn std::fmt::Display) {
     log::warn!("Holding back {} ({}): {e}", abs.display(), why);
     counts.skipped += 1;
-}
-
-/// Write a `deleted/<id>.md` marker for a memory index entry whose sibling
-/// `.md` was just deleted. The marker is the durable carrier of the
-/// deletion across the union-merge. The marker body is byte-stable for
-/// identical concurrent deletes, so git three-way-merges them trivially.
-/// A no-op (the deleted path is not a memory sibling) returns Ok without
-/// writing.
-pub fn record_memory_deletion_marker(deleted_sibling: &Path) -> Result<()> {
-    use crate::artifacts::memory_index::DELETED_DIR;
-    let parent = match deleted_sibling.parent() {
-        Some(p) => p,
-        None => return Ok(()),
-    };
-    let index_path = parent.join(crate::artifacts::memory_index::MEMORY_INDEX_FILE);
-    if !index_path.is_file() {
-        // Not a memory directory — nothing to mark.
-        return Ok(());
-    }
-    let stem = match deleted_sibling.file_stem().and_then(|s| s.to_str()) {
-        Some(s) => s,
-        None => return Ok(()),
-    };
-    let deleted_dir = parent.join(DELETED_DIR);
-    std::fs::create_dir_all(&deleted_dir)
-        .with_context(|| format!("Failed to create {}", deleted_dir.display()))?;
-    let marker = deleted_dir.join(format!("{stem}.md"));
-    // The body intentionally does NOT include the wall-clock: identical
-    // concurrent deletes from two machines produce identical bytes, so
-    // git three-way-merges them as a no-op (vs. the conflict that
-    // divergent timestamps would produce). The "was:" line is the
-    // original entry text from the index, if it was parseable — empty
-    // for the parse-failed case.
-    let was = std::fs::read_to_string(&index_path)
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .find(|l| l.contains(&format!("]({stem}.md)")))
-                .map(|l| l.to_string())
-        })
-        .unwrap_or_default();
-    let body = format!("deleted\ngit-3way-merge-stable\nwas: {was}\n");
-    write_atomic(&marker, body.as_bytes(), deleted_sibling)?;
-    Ok(())
-}
-
-/// Collect the link-target filenames of every `*.md` sibling of the
-/// `MEMORY.md` at `path`'s parent. Used by the tombstone-aware merge to
-/// know which entries have a live sibling. Returns an empty set when the
-/// path is not under a memory index directory.
-fn collect_memory_sibling_targets(path: &Path) -> BTreeSet<String> {
-    use crate::artifacts::memory_index::MEMORY_INDEX_FILE;
-    let parent = match path.parent() {
-        Some(p) => p,
-        None => return BTreeSet::new(),
-    };
-    let index_path = parent.join(MEMORY_INDEX_FILE);
-    if !index_path.is_file() {
-        return BTreeSet::new();
-    }
-    let mut targets = BTreeSet::new();
-    let entries = match std::fs::read_dir(parent) {
-        Ok(e) => e,
-        Err(_) => return BTreeSet::new(),
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.ends_with(".md") && name != MEMORY_INDEX_FILE {
-            targets.insert(name.to_string());
-        }
-    }
-    targets
-}
-
-/// Collect the deletion-marker ids present at `path`'s parent. The id
-/// is the stem of each file in `deleted/`. An empty set when the
-/// directory is missing or the path is not under a memory index.
-fn collect_memory_deleted_ids(path: &Path) -> BTreeSet<String> {
-    use crate::artifacts::memory_index::DELETED_DIR;
-    let parent = match path.parent() {
-        Some(p) => p,
-        None => return BTreeSet::new(),
-    };
-    let deleted_dir = parent.join(DELETED_DIR);
-    let entries = match std::fs::read_dir(&deleted_dir) {
-        Ok(e) => e,
-        Err(_) => return BTreeSet::new(),
-    };
-    let mut ids = BTreeSet::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.ends_with(".md") {
-            if let Some(stem) = std::path::Path::new(&*name).file_stem() {
-                if let Some(s) = stem.to_str() {
-                    ids.insert(s.to_string());
-                }
-            }
-        }
-    }
-    ids
 }
 
 /// The record deltas one push owns: entries its own writes add or remove,
@@ -1925,26 +1809,7 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         }
                         continue;
                     }
-                    // Tombstone-aware plan-time check: the local side
-                    // is `local_path`, the repo side is `repo_path`. If
-                    // either carries a `deleted/<id>.md` marker that
-                    // matches an entry here, the merged MEMORY.md drops
-                    // the entry — the local "is this unchanged?" check
-                    // must see the post-merge output, not the raw
-                    // local bytes (otherwise the apply's 5-arg merge
-                    // never runs because the plan sees nothing to do).
-                    let dest_siblings = collect_memory_sibling_targets(&local_path);
-                    let incoming_siblings = collect_memory_sibling_targets(&repo_path);
-                    let dest_deleted = collect_memory_deleted_ids(&local_path);
-                    let incoming_deleted = collect_memory_deleted_ids(&repo_path);
-                    let (merged, _) = merge_memory_index_with_tombstones(
-                        &local_bytes,
-                        &repo_bytes,
-                        &dest_siblings,
-                        &incoming_siblings,
-                        &dest_deleted,
-                        &incoming_deleted,
-                    );
+                    let (merged, _) = merge_memory_index(&local_bytes, &repo_bytes);
                     if merged != local_bytes {
                         plan.unions.push(write);
                     } else {
@@ -3316,23 +3181,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             }
         };
         let (merged, new_entries) = match desc.merge {
-            MergeStrategy::UnionMemoryIndex => {
-                // Collect sibling-file sets for the tombstone-aware
-                // 5-arg merge. The local parent is the dest side; the
-                // repo side is read via the recorded repo_path's parent.
-                let dest_siblings = collect_memory_sibling_targets(&write.local_path);
-                let incoming_siblings = collect_memory_sibling_targets(&write.repo_path);
-                let dest_deleted = collect_memory_deleted_ids(&write.local_path);
-                let incoming_deleted = collect_memory_deleted_ids(&write.repo_path);
-                merge_memory_index_with_tombstones(
-                    &local_bytes,
-                    &repo_bytes,
-                    &dest_siblings,
-                    &incoming_siblings,
-                    &dest_deleted,
-                    &incoming_deleted,
-                )
-            }
+            MergeStrategy::UnionMemoryIndex => merge_memory_index(&local_bytes, &repo_bytes),
             _ => {
                 // Strict UTF-8 decode — `from_utf8_lossy` would silently
                 // substitute invalid sequences with U+FFFD, corrupting
@@ -3599,20 +3448,6 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             ArtifactChangeKind::Deleted,
             &delete.category_path,
         );
-        // Hole 1 (memory-index deletion propagation): when the deleted
-        // file is a sibling .md of a MEMORY.md, write a deterministic
-        // `deleted/<id>.md` marker so the next union merge propagates
-        // the deletion to the other machine. Idempotent — the merge
-        // consults the marker set, not the absence of the sibling, so
-        // a re-write is harmless. The marker's body is byte-stable for
-        // identical concurrent deletes, so git three-way-merges them
-        // trivially.
-        if let Err(e) = record_memory_deletion_marker(&delete.local_path) {
-            log::warn!(
-                "Could not write deletion marker for {}: {e}",
-                delete.local_path.display()
-            );
-        }
     }
 
     // Base hashes verified at plan time: recorded as-is, without re-reading
