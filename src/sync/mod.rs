@@ -81,6 +81,7 @@ fn describe_change_counts(counts: &CategoryCounts) -> String {
         (counts.modified, "modified"),
         (counts.deleted, "deleted"),
         (counts.kept_local, "kept local"),
+        (counts.pending_push, "to push"),
         (counts.skipped, "skipped"),
     ];
 

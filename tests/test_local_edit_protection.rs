@@ -44,6 +44,12 @@ fn kept_local_of(plan: &claude_code_sync::artifacts::engine::PullPlan) -> usize 
     plan.kept_local.len()
 }
 
+/// Files the pull leaves alone because only this machine changed them since
+/// the last sync: protected from the pull, and published by the push.
+fn local_only_of(plan: &claude_code_sync::artifacts::engine::PullPlan) -> usize {
+    plan.local_only.len()
+}
+
 #[test]
 fn a_push_records_the_synced_bytes_as_base() {
     let repo = TempDir::new().unwrap();
@@ -282,13 +288,18 @@ fn a_pull_that_overwrites_records_the_new_bytes_as_base() {
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     apply_pull(&plan, false).unwrap();
 
-    // The overwritten bytes are the new synced state.
+    // The overwritten bytes are the new synced state: an edit on top of
+    // them is this machine's alone (the repository still holds v2).
     memory(machine_b.path(), "b's edit\n");
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
-    assert_eq!(
-        kept_local_of(&plan),
-        1,
+    assert!(
+        plan.overwrites.is_empty(),
         "the post-overwrite edit is protected"
+    );
+    assert_eq!(
+        local_only_of(&plan),
+        1,
+        "only this machine moved on: the push publishes it"
     );
 }
 
@@ -756,7 +767,12 @@ fn an_edit_made_while_the_pull_waits_is_not_recorded_as_synced() {
         "the base describes the verified bytes, not the later edit"
     );
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
-    assert_eq!(kept_local_of(&plan), 1, "the mid-pull edit is protected");
+    assert!(plan.overwrites.is_empty(), "the mid-pull edit is protected");
+    assert_eq!(
+        local_only_of(&plan),
+        1,
+        "the repository still holds v1: the edit is this machine's alone"
+    );
 }
 
 #[test]
@@ -3040,7 +3056,16 @@ fn a_kept_local_with_concurrently_cleared_base_is_not_kept_local_clean() {
     .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
 
-    // B edits locally — a kept_local pull: local != repo bytes.
+    // A moves the repository on, and B edits locally — both sides changed,
+    // a kept_local pull.
+    skill(machine_a.path(), "v2\n");
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     skill(machine_b.path(), "b's edit\n");
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
     assert_eq!(kept_local_of(&plan), 1);
@@ -3157,7 +3182,7 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     };
-    mem(machine_a.path(), "- [shared] from A and B\n");
+    mem(machine_a.path(), "- [shared](shared.md) from A and B\n");
     sync(machine_a.path(), repo.path(), &filter);
     sync(machine_b.path(), repo.path(), &filter);
 
@@ -3166,7 +3191,7 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
     // pre-fix code hit on the per-target "incoming wins" rule).
     mem(
         machine_a.path(),
-        "- [shared] from A and B\n- [a-only] new on A\n",
+        "- [shared](shared.md) from A and B\n- [a-only](a-only.md) new on A\n",
     );
     push_artifacts(
         machine_a.path(),
@@ -3177,7 +3202,10 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
     .unwrap();
 
     // B edits the SAME bullet locally between A's push and B's pull.
-    mem(machine_b.path(), "- [shared] B's local edit wins\n");
+    mem(
+        machine_b.path(),
+        "- [shared](shared.md) B's local edit wins\n",
+    );
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
 
@@ -3222,7 +3250,7 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
         "the local edit survives: {after}"
     );
     assert!(
-        !after.contains("[a-only] new on A"),
+        !after.contains("[a-only](a-only.md) new on A"),
         "no incoming text was union-merged in: {after}"
     );
 }

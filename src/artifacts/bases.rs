@@ -87,6 +87,26 @@ pub fn restore_keys(
 /// material.
 pub const PROTECTION_SENTINEL: &str = "mid-pull-create-protection";
 
+/// Prefix of a [`held_base`]: a hex digest never starts with it.
+const HELD_PREFIX: &str = "held:";
+
+/// The base recorded when this machine deliberately holds a local version
+/// apart from the repository's — a declined overwrite, or a file created
+/// while a pull waited. It is NOT a common ancestor: it only names the
+/// repository version that was set aside, so it never equals a content hash.
+/// The local file therefore keeps reading edited (the next pull keeps it),
+/// and the repository never reads "unchanged since the last sync" — which
+/// would let the push publish the held file over the other machine's version.
+pub fn held_base(repo_bytes: &[u8]) -> String {
+    format!("{HELD_PREFIX}{}", hash_bytes(repo_bytes))
+}
+
+/// Whether a recorded base is a real synced version both sides once held —
+/// not a [`held_base`] and not the [`PROTECTION_SENTINEL`].
+pub fn is_common_ancestor(base: &str) -> bool {
+    base != PROTECTION_SENTINEL && !base.starts_with(HELD_PREFIX)
+}
+
 /// Whether `local_bytes` were edited since the last sync.
 ///
 /// Only a recorded file can be dirty: an unknown path keeps the legacy

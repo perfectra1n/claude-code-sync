@@ -445,7 +445,7 @@ fn test_pull_warns_once_for_a_project_this_machine_never_mapped() {
 
 #[test]
 #[serial]
-fn test_sync_with_kept_local_still_pushes_sessions() {
+fn test_sync_publishes_an_edit_made_only_here_and_pushes_sessions() {
     let _restore = EnvRestore::capture();
     let repo = TempDir::new().unwrap();
     init_git_repo(repo.path());
@@ -483,7 +483,8 @@ fn test_sync_with_kept_local_still_pushes_sessions() {
     )
     .unwrap();
 
-    // The kept-local artifact must not stop the sessions from travelling.
+    // Issue #103: only B changed the skill since its last sync, so the
+    // pull must neither revert it nor hold it back — the push publishes it.
     sync_bidirectional(Some("B sync"), None, false, false, VerbosityLevel::Quiet).unwrap();
 
     let files = git(repo.path(), &["ls-files"]);
@@ -494,8 +495,8 @@ fn test_sync_with_kept_local_still_pushes_sessions() {
     let repo_skill = fs::read_to_string(repo.path().join("artifacts/skills/deploy/SKILL.md"))
         .unwrap_or_default();
     assert_eq!(
-        repo_skill, "# deploy\n",
-        "the conflicting artifact was NOT pushed over the repository copy"
+        repo_skill, "# deploy\nB's local edit\n",
+        "the edit made only here was published"
     );
     assert_eq!(
         fs::read_to_string(machine_b.claude().join("skills/deploy/SKILL.md")).unwrap(),

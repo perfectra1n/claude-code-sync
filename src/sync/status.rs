@@ -84,6 +84,9 @@ pub fn show_status(show_conflicts: bool, show_files: bool, held_back: bool) -> R
             let differing = plan
                 .overwrites
                 .iter()
+                .chain(plan.date_settles.iter())
+                .chain(plan.local_only.iter())
+                .chain(plan.deleted_here.iter())
                 .chain(plan.creates.iter())
                 .chain(plan.unions.iter())
                 .chain(plan.mode_fixes.iter())

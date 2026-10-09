@@ -21,6 +21,7 @@ use super::registry::{
 use super::tokens::PathTokens;
 use super::tracked::{self, TrackedPaths};
 use super::union_jsonl::merge_history_lines;
+use crate::later_timestamps::keep_later_timestamps;
 
 /// Whether one category participates for this configuration: toggles for the
 /// regular categories, the (inverted) attachments flag for ProjectAttachments.
@@ -136,6 +137,38 @@ fn f3_class_potentially_dirty(
     base_hashes.get(rel).is_none() && tracked_before.contains(rel)
 }
 
+/// Whether the repository still holds the version this machine last synced,
+/// so a local difference is this machine's change alone and the push that
+/// follows publishes it. The protection sentinel records no real version and
+/// never matches, and neither does a held base (see [`bases::held_base`]).
+fn repo_unchanged_since_sync(recorded: Option<&String>, repo_bytes: &[u8]) -> bool {
+    recorded.is_some_and(|base| {
+        bases::is_common_ancestor(base) && *base == bases::hash_bytes(repo_bytes)
+    })
+}
+
+/// Whether a missing local file is a deletion made here: this machine synced
+/// it, the repository still holds that version, and the category mirrors
+/// deletions. Such a file is left deleted for the push to remove from the
+/// repository, instead of being recreated. A whole missing category folder is
+/// a machine that never had it, not a deletion.
+fn deleted_here_since_sync(
+    desc: &CategoryDescriptor,
+    claude_dir: &Path,
+    tokens: &PathTokens,
+    base_hashes: &BaseHashes,
+    repo_root: &Path,
+    repo_path: &Path,
+) -> bool {
+    if !desc.mirror_deletes || !source_is_present(desc, claude_dir) {
+        return false;
+    }
+    let recorded = repo_relative(repo_root, repo_path).and_then(|rel| base_hashes.get(&rel));
+    recorded.is_some()
+        && machine_bytes(desc, tokens, repo_path)
+            .is_ok_and(|repo_bytes| repo_unchanged_since_sync(recorded, &repo_bytes))
+}
+
 /// The sync-repo root directory for one category.
 fn category_repo_root(
     desc: &CategoryDescriptor,
@@ -184,6 +217,11 @@ pub struct CategoryCounts {
     /// last sync — a `push` is what publishes them.
     #[serde(default)]
     pub kept_local: usize,
+    /// Files a pull left as they are because only this machine changed (or
+    /// deleted) them since the last sync — the push that follows publishes
+    /// them. Unlike `kept_local`, nothing is held back.
+    #[serde(default)]
+    pub pending_push: usize,
     /// Files the push refused to re-publish because the remote lost them
     /// since the last sync (adversarial review 2026-10-09, 5ff1d62 hole).
     /// The local copy is preserved on disk. There is no CLI override
@@ -208,6 +246,7 @@ impl CategoryCounts {
             merged_entries: 0,
             deleted: 0,
             kept_local: 0,
+            pending_push: 0,
             held_back_remote_lost: 0,
         }
     }
@@ -1200,6 +1239,19 @@ pub struct PullPlan {
     /// overwriting them would destroy edits only this machine holds. A
     /// `push` is what publishes them.
     pub kept_local: Vec<PlannedWrite>,
+    /// Local files edited here since the last sync while the repository still
+    /// holds that sync's version: nothing to take. Left as they are and, unlike
+    /// `kept_local`, not held back — the push that follows publishes them.
+    pub local_only: Vec<PlannedWrite>,
+    /// Files this machine synced and has since deleted while the repository
+    /// still holds that sync's version: left deleted, and the push removes the
+    /// repository copy.
+    pub deleted_here: Vec<PlannedWrite>,
+    /// Files both sides changed since the last sync whose two versions differ
+    /// only in date-times (Claude Code rewrites timestamps in its plugin and
+    /// skill manifests on every machine): settled on apply by keeping the later
+    /// dates, which the push then publishes.
+    pub date_settles: Vec<PlannedWrite>,
     /// No local file yet: created, and recorded for deletion on undo.
     pub creates: Vec<PlannedWrite>,
     /// Union-merge targets whose local file would gain lines.
@@ -1318,6 +1370,7 @@ impl PullPlan {
     /// [`Self::changes_machine_state`].
     pub fn is_empty(&self) -> bool {
         self.overwrites.is_empty()
+            && self.date_settles.is_empty()
             && self.creates.is_empty()
             && self.unions.is_empty()
             && self.mode_fixes.is_empty()
@@ -1344,6 +1397,7 @@ impl PullPlan {
         // empty one — the base entry the fix records still gates the
         // snapshot through `rewrites_bases`.
         let file_writes = !(self.overwrites.is_empty()
+            && self.date_settles.is_empty()
             && self.creates.is_empty()
             && self.unions.is_empty()
             && self.deletes.is_empty())
@@ -1439,6 +1493,7 @@ impl PullPlan {
         let mut paths: Vec<PathBuf> = self
             .overwrites
             .iter()
+            .chain(self.date_settles.iter())
             .chain(self.unions.iter())
             .map(|w| w.local_path.clone())
             .chain(self.deletes.iter().map(|d| d.local_path.clone()))
@@ -1757,7 +1812,18 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                 }
                 MergeStrategy::UnionMemoryIndex if is_memory_index(&rel) => {
                     if !local_path.is_file() {
-                        plan.creates.push(write);
+                        if deleted_here_since_sync(
+                            desc,
+                            claude_dir,
+                            &plan.tokens,
+                            &base_hashes,
+                            repo_root,
+                            &repo_path,
+                        ) {
+                            plan.deleted_here.push(write);
+                        } else {
+                            plan.creates.push(write);
+                        }
                         continue;
                     }
                     // Unreadable is never fatal (one bad file must not
@@ -1785,7 +1851,19 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         .map(|r| f3_class_potentially_dirty(&base_hashes, &plan.tracked_before, r))
                         .unwrap_or(false);
                     if f3 || bases::is_dirty(recorded, &local_bytes) {
-                        plan.kept_local.push(write);
+                        // Edited here. If the repository still holds the
+                        // last synced version, only this machine moved on:
+                        // the push publishes the edit. Otherwise both did,
+                        // and the edit is kept and held back.
+                        let only_here =
+                            machine_bytes(desc, &plan.tokens, &repo_path).is_ok_and(|repo_bytes| {
+                                repo_unchanged_since_sync(recorded, &repo_bytes)
+                            });
+                        if only_here {
+                            plan.local_only.push(write);
+                        } else {
+                            plan.kept_local.push(write);
+                        }
                         continue;
                     }
                     // Never fatal (see the unions arm below): one bad
@@ -1823,7 +1901,18 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                 }
                 MergeStrategy::UnionMemoryIndex | MergeStrategy::RawOverwrite => {
                     if !local_path.is_file() {
-                        plan.creates.push(write);
+                        if deleted_here_since_sync(
+                            desc,
+                            claude_dir,
+                            &plan.tokens,
+                            &base_hashes,
+                            repo_root,
+                            &repo_path,
+                        ) {
+                            plan.deleted_here.push(write);
+                        } else {
+                            plan.creates.push(write);
+                        }
                     } else {
                         // A file past the size limit is outside artifact
                         // sync: the push refuses it, so "kept local" could
@@ -1916,8 +2005,21 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                                     )
                                 })
                                 .unwrap_or(false);
-                            if f3 || bases::is_dirty(recorded, &local_bytes) {
-                                plan.kept_local.push(write);
+                            if repo_unchanged_since_sync(recorded, &repo_bytes) {
+                                // Only this machine moved on since the last
+                                // sync (local differs from a repository that
+                                // still holds the base): nothing to take, and
+                                // the push that follows publishes the edit.
+                                plan.local_only.push(write);
+                            } else if f3 || bases::is_dirty(recorded, &local_bytes) {
+                                // Both sides moved on. Two versions apart only
+                                // in their date-times settle on the later
+                                // ones; anything else is kept and held back.
+                                if keep_later_timestamps(&local_bytes, &repo_bytes).is_some() {
+                                    plan.date_settles.push(write);
+                                } else {
+                                    plan.kept_local.push(write);
+                                }
                             } else {
                                 plan.overwrites.push(write);
                             }
@@ -2281,6 +2383,27 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             None => false,
         }
     }
+    /// `record_base` for a version this machine deliberately holds apart
+    /// from the repository's (see [`bases::held_base`]): the repository
+    /// bytes are named, never recorded as a synced version.
+    fn record_held_base(
+        map: &mut BaseHashes,
+        inserts: &mut BaseHashes,
+        repo_root: &Path,
+        repo_path: &Path,
+        repo_bytes: &[u8],
+    ) -> bool {
+        let Some(rel) = repo_relative(repo_root, repo_path) else {
+            return false;
+        };
+        let held = bases::held_base(repo_bytes);
+        if map.get(&rel) == Some(&held) {
+            return false;
+        }
+        map.insert(rel.clone(), held.clone());
+        inserts.insert(rel, held);
+        true
+    }
     /// The PROTECTION_SENTINEL twin of `record_base`: both mid-pull
     /// create-skip sites record the sentinel (never a real hash — see
     /// the constant's doc) through the same movement rule, so the
@@ -2330,7 +2453,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             if records_base(desc.merge, &write.category_path) {
                 match machine_bytes(desc, &plan.tokens, &write.repo_path) {
                     Ok(repo_bytes) => {
-                        bases_changed |= record_base(
+                        bases_changed |= record_held_base(
                             &mut synced_bases,
                             &mut bases_inserts,
                             &plan.repo_root,
@@ -2695,6 +2818,69 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
             ),
         }
     }
+    // Changed or deleted here only: nothing to take and, unlike a keep,
+    // nothing held back. Counted so the summary says the push publishes them.
+    for write in plan.local_only.iter().chain(&plan.deleted_here) {
+        counts_for(&mut by_category, write.category).pending_push += 1;
+    }
+
+    for write in &plan.date_settles {
+        // No backup, no modification (see `unsnapshotted`).
+        if plan.unsnapshotted.contains(&write.local_path) {
+            skip_unsnapshotted_write(&mut by_category, write.category, &write.local_path);
+            continue;
+        }
+        let Ok(local_bytes) = fs::read(&write.local_path) else {
+            log::warn!(
+                "Skipping {} (unreadable or deleted while the pull ran)",
+                write.local_path.display()
+            );
+            counts_for(&mut by_category, write.category).skipped += 1;
+            continue;
+        };
+        // Settled against the bytes on disk NOW: an edit saved while the
+        // pull waited can make the two versions differ in more than dates,
+        // and then the file is a keep like any other both-sides change.
+        let merged = machine_bytes(descriptor(write.category), &plan.tokens, &write.repo_path)
+            .ok()
+            .and_then(|repo_bytes| keep_later_timestamps(&local_bytes, &repo_bytes));
+        let Some(merged) = merged else {
+            report_kept(
+                &mut by_category,
+                &mut report,
+                write.category,
+                &write.category_path,
+                false,
+            );
+            continue;
+        };
+        if merged == local_bytes {
+            // This machine already holds every later date.
+            counts_for(&mut by_category, write.category).pending_push += 1;
+            continue;
+        }
+        // No base is recorded: the merge holds dates the repository lacks,
+        // so until a push publishes it the next pull still sees both sides
+        // changed, and settles the same way.
+        if let Err(e) = write_atomic(&write.local_path, &merged, &write.repo_path) {
+            log::warn!("Keeping {} (write failed): {e}", write.local_path.display());
+            report_kept(
+                &mut by_category,
+                &mut report,
+                write.category,
+                &write.category_path,
+                false,
+            );
+            continue;
+        }
+        counts_for(&mut by_category, write.category).modified += 1;
+        report.record(
+            write.category,
+            ArtifactChangeKind::Modified,
+            &write.category_path,
+        );
+    }
+
     for delete in &plan.kept_local_deletes {
         // The same mid-pull window the kept_local arm re-checks: a file
         // deleted while the pull waited has already accomplished what the
@@ -2930,7 +3116,7 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                     // dirty, so tomorrow's non-interactive sync keeps it
                     // too instead of fast-forwarding the user's choice
                     // away. A push or an accepted take clears it.
-                    bases_changed |= record_base(
+                    bases_changed |= record_held_base(
                         &mut synced_bases,
                         &mut bases_inserts,
                         &plan.repo_root,
