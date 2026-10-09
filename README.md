@@ -143,13 +143,33 @@ block in the repo's `.gitignore` (or `.hgignore`) as defense in depth.
 
 ### Conflict policy and undo
 
-Artifact pulls are **remote-wins**: a file is only written when its bytes
-differ, every overwritten local file is snapshotted first, and files the pull
-creates are recorded so `claude-code-sync undo pull` is an exact inverse
-(restores overwritten bytes, deletes created files). Interactive pulls
-(`pull --interactive`) confirm each overwrite per file. `history.jsonl` is
-never overwritten — both push and pull merge the union of lines, so prompt
-history only ever grows.
+**A pull only takes what the other machine changed.** Each machine records
+the version of every artifact it last synced (`~/.claude/.claude-code-sync-bases.json`),
+so a pull compares three versions — this machine's, the repository's, and the
+last synced one:
+
+| Since the last sync | Pull does |
+|---|---|
+| Only the other machine changed it | takes the repository version |
+| Only this machine changed it | leaves it; the push (or the push half of `sync`) publishes it |
+| This machine deleted it (skills, agents, commands, rules, hooks) | leaves it deleted; the push removes it |
+| The other machine deleted it, this machine edited it | keeps the edit |
+| Both changed it, and only date-times differ | keeps the later dates |
+| Both changed it | **keeps this machine's version and holds it back** from the push, so neither edit is lost. `pull --interactive` offers take / keep / merge (with a [merge tool](#external-merge-tool)) / keep both |
+| This machine never synced this repository | takes the repository version |
+
+A non-interactive pull never discards a version that exists only on this
+machine, and `sync` never publishes this machine's version over a change the
+other machine made. Every overwritten local file is still snapshotted first,
+and files the pull creates are recorded, so `claude-code-sync undo pull` is an
+exact inverse. `history.jsonl` is never overwritten — both push and pull merge
+the union of lines, so prompt history only ever grows.
+
+When both machines committed different versions of a file to the sync
+repository itself, a pull no longer stops for good: a file whose versions
+differ only in date-times keeps the later ones, and in a terminal every other
+file asks which version to keep. Without a terminal the merge is undone and
+nothing is written.
 
 > **Note (Git LFS):** if your `lfs_patterns` include `*.jsonl`, the repo copy
 > of `history.jsonl` is LFS-tracked; content is materialized on checkout, so
@@ -271,7 +291,7 @@ own commit, so `git` still has everything until the history itself is rewritten.
 
 ### External merge tool
 
-**Get `merge` next to `remote` / `local` in the per-file prompt** — on a file
+**Add a merge option to the per-file prompt** — on a file
 both machines changed in the sync repository, and on a pulled file that
 differs under `pull --interactive`:
 
@@ -610,8 +630,9 @@ claude-code-sync pull [OPTIONS]
 - `--fetch-remote <BOOL>`: Pull from remote before merging (default: true).
   Diverged branches merge on their own. A file both machines changed only in
   date-times (`lastUpdated`, `modified: …`) keeps the later dates, no prompt.
-  Any other file both changed asks, per file: `remote`, `local`, `merge` (the
-  [merge tool](#external-merge-tool)) or `stop`. `stop`, or no terminal to ask in, undoes the merge and stops the
+  Any other file both changed asks, per file: take the other machine's version,
+  keep this machine's, merge (the [merge tool](#external-merge-tool)), or stop.
+  Stopping, or no terminal to ask in, undoes the merge and stops the
   pull, as does a remote that cannot be reached. Pass `--fetch-remote false` to
   merge only what is already in the local sync repository.
 - `--branch, -b <BRANCH>`: Branch to pull from (default: current branch)
