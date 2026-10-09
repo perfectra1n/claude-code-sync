@@ -1981,6 +1981,7 @@ fn an_unreadable_kept_local_target_is_kept_never_guessed_at() {
 }
 
 /// Recursively find `name` under `root` (test repos are small).
+#[cfg(unix)]
 fn find_repo_file(root: &std::path::Path, name: &str) -> std::path::PathBuf {
     fn walk(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
         for entry in fs::read_dir(dir).unwrap() {
@@ -2688,6 +2689,9 @@ fn undo_does_not_disarm_the_mid_pull_create_protection() {
     assert_eq!(read_memory(machine_b.path()), "user's own\n");
 }
 
+// Unix only: it makes the repo copy unreadable with a 0o000 mode, which
+// Windows does not enforce.
+#[cfg(unix)]
 #[test]
 fn an_empty_user_file_is_not_lost_to_the_protection_sentinel() {
     let repo = TempDir::new().unwrap();

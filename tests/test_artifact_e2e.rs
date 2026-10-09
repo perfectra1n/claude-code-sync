@@ -693,6 +693,9 @@ fn test_sync_publishes_an_edit_made_only_here_and_pushes_sessions() {
     );
 }
 
+// Unix only: it makes a write fail with a read-only directory, which
+// Windows does not enforce the same way.
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_sync_keeps_a_clean_held_file_from_overwriting_repo() {
