@@ -2706,3 +2706,89 @@ fn an_undo_skip_branch_warning_names_record_entries_in_the_sole_copy_template() 
     assert!(result.contains("KEPT"), "the snapshot is pinned: {result}");
     assert!(snapshot_path.exists(), "the snapshot survives the undo");
 }
+
+#[test]
+fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
+    // Issue #103 follow-up: PR #105 protected raw-overwrite files but
+    // union-merged memory indexes (memory/MEMORY.md) still silently
+    // clobbered a local edit, because the union-merge contract is
+    // "incoming wins per entry" and a user-curated bullet at a
+    // target key the incoming (repo) also has is treated as a
+    // match and overwritten. The fix: record a base for every
+    // union-merged file and route to `kept_local` when the local
+    // bytes have moved since the last sync (F3-class synthetic
+    // dirty + conventional is_dirty, same as the overwrites arm).
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    // Seed both machines with the same starting bullet, then sync
+    // them up: a base entry exists for the memory file and the
+    // tracked set knows it.
+    let mem = |claude: &Path, body: &str| {
+        let path = claude.join("projects/-home-a-work-app/memory/MEMORY.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    };
+    mem(machine_a.path(), "- [shared] from A and B\n");
+    sync(machine_a.path(), repo.path(), &filter);
+    sync(machine_b.path(), repo.path(), &filter);
+
+    // A pushes a NEW bullet (the shared key is unchanged on purpose
+    // — the test is about the same-key clobber case, which the
+    // pre-fix code hit on the per-target "incoming wins" rule).
+    mem(machine_a.path(), "- [shared] from A and B\n- [a-only] new on A\n");
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+
+    // B edits the SAME bullet locally between A's push and B's pull.
+    mem(machine_b.path(), "- [shared] B's local edit wins\n");
+
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+
+    // Regression: a base IS recorded for the memory index now. The
+    // pre-fix `records_base(UnionMemoryIndex) = !is_memory_index(rel)`
+    // left the entry out, which is why the union-merge path never
+    // even consulted the dirty check.
+    let recorded = bases::load(machine_b.path(), repo.path());
+    assert!(
+        recorded.contains_key("projects/-home-a-work-app/memory/MEMORY.md"),
+        "a base is recorded for the memory index (issue #103 follow-up); got: {recorded:?}"
+    );
+
+    // The fix fires: the locally-edited file goes to kept_local,
+    // NOT through the union merge.
+    assert_eq!(
+        kept_local_of(&plan),
+        1,
+        "the local edit routes to kept_local: {:?}",
+        plan.kept_local.iter().map(|w| w.category_path.display().to_string()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        plan.unions.len(),
+        0,
+        "the union merge must NOT run on a locally-edited memory index"
+    );
+
+    // Apply: local bytes must still hold B's edit, NOT A's incoming
+    // text for the shared key.
+    apply_pull(&plan, false).unwrap();
+    let after = fs::read_to_string(
+        machine_b.path().join("projects/-home-a-work-app/memory/MEMORY.md"),
+    )
+    .unwrap();
+    assert!(
+        after.contains("B's local edit wins"),
+        "the local edit survives: {after}"
+    );
+    assert!(
+        !after.contains("[a-only] new on A"),
+        "no incoming text was union-merged in: {after}"
+    );
+}

@@ -40,15 +40,21 @@ fn active_categories(
 
 /// Whether a file under this merge strategy records a synced base — the
 /// ONE rule, consulted by push and pull.
-/// Union-merged files (prompt history, memory indexes) grow on every
-/// later merge while no push ever re-records them, so a base entry would
-/// describe creation-time bytes forever and read as permanently dirty;
-/// every other file raw-overwrites and keeps its base.
-pub(crate) fn records_base(strategy: MergeStrategy, rel: &Path) -> bool {
+///
+/// All user-editable files need a base: the local-edit-protection
+/// contract (issue #103) requires a recorded base so the next pull
+/// can detect a local edit and route to `kept_local` instead of
+/// silently clobbering the user's changes. For union-merge strategies
+/// the base is the local snapshot at push time, and the apply
+/// re-records after every merge so the next pull sees local == base
+/// and skips the merge when nothing new arrived. Prompt history
+/// (`UnionJsonl`) is append-only and does not need per-line
+/// protection.
+pub(crate) fn records_base(strategy: MergeStrategy, _rel: &Path) -> bool {
     match strategy {
         MergeStrategy::RawOverwrite => true,
         MergeStrategy::UnionJsonl => false,
-        MergeStrategy::UnionMemoryIndex => !is_memory_index(rel),
+        MergeStrategy::UnionMemoryIndex => true,
     }
 }
 
@@ -1517,21 +1523,6 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                     }
                 }
                 MergeStrategy::UnionMemoryIndex if is_memory_index(&rel) => {
-                    // No F3-class guard here. The merge contract is
-                    // "incoming wins per entry" (memory_index.rs):
-                    // for shared targets, the incoming (repo) text
-                    // replaces the dest text; for dest-only targets,
-                    // the dest text is kept; for incoming-only
-                    // targets, the entry is appended. This is the
-                    // user-expected union-merge contract — not
-                    // silent overwrite — so a None base + tracked
-                    // entry is a valid index to merge against (the
-                    // file IS in the tracked record after the first
-                    // pull, via `tracked_after.extend(present)` in
-                    // the gone-scan). The F3-class guard in the
-                    // overwrites arm is for RawOverwrite files,
-                    // where local-vs-repo byte equality means the
-                    // local IS the source of truth.
                     if !local_path.is_file() {
                         plan.creates.push(write);
                         continue;
@@ -1543,6 +1534,29 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         plan.skipped += 1;
                         continue;
                     };
+                    // The union-merge contract is "incoming wins per
+                    // entry" (memory_index.rs): a user-curated bullet
+                    // at a target key the incoming (repo) also has is
+                    // treated as a match and overwritten. That is
+                    // silent clobber for issue #103. The same F3 + base
+                    // dirty guards as the overwrites arm apply: if we
+                    // have no recorded base but the file is in
+                    // `tracked_before`, or the recorded base does not
+                    // match the local bytes, the user edited this
+                    // since the last sync and the next pull must not
+                    // union-merge over it.
+                    let repo_rel = repo_relative(repo_root, &repo_path);
+                    let recorded = repo_rel.as_ref().and_then(|r| base_hashes.get(r));
+                    let f3 = repo_rel
+                        .as_ref()
+                        .map(|r| f3_class_potentially_dirty(
+                            &base_hashes, &plan.tracked_before, r,
+                        ))
+                        .unwrap_or(false);
+                    if f3 || bases::is_dirty(recorded, &local_bytes) {
+                        plan.kept_local.push(write);
+                        continue;
+                    }
                     // Never fatal (see the unions arm below): one bad
                     // repo file must not block every category and session.
                     let Ok(repo_bytes) = machine_bytes(desc, &plan.tokens, &repo_path) else {
@@ -2747,13 +2761,13 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
         // Record the MERGED bytes (not the pre-merge local bytes) as the
         // base — the apply just put them there and the next non-interactive
         // pull must see local == base, else it reads as a local change
-        // the user never made. Both arms that populate plan.unions feed
-        // grow-only files (UnionJsonl lines; UnionMemoryIndex indexes),
-        // so `records_base` is false for every entry today. The gate is
-        // the shared per-file rule kept so a future routing change that
-        // puts a base-recording file through this arm inherits the
-        // correct behavior instead of silently recording a base for a
-        // grow-only file.
+        // the user never made. `UnionMemoryIndex` is now in
+        // `records_base = true` so a future local edit will surface
+        // as a real dirty read on the next pull (issue #103 contract);
+        // `UnionJsonl` stays out because per-line protection is not
+        // what prompt-history union-merge guarantees. The gate is the
+        // shared per-file rule kept so a future strategy that belongs
+        // here inherits the correct behavior automatically.
         if records_base(desc.merge, &write.category_path)
             && record_base(
                 &mut synced_bases,
