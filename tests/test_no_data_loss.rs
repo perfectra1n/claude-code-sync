@@ -707,3 +707,57 @@ fn a_number_shaped_like_a_timestamp_is_not_settled_silently() {
         Some("{\"accountId\": 1790837225831}")
     );
 }
+
+/// A memory index that already matches the repository is in sync, even with
+/// no recorded base (an upgrade from 0.4.x): it must not be held on every
+/// sync, and it must publish later edits normally.
+#[test]
+fn an_identical_memory_index_without_a_base_is_not_held_forever() {
+    let index = "projects/-home-a-work-app/memory/MEMORY.md";
+    let (repo, _a, b) = two_machines_in_sync(&[(index, "- [a](a.md) one\n")]);
+    fs::remove_file(bases::record_path(b.path())).unwrap();
+
+    let report = sync(b.path(), repo.path());
+    assert_eq!(kept_local(&report), 0, "identical copies are in sync");
+    let report = sync(b.path(), repo.path());
+    assert_eq!(kept_local(&report), 0, "and stay that way");
+
+    write(&b.path().join(index), "- [a](a.md) one\n- [b](b.md) two\n");
+    let report = sync(b.path(), repo.path());
+    assert_eq!(kept_local(&report), 0);
+    let in_repo = read(&repo.path().join(index)).unwrap();
+    assert!(
+        in_repo.contains("[b](b.md) two"),
+        "the later edit is published: {in_repo}"
+    );
+}
+
+/// A pull whose only change is a memory-index union merge records a new base
+/// for it, so the snapshot must carry the base record and the undo must know
+/// the key: otherwise `undo pull` restores the file but not its base, and the
+/// restored file reads as edited here from then on.
+#[test]
+fn a_memory_index_union_merge_is_declared_for_undo() {
+    let index = "projects/-home-a-work-app/memory/MEMORY.md";
+    let (repo, a, b) = two_machines_in_sync(&[(index, "- [a](a.md) one\n")]);
+    write(
+        &a.path().join(index),
+        "- [a](a.md) one\n- [b](b.md) from A\n",
+    );
+    sync(a.path(), repo.path());
+
+    let plan = plan_pull(b.path(), repo.path(), &all_on_filter()).unwrap();
+    assert_eq!(plan.unions.len(), 1);
+    assert!(plan.rewrites_bases, "the apply writes the base record");
+    assert!(
+        plan.touched_base_keys().contains(&index.to_string()),
+        "undo restores the index's base key"
+    );
+    let report = apply_pull(&plan, false).unwrap();
+    for key in &report.bases_keys_written {
+        assert!(
+            plan.touched_base_keys().contains(key),
+            "every base key the apply wrote was declared: {key}"
+        );
+    }
+}

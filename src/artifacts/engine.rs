@@ -1455,6 +1455,8 @@ impl PullPlan {
             .chain(self.overwrites.iter())
             .chain(self.mode_fixes.iter())
             .chain(self.kept_local.iter())
+            // A union-merged memory index records the merged bytes.
+            .chain(self.unions.iter())
             .filter_map(|w| repo_relative(&self.repo_root, &w.repo_path))
             .collect();
         keys.extend(self.base_hashes.iter().map(|(rel, _)| rel.clone()));
@@ -1885,7 +1887,26 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                     // match the local bytes, the user edited this
                     // since the last sync and the next pull must not
                     // union-merge over it.
+                    // Never fatal (see the unions arm below): one bad
+                    // repo file must not block every category and session.
+                    let Ok(repo_bytes) = machine_bytes(desc, &plan.tokens, &repo_path) else {
+                        log::warn!("Skipping {} (repo copy unreadable)", repo_path.display());
+                        plan.skipped += 1;
+                        continue;
+                    };
                     let repo_rel = repo_relative(repo_root, &repo_path);
+                    // Both sides already hold the same index: in sync,
+                    // whatever the record says. Recorded as the base, so a
+                    // machine with no base (an upgrade) or a held one
+                    // settles here instead of being held on every sync.
+                    if local_bytes == repo_bytes {
+                        if let Some(rel) = repo_rel {
+                            plan.base_hashes
+                                .push((rel, bases::hash_bytes(&local_bytes)));
+                        }
+                        plan.unchanged += 1;
+                        continue;
+                    }
                     let recorded = repo_rel.as_ref().and_then(|r| base_hashes.get(r));
                     let f3 = repo_rel
                         .as_ref()
@@ -1897,24 +1918,13 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         // last synced version, only this machine moved on:
                         // the push publishes the edit. Otherwise both did,
                         // and the edit is kept and held back.
-                        let only_here =
-                            machine_bytes(desc, &plan.tokens, &repo_path).is_ok_and(|repo_bytes| {
-                                repo_unchanged_since_sync(recorded, &repo_bytes)
-                            });
-                        if only_here {
+                        if repo_unchanged_since_sync(recorded, &repo_bytes) {
                             plan.local_only.push(write);
                         } else {
                             plan.kept_local.push(write);
                         }
                         continue;
                     }
-                    // Never fatal (see the unions arm below): one bad
-                    // repo file must not block every category and session.
-                    let Ok(repo_bytes) = machine_bytes(desc, &plan.tokens, &repo_path) else {
-                        log::warn!("Skipping {} (repo copy unreadable)", repo_path.display());
-                        plan.skipped += 1;
-                        continue;
-                    };
                     // Tombstone-aware plan-time check: the local side
                     // is `local_path`, the repo side is `repo_path`. If
                     // either carries a `deleted/<id>.md` marker that
@@ -2260,10 +2270,14 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
     // moves nothing when the base already holds that value (the apply's
     // `record_base` would skip it; predicting it anyway mints a snapshot
     // whose undo restores zero files).
+    // A union merge records the merged bytes, which differ from the local
+    // ones the base described (the plan only lists a union that changes
+    // the file): membership is movement too.
     let moves_base = plan
         .creates
         .iter()
         .chain(&plan.overwrites)
+        .chain(&plan.unions)
         .any(records_base_for)
         || plan.mode_fixes.iter().any(|w| {
             records_base_for(w)
