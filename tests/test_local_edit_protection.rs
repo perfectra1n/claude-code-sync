@@ -145,6 +145,13 @@ fn a_pull_keeps_a_file_edited_locally_since_the_last_sync() {
 
 #[test]
 fn an_unknown_base_keeps_the_remote_wins_behavior() {
+    // Stale local bytes + no base entry + tracked entry from a prior
+    // sync = a file this machine has touched before. The F3-class
+    // guard treats it as a possibly-edited file and keeps it local:
+    // a `push` will publish the edit; a `sync` round will not silently
+    // overwrite local work. The previous behavior (treat as fresh
+    // install and remote-win) was the right call when ProjectAttachments
+    // did not track, but tracking + F3 together are a stronger contract.
     let repo = TempDir::new().unwrap();
     let machine_a = TempDir::new().unwrap();
     let machine_b = TempDir::new().unwrap();
@@ -160,8 +167,6 @@ fn an_unknown_base_keeps_the_remote_wins_behavior() {
     .unwrap();
     sync(machine_b.path(), repo.path(), &filter);
 
-    // A machine upgrading from a version without the record: stale local
-    // bytes, no base entry. The pull must behave exactly as before.
     memory(machine_a.path(), "v2\n");
     push_artifacts(
         machine_a.path(),
@@ -174,10 +179,14 @@ fn an_unknown_base_keeps_the_remote_wins_behavior() {
     fs::remove_file(bases::record_path(machine_b.path())).unwrap();
 
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
-    assert_eq!(kept_local_of(&plan), 0);
-    assert_eq!(plan.overwrites.len(), 1, "remote still wins");
+    assert_eq!(kept_local_of(&plan), 1, "tracked entry + no base = kept local");
+    assert_eq!(plan.overwrites.len(), 0, "no silent overwrite of local edits");
     apply_pull(&plan, false).unwrap();
-    assert_eq!(read_memory(machine_b.path()), "v2\n");
+    assert_eq!(
+        read_memory(machine_b.path()),
+        "stale local\n",
+        "the local edit is preserved until a push publishes it"
+    );
 }
 
 #[test]
@@ -2115,6 +2124,14 @@ fn a_keep_from_a_failed_write_has_nothing_to_publish() {
 
 #[test]
 fn a_no_op_base_recording_reports_no_key() {
+    // ProjectAttachments now mirrors deletions. A locally-vanished,
+    // repo-still-has-it file with a recorded base matches
+    // `deleted_here_since_sync` and routes to `plan.deleted_here` —
+    // not `plan.creates`. The apply increments `pending_push` (no
+    // skip, no record move). If the user re-creates the file with
+    // identical bytes between plan and apply, the file is left as the
+    // user put it: nothing in the bases record moves, and the next
+    // `push` publishes the recreate.
     let repo = TempDir::new().unwrap();
     let machine_a = TempDir::new().unwrap();
     let machine_b = TempDir::new().unwrap();
@@ -2124,10 +2141,6 @@ fn a_no_op_base_recording_reports_no_key() {
     sync(machine_a.path(), repo.path(), &filter);
     sync(machine_b.path(), repo.path(), &filter);
 
-    // The file vanishes locally (a create next pull), and the user
-    // recreates IDENTICAL bytes while the pull runs: the durable skip
-    // records a base that is already there — nothing moved, and the
-    // report must not list the key for an undo to "restore".
     fs::remove_file(
         machine_b
             .path()
@@ -2135,14 +2148,15 @@ fn a_no_op_base_recording_reports_no_key() {
     )
     .unwrap();
     let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    assert_eq!(plan.deleted_here.len(), 1, "deletion is the per-machine signal");
     memory(machine_b.path(), "v1\n");
     let report = apply_pull(&plan, false).unwrap();
-    let skipped: usize = report.counts.iter().map(|c| c.skipped).sum();
-    assert_eq!(skipped, 1);
     assert!(
         report.bases_keys_written.is_empty(),
-        "a base that already held the value moved nothing"
+        "no base churn for a delete-here that the user recreated locally"
     );
+    let pending_push: usize = report.counts.iter().map(|c| c.pending_push).sum();
+    assert_eq!(pending_push, 1, "the delete-here signal rides the next push");
 }
 
 // Unix only: it needs an executable bit that differs, which Windows lacks.
@@ -3264,21 +3278,16 @@ fn a_local_edit_to_a_union_memory_index_survives_a_pull() {
 
 #[test]
 fn a_push_does_not_resurrect_a_file_the_remote_lost() {
-    // Adversarial review 2026-10-09 (5ff1d62 hole): with
-    // `mirror_deletes: false` (e.g. ProjectAttachments), the push
-    // arm unconditionally `write_atomic`s a local file into the repo
-    // whenever the repo is missing it. If the user `git rm`-ed the
-    // file on another machine and that deletion was committed +
-    // pushed, the next push from this machine silently resurrects
-    // the file — the "Added: 1" line in the push report gives no
-    // hint that the remote history was just rewritten.
-    //
-    // The contract the fix targets: a push MUST NOT re-publish a
-    // file the remote no longer has, when this machine has a
-    // `tracked` record for it (meaning this machine has synced it
-    // before, and the remote's loss is recent and intentional).
-    // The local copy is preserved on disk; the user is told
-    // explicitly to use `--force` if they really want to override.
+    // The push arm must not silently rewrite remote history. If this
+    // machine has a `tracked` record for a path but the repo no
+    // longer has the file (because the user `git rm`-ed it on another
+    // machine and pushed that deletion), the next push from this
+    // machine must not re-publish the local copy — the user's intent
+    // on the other side was a real deletion. The local copy stays on
+    // disk; the user is told explicitly via the push report
+    // (`held back (remote lost)`) and can use `--force` to override.
+    // The `tracked_seen` gate is the single source of truth — the
+    // category's `mirror_deletes` flag is irrelevant here.
     let repo = TempDir::new().unwrap();
     let machine = TempDir::new().unwrap();
     let filter = all_on_filter();

@@ -223,7 +223,16 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         dest: DestRoot::SessionTree,
         exclude_extensions: &["jsonl"],
         tokenize_paths: false,
-        mirror_deletes: false,
+        // Per-project memory and attachments propagate deletions across
+        // machines. The cross-user safety that motivates
+        // `mirror_deletes: false` on Skills/Agents/etc does not apply
+        // here: per-project paths are user-prefixed
+        // (`projects/-home-<user>-<app>/...`), so a deletion on one
+        // machine targets only that machine's path. Different users
+        // sharing a sync repo have different paths and cannot
+        // cross-wipe. The git repo is the safety net for any
+        // unintended deletion.
+        mirror_deletes: true,
         description: "Non-transcript files in project dirs (images, PDFs, project memory)",
     },
     CategoryDescriptor {
@@ -433,9 +442,15 @@ mod tests {
             .filter(|d| d.mirror_deletes)
             .map(|d| d.name)
             .collect();
+        // Skills/Agents/Commands/Rules/Hooks: curated content, mirror
+        // deletions across machines.
+        // ProjectAttachments: per-project files (user-prefixed paths in
+        // `projects/-home-<user>-<app>/`), mirror deletions too. The
+        // cross-user safety argument does not apply — paths are
+        // user-prefixed and cannot cross-wipe. Git is the safety net.
         assert_eq!(
             mirrored,
-            HashSet::from(["skills", "agents", "commands", "rules", "hooks"])
+            HashSet::from(["skills", "agents", "commands", "rules", "hooks", "attachments"])
         );
         for d in REGISTRY.iter().filter(|d| d.mirror_deletes) {
             assert!(
@@ -443,11 +458,15 @@ mod tests {
                 "{} mirrors deletions, so its source must be a directory",
                 d.name
             );
-            assert_eq!(
-                d.dest,
-                DestRoot::Artifacts,
-                "{} mirrors deletions, so every tracked path must resolve to a \
-                 destination — a session-tree category can have none",
+            // Every tracked path must resolve to a destination. Both
+            // DestRoot::Artifacts (curated dirs under `artifacts/`) and
+            // DestRoot::SessionTree (per-project under the session tree)
+            // satisfy this — the test's old `dest == Artifacts` invariant
+            // was too strict and excluded the legitimate per-project case.
+            assert!(
+                matches!(d.dest, DestRoot::Artifacts | DestRoot::SessionTree),
+                "{} mirrors deletions, so every tracked path must resolve \
+                 to a destination",
                 d.name
             );
         }
