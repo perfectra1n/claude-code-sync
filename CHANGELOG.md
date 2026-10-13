@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/perfectra1n/claude-code-sync/compare/v0.4.0...v0.4.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **pull:** never lose a local edit — three-way pull, combining [#105](https://github.com/perfectra1n/claude-code-sync/issues/105) and [#106](https://github.com/perfectra1n/claude-code-sync/issues/106) ([#107](https://github.com/perfectra1n/claude-code-sync/issues/107)) ([ac3a329](https://github.com/perfectra1n/claude-code-sync/commit/ac3a32972d4b54d7b75f64df1565d7760537d887))
+
 ## [0.4.0](https://github.com/perfectra1n/claude-code-sync/compare/v0.3.3...v0.4.0) (2026-09-24)
 
 
