@@ -48,6 +48,11 @@ pub enum MergeStrategy {
     /// every other file in the category raw-overwrites. Overwriting an index
     /// with a sparser one orphans the other machine's memory files.
     UnionMemoryIndex,
+    /// Union of `plugin-directory-bindings.json` by plugin key, applied on
+    /// push and pull; every other file in the category raw-overwrites.
+    /// Overwriting the bindings map with a sparser one loses the plugins
+    /// the other machines bound.
+    UnionPluginBindings,
 }
 
 /// Where a category's files live inside the sync repository.
@@ -182,13 +187,18 @@ pub static REGISTRY: &[CategoryDescriptor] = &[
         source: SourceSpec::Files(&[
             "plugins/installed_plugins.json",
             "plugins/known_marketplaces.json",
+            "plugins/plugin-directory-bindings.json",
         ]),
-        merge: MergeStrategy::RawOverwrite,
+        // The bindings file unions per plugin key (each machine binds
+        // plugins of its own); the two manifests stay raw — they carry
+        // Claude Code's full view and the last machine to push is
+        // canonical for the install set.
+        merge: MergeStrategy::UnionPluginBindings,
         dest: DestRoot::Artifacts,
         exclude_extensions: &[],
         tokenize_paths: true,
         mirror_deletes: false,
-        description: "Installed-plugin and marketplace manifests (never plugin caches)",
+        description: "Plugin manifests; plugin-directory bindings union-merge (never caches)",
     },
     CategoryDescriptor {
         id: CategoryId::Plans,
@@ -395,7 +405,8 @@ mod tests {
                     files,
                     [
                         "plugins/installed_plugins.json",
-                        "plugins/known_marketplaces.json"
+                        "plugins/known_marketplaces.json",
+                        "plugins/plugin-directory-bindings.json",
                     ]
                 );
             }
@@ -411,12 +422,14 @@ mod tests {
             .unwrap();
         assert_eq!(ph.merge, MergeStrategy::UnionJsonl);
         assert_eq!(ph.source, SourceSpec::Files(&["history.jsonl"]));
-        // Only project attachments, which carry per-project MEMORY.md indexes,
-        // merge as well; everything else raw-overwrites.
-        for d in REGISTRY
-            .iter()
-            .filter(|d| d.id != CategoryId::PromptHistory && d.id != CategoryId::ProjectAttachments)
-        {
+        // Project attachments (per-project MEMORY.md indexes) and the
+        // plugin-directory bindings file (each machine binds plugins of
+        // its own) merge too; everything else raw-overwrites.
+        for d in REGISTRY.iter().filter(|d| {
+            d.id != CategoryId::PromptHistory
+                && d.id != CategoryId::ProjectAttachments
+                && d.id != CategoryId::Plugins
+        }) {
             assert_eq!(d.merge, MergeStrategy::RawOverwrite, "{}", d.name);
         }
         let attachments = REGISTRY
@@ -424,6 +437,11 @@ mod tests {
             .find(|d| d.id == CategoryId::ProjectAttachments)
             .unwrap();
         assert_eq!(attachments.merge, MergeStrategy::UnionMemoryIndex);
+        let plugins = REGISTRY
+            .iter()
+            .find(|d| d.id == CategoryId::Plugins)
+            .unwrap();
+        assert_eq!(plugins.merge, MergeStrategy::UnionPluginBindings);
     }
 
     #[test]

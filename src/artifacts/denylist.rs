@@ -165,6 +165,9 @@ mod tests {
         assert!(!is_denied(Path::new("commands/deploy.md")));
         assert!(!is_denied(Path::new("plugins/installed_plugins.json")));
         assert!(!is_denied(Path::new("plugins/known_marketplaces.json")));
+        assert!(!is_denied(Path::new(
+            "plugins/plugin-directory-bindings.json"
+        )));
         assert!(!is_denied(Path::new("plans/2026-07-12-refactor.md")));
         assert!(!is_denied(Path::new("todos/session-123.json")));
         assert!(!is_denied(Path::new("history.jsonl")));

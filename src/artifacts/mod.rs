@@ -10,6 +10,7 @@ pub mod bases;
 pub mod denylist;
 pub mod engine;
 pub mod memory_index;
+pub mod plugin_bindings;
 pub mod registry;
 pub mod repo_record;
 pub mod tokens;
