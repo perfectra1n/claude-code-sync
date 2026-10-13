@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["VerbosityLevel"],"macro":["repo_record_wrappers"],"mod":["artifacts","config","conflict","digest","filter","handlers","history","interactive_conflict","later_timestamps","logger","merge","merge_tool","onboarding","parser","project_map","purge","report","scm","self_update","sync","undo"]};

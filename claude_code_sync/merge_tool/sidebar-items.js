@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Resolution","ResolutionOutcome"],"fn":["build_conflict_path","merge","resolve_conflict","resolve_overwrite"]};

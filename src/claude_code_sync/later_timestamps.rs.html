@@ -1,0 +1,305 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/later_timestamps.rs`."><title>later_timestamps.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><script id="default-settings" 
+data-use_system_theme="false"
+data-theme="ayu"></script><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="claude_code_sync" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.1 (31fca3adb 2026-06-26)" data-channel="1.96.1" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">claude_code_sync/</div>later_timestamps.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Settling a file both machines changed only in its date-times.
+<a href=#2 id=2 data-nosnippet>2</a>//!
+<a href=#3 id=3 data-nosnippet>3</a>//! Claude Code rewrites timestamps such as `lastUpdated` in
+<a href=#4 id=4 data-nosnippet>4</a>//! `plugins/known_marketplaces.json` and skill manifests on every machine, so
+<a href=#5 id=5 data-nosnippet>5</a>//! those files differ between machines without anyone editing them. Such a
+<a href=#6 id=6 data-nosnippet>6</a>//! difference settles on the later date-time, with no prompt.
+<a href=#7 id=7 data-nosnippet>7</a>//!
+<a href=#8 id=8 data-nosnippet>8</a>//! The settle silently picks one side, so it must never fire on real content:
+<a href=#9 id=9 data-nosnippet>9</a>//! a value only counts as a timestamp when it is the whole value of a key
+<a href=#10 id=10 data-nosnippet>10</a>//! whose name says it is a time (`lastUpdated`, `modified`, `createdAt`,
+<a href=#11 id=11 data-nosnippet>11</a>//! `expires_at`, ...). An ISBN, an account number or a date written in prose
+<a href=#12 id=12 data-nosnippet>12</a>//! is content, and a difference in it is a real conflict.
+<a href=#13 id=13 data-nosnippet>13</a>
+<a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">use </span>chrono::{DateTime, NaiveDateTime};
+<a href=#15 id=15 data-nosnippet>15</a>
+<a href=#16 id=16 data-nosnippet>16</a><span class="kw">const </span>ISO_DATE_TIME_SHAPE: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"dddd-dd-ddTdd:dd:dd"</span>;
+<a href=#17 id=17 data-nosnippet>17</a><span class="kw">const </span>OFFSET_SHAPE: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"dd:dd"</span>;
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">const </span>EPOCH_MILLISECONDS_DIGITS: usize = <span class="number">13</span>;
+<a href=#19 id=19 data-nosnippet>19</a>
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">struct </span>Timestamp&lt;<span class="lifetime">'a</span>&gt; {
+<a href=#21 id=21 data-nosnippet>21</a>    text: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str,
+<a href=#22 id=22 data-nosnippet>22</a>    milliseconds: i64,
+<a href=#23 id=23 data-nosnippet>23</a>}
+<a href=#24 id=24 data-nosnippet>24</a>
+<a href=#25 id=25 data-nosnippet>25</a><span class="doccomment">/// The two versions with every date-time that differs set to the later one,
+<a href=#26 id=26 data-nosnippet>26</a>/// or `None` when they differ in anything else.
+<a href=#27 id=27 data-nosnippet>27</a></span><span class="kw">pub fn </span>keep_later_timestamps(local: <span class="kw-2">&amp;</span>[u8], remote: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="prelude-ty">Option</span>&lt;Vec&lt;u8&gt;&gt; {
+<a href=#28 id=28 data-nosnippet>28</a>    <span class="kw">let </span>local = std::str::from_utf8(local).ok()<span class="question-mark">?</span>;
+<a href=#29 id=29 data-nosnippet>29</a>    <span class="kw">let </span>remote = std::str::from_utf8(remote).ok()<span class="question-mark">?</span>;
+<a href=#30 id=30 data-nosnippet>30</a>    <span class="kw">let </span><span class="kw-2">mut </span>merged = String::with_capacity(local.len());
+<a href=#31 id=31 data-nosnippet>31</a>    <span class="kw">let </span><span class="kw-2">mut </span>local_position = <span class="number">0</span>;
+<a href=#32 id=32 data-nosnippet>32</a>    <span class="kw">let </span><span class="kw-2">mut </span>remote_position = <span class="number">0</span>;
+<a href=#33 id=33 data-nosnippet>33</a>
+<a href=#34 id=34 data-nosnippet>34</a>    <span class="kw">while </span>local_position &lt; local.len() || remote_position &lt; remote.len() {
+<a href=#35 id=35 data-nosnippet>35</a>        <span class="kw">let </span>local_timestamp = read_timestamp(local, local_position);
+<a href=#36 id=36 data-nosnippet>36</a>        <span class="kw">let </span>remote_timestamp = read_timestamp(remote, remote_position);
+<a href=#37 id=37 data-nosnippet>37</a>        <span class="kw">if let </span>(<span class="prelude-val">Some</span>(local_timestamp), <span class="prelude-val">Some</span>(remote_timestamp)) = (local_timestamp, remote_timestamp)
+<a href=#38 id=38 data-nosnippet>38</a>        {
+<a href=#39 id=39 data-nosnippet>39</a>            <span class="kw">let </span>remote_is_later = remote_timestamp.milliseconds &gt; local_timestamp.milliseconds;
+<a href=#40 id=40 data-nosnippet>40</a>            <span class="kw">let </span>later = <span class="kw">if </span>remote_is_later {
+<a href=#41 id=41 data-nosnippet>41</a>                remote_timestamp.text
+<a href=#42 id=42 data-nosnippet>42</a>            } <span class="kw">else </span>{
+<a href=#43 id=43 data-nosnippet>43</a>                local_timestamp.text
+<a href=#44 id=44 data-nosnippet>44</a>            };
+<a href=#45 id=45 data-nosnippet>45</a>            merged.push_str(later);
+<a href=#46 id=46 data-nosnippet>46</a>            local_position += local_timestamp.text.len();
+<a href=#47 id=47 data-nosnippet>47</a>            remote_position += remote_timestamp.text.len();
+<a href=#48 id=48 data-nosnippet>48</a>            <span class="kw">continue</span>;
+<a href=#49 id=49 data-nosnippet>49</a>        }
+<a href=#50 id=50 data-nosnippet>50</a>
+<a href=#51 id=51 data-nosnippet>51</a>        <span class="kw">let </span>local_character = local[local_position..].chars().next()<span class="question-mark">?</span>;
+<a href=#52 id=52 data-nosnippet>52</a>        <span class="kw">let </span>remote_character = remote[remote_position..].chars().next()<span class="question-mark">?</span>;
+<a href=#53 id=53 data-nosnippet>53</a>        <span class="kw">if </span>local_character != remote_character {
+<a href=#54 id=54 data-nosnippet>54</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#55 id=55 data-nosnippet>55</a>        }
+<a href=#56 id=56 data-nosnippet>56</a>        merged.push(local_character);
+<a href=#57 id=57 data-nosnippet>57</a>        local_position += local_character.len_utf8();
+<a href=#58 id=58 data-nosnippet>58</a>        remote_position += remote_character.len_utf8();
+<a href=#59 id=59 data-nosnippet>59</a>    }
+<a href=#60 id=60 data-nosnippet>60</a>
+<a href=#61 id=61 data-nosnippet>61</a>    <span class="prelude-val">Some</span>(merged.into_bytes())
+<a href=#62 id=62 data-nosnippet>62</a>}
+<a href=#63 id=63 data-nosnippet>63</a>
+<a href=#64 id=64 data-nosnippet>64</a><span class="kw">fn </span>read_timestamp(text: <span class="kw-2">&amp;</span>str, position: usize) -&gt; <span class="prelude-ty">Option</span>&lt;Timestamp&lt;<span class="lifetime">'_</span>&gt;&gt; {
+<a href=#65 id=65 data-nosnippet>65</a>    <span class="kw">if </span>!is_the_value_of_a_time_key(<span class="kw-2">&amp;</span>text[..position]) {
+<a href=#66 id=66 data-nosnippet>66</a>        <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#67 id=67 data-nosnippet>67</a>    }
+<a href=#68 id=68 data-nosnippet>68</a>    <span class="kw">let </span>rest = <span class="kw-2">&amp;</span>text[position..];
+<a href=#69 id=69 data-nosnippet>69</a>    <span class="kw">let </span>timestamp = read_iso_date_time(rest).or_else(|| read_epoch_milliseconds(rest))<span class="question-mark">?</span>;
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="comment">// The whole value, not the start of a longer word or number.
+<a href=#71 id=71 data-nosnippet>71</a>    </span><span class="kw">let </span>next_character = rest[timestamp.text.len()..].chars().next();
+<a href=#72 id=72 data-nosnippet>72</a>    <span class="kw">if </span>next_character.is_some_and(|character| character.is_alphanumeric()) {
+<a href=#73 id=73 data-nosnippet>73</a>        <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#74 id=74 data-nosnippet>74</a>    }
+<a href=#75 id=75 data-nosnippet>75</a>    <span class="prelude-val">Some</span>(timestamp)
+<a href=#76 id=76 data-nosnippet>76</a>}
+<a href=#77 id=77 data-nosnippet>77</a>
+<a href=#78 id=78 data-nosnippet>78</a><span class="doccomment">/// Whether the text just before a value is `key: ` (YAML) or `"key": `
+<a href=#79 id=79 data-nosnippet>79</a>/// (JSON), optionally followed by the value's opening quote, with a key name
+<a href=#80 id=80 data-nosnippet>80</a>/// that says it holds a time.
+<a href=#81 id=81 data-nosnippet>81</a></span><span class="kw">fn </span>is_the_value_of_a_time_key(before: <span class="kw-2">&amp;</span>str) -&gt; bool {
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="kw">let </span>before = before
+<a href=#83 id=83 data-nosnippet>83</a>        .strip_suffix(<span class="string">'"'</span>)
+<a href=#84 id=84 data-nosnippet>84</a>        .or_else(|| before.strip_suffix(<span class="string">'\''</span>))
+<a href=#85 id=85 data-nosnippet>85</a>        .unwrap_or(before);
+<a href=#86 id=86 data-nosnippet>86</a>    <span class="kw">let </span><span class="prelude-val">Some</span>(before) = before.trim_end_matches([<span class="string">' '</span>, <span class="string">'\t'</span>]).strip_suffix(<span class="string">':'</span>) <span class="kw">else </span>{
+<a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#88 id=88 data-nosnippet>88</a>    };
+<a href=#89 id=89 data-nosnippet>89</a>    <span class="kw">let </span>before = before
+<a href=#90 id=90 data-nosnippet>90</a>        .strip_suffix(<span class="string">'"'</span>)
+<a href=#91 id=91 data-nosnippet>91</a>        .or_else(|| before.strip_suffix(<span class="string">'\''</span>))
+<a href=#92 id=92 data-nosnippet>92</a>        .unwrap_or(before);
+<a href=#93 id=93 data-nosnippet>93</a>    <span class="kw">let </span>key_start = before
+<a href=#94 id=94 data-nosnippet>94</a>        .rfind(|character: char| {
+<a href=#95 id=95 data-nosnippet>95</a>            !(character.is_ascii_alphanumeric() || character == <span class="string">'_' </span>|| character == <span class="string">'-'</span>)
+<a href=#96 id=96 data-nosnippet>96</a>        })
+<a href=#97 id=97 data-nosnippet>97</a>        .map_or(<span class="number">0</span>, |index| index + <span class="number">1</span>);
+<a href=#98 id=98 data-nosnippet>98</a>    names_a_time(<span class="kw-2">&amp;</span>before[key_start..])
+<a href=#99 id=99 data-nosnippet>99</a>}
+<a href=#100 id=100 data-nosnippet>100</a>
+<a href=#101 id=101 data-nosnippet>101</a><span class="kw">fn </span>names_a_time(key: <span class="kw-2">&amp;</span>str) -&gt; bool {
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="kw">const </span>TIME_WORDS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str] = <span class="kw-2">&amp;</span>[
+<a href=#103 id=103 data-nosnippet>103</a>        <span class="string">"time"</span>,
+<a href=#104 id=104 data-nosnippet>104</a>        <span class="string">"date"</span>,
+<a href=#105 id=105 data-nosnippet>105</a>        <span class="string">"updated"</span>,
+<a href=#106 id=106 data-nosnippet>106</a>        <span class="string">"modified"</span>,
+<a href=#107 id=107 data-nosnippet>107</a>        <span class="string">"created"</span>,
+<a href=#108 id=108 data-nosnippet>108</a>        <span class="string">"seen"</span>,
+<a href=#109 id=109 data-nosnippet>109</a>        <span class="string">"stamp"</span>,
+<a href=#110 id=110 data-nosnippet>110</a>        <span class="string">"epoch"</span>,
+<a href=#111 id=111 data-nosnippet>111</a>        <span class="string">"expires"</span>,
+<a href=#112 id=112 data-nosnippet>112</a>        <span class="string">"synced"</span>,
+<a href=#113 id=113 data-nosnippet>113</a>        <span class="string">"fetched"</span>,
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="string">"installed"</span>,
+<a href=#115 id=115 data-nosnippet>115</a>    ];
+<a href=#116 id=116 data-nosnippet>116</a>    <span class="kw">let </span>lowercase = key.to_ascii_lowercase();
+<a href=#117 id=117 data-nosnippet>117</a>    !key.is_empty()
+<a href=#118 id=118 data-nosnippet>118</a>        &amp;&amp; (TIME_WORDS.iter().any(|word| lowercase.contains(word))
+<a href=#119 id=119 data-nosnippet>119</a>            || key.ends_with(<span class="string">"At"</span>)
+<a href=#120 id=120 data-nosnippet>120</a>            || lowercase.ends_with(<span class="string">"_at"</span>)
+<a href=#121 id=121 data-nosnippet>121</a>            || lowercase.ends_with(<span class="string">"-at"</span>)
+<a href=#122 id=122 data-nosnippet>122</a>            || lowercase == <span class="string">"at"</span>)
+<a href=#123 id=123 data-nosnippet>123</a>}
+<a href=#124 id=124 data-nosnippet>124</a>
+<a href=#125 id=125 data-nosnippet>125</a><span class="kw">fn </span>read_iso_date_time(text: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;Timestamp&lt;<span class="lifetime">'_</span>&gt;&gt; {
+<a href=#126 id=126 data-nosnippet>126</a>    <span class="kw">let </span>bytes = text.as_bytes();
+<a href=#127 id=127 data-nosnippet>127</a>    <span class="kw">if </span>!matches_shape(bytes, ISO_DATE_TIME_SHAPE) {
+<a href=#128 id=128 data-nosnippet>128</a>        <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#129 id=129 data-nosnippet>129</a>    }
+<a href=#130 id=130 data-nosnippet>130</a>
+<a href=#131 id=131 data-nosnippet>131</a>    <span class="kw">let </span><span class="kw-2">mut </span>end = ISO_DATE_TIME_SHAPE.len();
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="kw">let </span>has_fraction = bytes.get(end) == <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="string">b'.'</span>);
+<a href=#133 id=133 data-nosnippet>133</a>    <span class="kw">if </span>has_fraction {
+<a href=#134 id=134 data-nosnippet>134</a>        <span class="kw">let </span>fraction_digits = count_digits(<span class="kw-2">&amp;</span>bytes[end + <span class="number">1</span>..]);
+<a href=#135 id=135 data-nosnippet>135</a>        <span class="kw">if </span>fraction_digits == <span class="number">0 </span>{
+<a href=#136 id=136 data-nosnippet>136</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#137 id=137 data-nosnippet>137</a>        }
+<a href=#138 id=138 data-nosnippet>138</a>        end += <span class="number">1 </span>+ fraction_digits;
+<a href=#139 id=139 data-nosnippet>139</a>    }
+<a href=#140 id=140 data-nosnippet>140</a>
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="kw">let </span>offset_sign = bytes.get(end).copied();
+<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">let </span>has_utc_designator = offset_sign == <span class="prelude-val">Some</span>(<span class="string">b'Z'</span>);
+<a href=#143 id=143 data-nosnippet>143</a>    <span class="kw">let </span>has_numeric_offset = <span class="macro">matches!</span>(offset_sign, <span class="prelude-val">Some</span>(<span class="string">b'+'</span>) | <span class="prelude-val">Some</span>(<span class="string">b'-'</span>))
+<a href=#144 id=144 data-nosnippet>144</a>        &amp;&amp; matches_shape(<span class="kw-2">&amp;</span>bytes[end + <span class="number">1</span>..], OFFSET_SHAPE);
+<a href=#145 id=145 data-nosnippet>145</a>    <span class="kw">if </span>has_utc_designator {
+<a href=#146 id=146 data-nosnippet>146</a>        end += <span class="number">1</span>;
+<a href=#147 id=147 data-nosnippet>147</a>    } <span class="kw">else if </span>has_numeric_offset {
+<a href=#148 id=148 data-nosnippet>148</a>        end += <span class="number">1 </span>+ OFFSET_SHAPE.len();
+<a href=#149 id=149 data-nosnippet>149</a>    }
+<a href=#150 id=150 data-nosnippet>150</a>
+<a href=#151 id=151 data-nosnippet>151</a>    <span class="kw">let </span>token = <span class="kw-2">&amp;</span>text[..end];
+<a href=#152 id=152 data-nosnippet>152</a>    <span class="kw">let </span>milliseconds = <span class="kw">if </span>has_utc_designator || has_numeric_offset {
+<a href=#153 id=153 data-nosnippet>153</a>        DateTime::parse_from_rfc3339(token).ok()<span class="question-mark">?</span>.timestamp_millis()
+<a href=#154 id=154 data-nosnippet>154</a>    } <span class="kw">else </span>{
+<a href=#155 id=155 data-nosnippet>155</a>        NaiveDateTime::parse_from_str(token, <span class="string">"%Y-%m-%dT%H:%M:%S%.f"</span>)
+<a href=#156 id=156 data-nosnippet>156</a>            .ok()<span class="question-mark">?
+<a href=#157 id=157 data-nosnippet>157</a>            </span>.and_utc()
+<a href=#158 id=158 data-nosnippet>158</a>            .timestamp_millis()
+<a href=#159 id=159 data-nosnippet>159</a>    };
+<a href=#160 id=160 data-nosnippet>160</a>
+<a href=#161 id=161 data-nosnippet>161</a>    <span class="prelude-val">Some</span>(Timestamp {
+<a href=#162 id=162 data-nosnippet>162</a>        text: token,
+<a href=#163 id=163 data-nosnippet>163</a>        milliseconds,
+<a href=#164 id=164 data-nosnippet>164</a>    })
+<a href=#165 id=165 data-nosnippet>165</a>}
+<a href=#166 id=166 data-nosnippet>166</a>
+<a href=#167 id=167 data-nosnippet>167</a><span class="kw">fn </span>read_epoch_milliseconds(text: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;Timestamp&lt;<span class="lifetime">'_</span>&gt;&gt; {
+<a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">let </span>digits = count_digits(text.as_bytes());
+<a href=#169 id=169 data-nosnippet>169</a>    <span class="kw">if </span>digits != EPOCH_MILLISECONDS_DIGITS {
+<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#171 id=171 data-nosnippet>171</a>    }
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a>    <span class="kw">let </span>token = <span class="kw-2">&amp;</span>text[..digits];
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="prelude-val">Some</span>(Timestamp {
+<a href=#175 id=175 data-nosnippet>175</a>        text: token,
+<a href=#176 id=176 data-nosnippet>176</a>        milliseconds: token.parse().ok()<span class="question-mark">?</span>,
+<a href=#177 id=177 data-nosnippet>177</a>    })
+<a href=#178 id=178 data-nosnippet>178</a>}
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a><span class="kw">fn </span>matches_shape(bytes: <span class="kw-2">&amp;</span>[u8], shape: <span class="kw-2">&amp;</span>[u8]) -&gt; bool {
+<a href=#181 id=181 data-nosnippet>181</a>    <span class="kw">if </span>bytes.len() &lt; shape.len() {
+<a href=#182 id=182 data-nosnippet>182</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#183 id=183 data-nosnippet>183</a>    }
+<a href=#184 id=184 data-nosnippet>184</a>    shape.iter().zip(bytes).all(|(expected, actual)| {
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">if </span><span class="kw-2">*</span>expected == <span class="string">b'd' </span>{
+<a href=#186 id=186 data-nosnippet>186</a>            actual.is_ascii_digit()
+<a href=#187 id=187 data-nosnippet>187</a>        } <span class="kw">else </span>{
+<a href=#188 id=188 data-nosnippet>188</a>            expected == actual
+<a href=#189 id=189 data-nosnippet>189</a>        }
+<a href=#190 id=190 data-nosnippet>190</a>    })
+<a href=#191 id=191 data-nosnippet>191</a>}
+<a href=#192 id=192 data-nosnippet>192</a>
+<a href=#193 id=193 data-nosnippet>193</a><span class="kw">fn </span>count_digits(bytes: <span class="kw-2">&amp;</span>[u8]) -&gt; usize {
+<a href=#194 id=194 data-nosnippet>194</a>    bytes
+<a href=#195 id=195 data-nosnippet>195</a>        .iter()
+<a href=#196 id=196 data-nosnippet>196</a>        .take_while(|byte| byte.is_ascii_digit())
+<a href=#197 id=197 data-nosnippet>197</a>        .count()
+<a href=#198 id=198 data-nosnippet>198</a>}
+<a href=#199 id=199 data-nosnippet>199</a>
+<a href=#200 id=200 data-nosnippet>200</a><span class="attr">#[cfg(test)]
+<a href=#201 id=201 data-nosnippet>201</a></span><span class="kw">mod </span>tests {
+<a href=#202 id=202 data-nosnippet>202</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#203 id=203 data-nosnippet>203</a>
+<a href=#204 id=204 data-nosnippet>204</a>    <span class="attr">#[test]
+<a href=#205 id=205 data-nosnippet>205</a>    </span><span class="kw">fn </span>versions_that_differ_only_in_dates_settle_on_the_later_ones() {
+<a href=#206 id=206 data-nosnippet>206</a>        <span class="kw">let </span>cases: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str, <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;)] = <span class="kw-2">&amp;</span>[
+<a href=#207 id=207 data-nosnippet>207</a>            (
+<a href=#208 id=208 data-nosnippet>208</a>                <span class="string">"iso timestamp, remote later"</span>,
+<a href=#209 id=209 data-nosnippet>209</a>                <span class="string">"{\"lastUpdated\": \"2026-10-01T06:00:01.741Z\"}"</span>,
+<a href=#210 id=210 data-nosnippet>210</a>                <span class="string">"{\"lastUpdated\": \"2026-10-01T06:50:50.567Z\"}"</span>,
+<a href=#211 id=211 data-nosnippet>211</a>                <span class="prelude-val">Some</span>(<span class="string">"{\"lastUpdated\": \"2026-10-01T06:50:50.567Z\"}"</span>),
+<a href=#212 id=212 data-nosnippet>212</a>            ),
+<a href=#213 id=213 data-nosnippet>213</a>            (
+<a href=#214 id=214 data-nosnippet>214</a>                <span class="string">"iso timestamp, local later"</span>,
+<a href=#215 id=215 data-nosnippet>215</a>                <span class="string">"  modified: 2026-10-01T12:24:26.923Z\n"</span>,
+<a href=#216 id=216 data-nosnippet>216</a>                <span class="string">"  modified: 2026-09-21T07:13:05.230Z\n"</span>,
+<a href=#217 id=217 data-nosnippet>217</a>                <span class="prelude-val">Some</span>(<span class="string">"  modified: 2026-10-01T12:24:26.923Z\n"</span>),
+<a href=#218 id=218 data-nosnippet>218</a>            ),
+<a href=#219 id=219 data-nosnippet>219</a>            (
+<a href=#220 id=220 data-nosnippet>220</a>                <span class="string">"each date settles on its own"</span>,
+<a href=#221 id=221 data-nosnippet>221</a>                <span class="string">"{\"createdAt\": \"2026-01-02T00:00:00Z\", \"lastSeen\": 1790137212675}"</span>,
+<a href=#222 id=222 data-nosnippet>222</a>                <span class="string">"{\"createdAt\": \"2026-01-01T00:00:00Z\", \"lastSeen\": 1790837225831}"</span>,
+<a href=#223 id=223 data-nosnippet>223</a>                <span class="prelude-val">Some</span>(<span class="string">"{\"createdAt\": \"2026-01-02T00:00:00Z\", \"lastSeen\": 1790837225831}"</span>),
+<a href=#224 id=224 data-nosnippet>224</a>            ),
+<a href=#225 id=225 data-nosnippet>225</a>            (
+<a href=#226 id=226 data-nosnippet>226</a>                <span class="string">"numeric offset compared as an instant"</span>,
+<a href=#227 id=227 data-nosnippet>227</a>                <span class="string">"updated_at: 2026-10-01T08:00:00+02:00"</span>,
+<a href=#228 id=228 data-nosnippet>228</a>                <span class="string">"updated_at: 2026-10-01T07:00:00Z"</span>,
+<a href=#229 id=229 data-nosnippet>229</a>                <span class="prelude-val">Some</span>(<span class="string">"updated_at: 2026-10-01T07:00:00Z"</span>),
+<a href=#230 id=230 data-nosnippet>230</a>            ),
+<a href=#231 id=231 data-nosnippet>231</a>            (
+<a href=#232 id=232 data-nosnippet>232</a>                <span class="string">"a date-time in prose is content"</span>,
+<a href=#233 id=233 data-nosnippet>233</a>                <span class="string">"met at 2026-10-01T08:00:00Z"</span>,
+<a href=#234 id=234 data-nosnippet>234</a>                <span class="string">"met at 2026-10-02T08:00:00Z"</span>,
+<a href=#235 id=235 data-nosnippet>235</a>                <span class="prelude-val">None</span>,
+<a href=#236 id=236 data-nosnippet>236</a>            ),
+<a href=#237 id=237 data-nosnippet>237</a>            (
+<a href=#238 id=238 data-nosnippet>238</a>                <span class="string">"an ISBN is content, not epoch milliseconds"</span>,
+<a href=#239 id=239 data-nosnippet>239</a>                <span class="string">"\"isbn\": \"9780134685991\""</span>,
+<a href=#240 id=240 data-nosnippet>240</a>                <span class="string">"\"isbn\": \"9780201633610\""</span>,
+<a href=#241 id=241 data-nosnippet>241</a>                <span class="prelude-val">None</span>,
+<a href=#242 id=242 data-nosnippet>242</a>            ),
+<a href=#243 id=243 data-nosnippet>243</a>            (
+<a href=#244 id=244 data-nosnippet>244</a>                <span class="string">"an id that looks like epoch milliseconds is content"</span>,
+<a href=#245 id=245 data-nosnippet>245</a>                <span class="string">"{\"accountId\": 1790137212675}"</span>,
+<a href=#246 id=246 data-nosnippet>246</a>                <span class="string">"{\"accountId\": 1790837225831}"</span>,
+<a href=#247 id=247 data-nosnippet>247</a>                <span class="prelude-val">None</span>,
+<a href=#248 id=248 data-nosnippet>248</a>            ),
+<a href=#249 id=249 data-nosnippet>249</a>            (
+<a href=#250 id=250 data-nosnippet>250</a>                <span class="string">"a 13-digit number after a letter is content"</span>,
+<a href=#251 id=251 data-nosnippet>251</a>                <span class="string">"token: a1790137212675"</span>,
+<a href=#252 id=252 data-nosnippet>252</a>                <span class="string">"token: a1790837225831"</span>,
+<a href=#253 id=253 data-nosnippet>253</a>                <span class="prelude-val">None</span>,
+<a href=#254 id=254 data-nosnippet>254</a>            ),
+<a href=#255 id=255 data-nosnippet>255</a>            (
+<a href=#256 id=256 data-nosnippet>256</a>                <span class="string">"a time key followed by more digits is content"</span>,
+<a href=#257 id=257 data-nosnippet>257</a>                <span class="string">"\"lastUpdated\": 17901372126751"</span>,
+<a href=#258 id=258 data-nosnippet>258</a>                <span class="string">"\"lastUpdated\": 17908372258312"</span>,
+<a href=#259 id=259 data-nosnippet>259</a>                <span class="prelude-val">None</span>,
+<a href=#260 id=260 data-nosnippet>260</a>            ),
+<a href=#261 id=261 data-nosnippet>261</a>            (
+<a href=#262 id=262 data-nosnippet>262</a>                <span class="string">"text differs besides the dates"</span>,
+<a href=#263 id=263 data-nosnippet>263</a>                <span class="string">"modified: 2026-10-01T12:24:26Z\nnew paragraph\n"</span>,
+<a href=#264 id=264 data-nosnippet>264</a>                <span class="string">"modified: 2026-09-21T07:13:05Z\n"</span>,
+<a href=#265 id=265 data-nosnippet>265</a>                <span class="prelude-val">None</span>,
+<a href=#266 id=266 data-nosnippet>266</a>            ),
+<a href=#267 id=267 data-nosnippet>267</a>            (
+<a href=#268 id=268 data-nosnippet>268</a>                <span class="string">"a plain date in prose is content, not a timestamp"</span>,
+<a href=#269 id=269 data-nosnippet>269</a>                <span class="string">"since 2026-09-26"</span>,
+<a href=#270 id=270 data-nosnippet>270</a>                <span class="string">"since 2026-09-25"</span>,
+<a href=#271 id=271 data-nosnippet>271</a>                <span class="prelude-val">None</span>,
+<a href=#272 id=272 data-nosnippet>272</a>            ),
+<a href=#273 id=273 data-nosnippet>273</a>            (
+<a href=#274 id=274 data-nosnippet>274</a>                <span class="string">"a number of another length is content"</span>,
+<a href=#275 id=275 data-nosnippet>275</a>                <span class="string">"count: 12345"</span>,
+<a href=#276 id=276 data-nosnippet>276</a>                <span class="string">"count: 12346"</span>,
+<a href=#277 id=277 data-nosnippet>277</a>                <span class="prelude-val">None</span>,
+<a href=#278 id=278 data-nosnippet>278</a>            ),
+<a href=#279 id=279 data-nosnippet>279</a>            (
+<a href=#280 id=280 data-nosnippet>280</a>                <span class="string">"a date on one side only"</span>,
+<a href=#281 id=281 data-nosnippet>281</a>                <span class="string">"at 2026-10-01T07:00:00Z"</span>,
+<a href=#282 id=282 data-nosnippet>282</a>                <span class="string">"at never"</span>,
+<a href=#283 id=283 data-nosnippet>283</a>                <span class="prelude-val">None</span>,
+<a href=#284 id=284 data-nosnippet>284</a>            ),
+<a href=#285 id=285 data-nosnippet>285</a>        ];
+<a href=#286 id=286 data-nosnippet>286</a>
+<a href=#287 id=287 data-nosnippet>287</a>        <span class="kw">for </span>(name, local, remote, expected) <span class="kw">in </span>cases {
+<a href=#288 id=288 data-nosnippet>288</a>            <span class="kw">let </span>merged = keep_later_timestamps(local.as_bytes(), remote.as_bytes());
+<a href=#289 id=289 data-nosnippet>289</a>            <span class="kw">let </span>merged_text = merged.map(|bytes| String::from_utf8(bytes).unwrap());
+<a href=#290 id=290 data-nosnippet>290</a>            <span class="macro">assert_eq!</span>(
+<a href=#291 id=291 data-nosnippet>291</a>                merged_text.as_deref(),
+<a href=#292 id=292 data-nosnippet>292</a>                <span class="kw-2">*</span>expected,
+<a href=#293 id=293 data-nosnippet>293</a>                <span class="string">"{name}: {local:?} vs {remote:?}"
+<a href=#294 id=294 data-nosnippet>294</a>            </span>);
+<a href=#295 id=295 data-nosnippet>295</a>        }
+<a href=#296 id=296 data-nosnippet>296</a>    }
+<a href=#297 id=297 data-nosnippet>297</a>
+<a href=#298 id=298 data-nosnippet>298</a>    <span class="attr">#[test]
+<a href=#299 id=299 data-nosnippet>299</a>    </span><span class="kw">fn </span>binary_content_is_never_merged() {
+<a href=#300 id=300 data-nosnippet>300</a>        <span class="macro">assert_eq!</span>(keep_later_timestamps(<span class="kw-2">&amp;</span>[<span class="number">0xff</span>, <span class="number">0xfe</span>], <span class="kw-2">&amp;</span>[<span class="number">0xff</span>, <span class="number">0xfd</span>]), <span class="prelude-val">None</span>);
+<a href=#301 id=301 data-nosnippet>301</a>    }
+<a href=#302 id=302 data-nosnippet>302</a>}
+</code></pre></div></section></main></body></html>

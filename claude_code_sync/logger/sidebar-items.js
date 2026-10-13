@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["init_logger","log_to_file","rotate_log_if_needed"]};

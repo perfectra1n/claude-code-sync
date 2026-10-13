@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["PROTECTION_SENTINEL"],"fn":["entry_from_record_bytes","forget","hash_bytes","held_base","is_common_ancestor","is_dirty","is_record_path","load","record_path","restore_keys","save","save_delta"],"type":["BaseHashes"]};

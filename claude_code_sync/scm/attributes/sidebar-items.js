@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["ensure_lines","ensure_sync_attributes"]};
