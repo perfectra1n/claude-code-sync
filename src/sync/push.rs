@@ -383,6 +383,18 @@ pub fn push_history(
                 );
             }
         }
+        // A line removal from a MEMORY.md is user-visible content going
+        // away: the summary must carry it, not just the log. Same shape
+        // as the held-back list's one-line pointer.
+        let stripped = artifact_report.total_stripped_entries();
+        if stripped > 0 {
+            println!(
+                "    {} MEMORY.md: {} dangling index {} stripped (no machine has the target file)",
+                "→".cyan(),
+                stripped,
+                if stripped == 1 { "entry" } else { "entries" },
+            );
+        }
         println!();
     }
 
