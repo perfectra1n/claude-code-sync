@@ -32,6 +32,20 @@ fn read_memory(claude: &Path) -> String {
     fs::read_to_string(claude.join("projects/-home-a-work-app/memory/fact.md")).unwrap()
 }
 
+fn memory_index(claude: &Path, contents: &str) {
+    let path = claude.join("projects/-home-a-work-app/memory/MEMORY.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+}
+
+fn read_memory_index(claude: &Path) -> String {
+    fs::read_to_string(claude.join("projects/-home-a-work-app/memory/MEMORY.md")).unwrap()
+}
+
+fn repo_memory_index(repo: &Path) -> String {
+    fs::read_to_string(repo.join("projects/-home-a-work-app/memory/MEMORY.md")).unwrap()
+}
+
 /// Push from `claude`, then pull+apply into `claude`: both sides now agree,
 /// and both records (tracked, bases) describe that agreement.
 fn sync(claude: &Path, repo: &Path, filter: &FilterConfig) {
@@ -3340,4 +3354,144 @@ fn a_push_does_not_resurrect_a_file_the_remote_lost() {
         1,
         "the push report must surface the held-back file so the user can see the refusal"
     );
+}
+
+#[test]
+fn a_memory_index_deletion_does_not_resurrect_on_the_deleting_machine() {
+    // The resurrection loop: the file goes away on every machine (here:
+    // removed locally and from the repo by hand — what deletion
+    // mirroring automates once #110 lands), the bullet with it, and yet
+    // the next pull used to union the repo's bullet back over the clean
+    // local index, forever. The strip breaks the loop: once the target
+    // exists on no side, the merged result equals the clean local bytes
+    // and the pull classifies the index as unchanged.
+    let repo = TempDir::new().unwrap();
+    let machine = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    memory(machine.path(), "fact body\n");
+    memory_index(machine.path(), "- [fact](fact.md) the fact\n");
+    sync(machine.path(), repo.path(), &filter);
+
+    // Delete the file and its bullet locally.
+    fs::remove_file(
+        machine
+            .path()
+            .join("projects/-home-a-work-app/memory/fact.md"),
+    )
+    .unwrap();
+    memory_index(machine.path(), "");
+    // And propagate the file deletion to the repo (the git-side step
+    // the tool performs for mirrored categories).
+    fs::remove_file(repo.path().join("projects/-home-a-work-app/memory/fact.md")).unwrap();
+
+    // Pull: the old code resurrected the bullet here (union of a clean
+    // local index with the repo's copy still holding it). The stripped
+    // merge must classify the index as unchanged instead.
+    let plan = plan_pull(machine.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+    assert_eq!(
+        read_memory_index(machine.path()),
+        "",
+        "the deleted bullet must not come back"
+    );
+
+    // Push: the repo index still holds the bullet; the strip now finds
+    // the target on no side, drops it from the bytes it publishes, and
+    // reports the removal.
+    let report = push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+    assert!(
+        report.total_stripped_entries() >= 1,
+        "the strip is counted, not just logged"
+    );
+    assert!(
+        !repo_memory_index(repo.path()).contains("fact.md"),
+        "the repo index converges"
+    );
+}
+
+#[test]
+fn a_memory_index_deletion_converges_on_the_observing_machine() {
+    // The bug's other half: the machine that did NOT delete. Its file
+    // and bullet both still exist, so its first pull keeps the bullet —
+    // the entry is not dangling THERE (correct: the file is). Once the
+    // file goes on that machine too, one push strips the repo-bound
+    // bytes and the next pull cleans the local index. The intermediate
+    // state (bullet present, file gone) is pinned so the convergence
+    // bound — pull, push, pull — is locked in, not accidental.
+    let repo = TempDir::new().unwrap();
+    let machine_a = TempDir::new().unwrap();
+    let machine_b = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    memory(machine_a.path(), "fact body\n");
+    memory_index(machine_a.path(), "- [fact](fact.md) the fact\n");
+    sync(machine_a.path(), repo.path(), &filter);
+    sync(machine_b.path(), repo.path(), &filter);
+
+    // A deletes file + bullet everywhere (local, repo) and converges.
+    fs::remove_file(
+        machine_a
+            .path()
+            .join("projects/-home-a-work-app/memory/fact.md"),
+    )
+    .unwrap();
+    memory_index(machine_a.path(), "");
+    fs::remove_file(repo.path().join("projects/-home-a-work-app/memory/fact.md")).unwrap();
+    let plan = plan_pull(machine_a.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+    push_artifacts(
+        machine_a.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+    assert!(!repo_memory_index(repo.path()).contains("fact.md"));
+
+    // B pull #1: the bullet stays while the file still exists on B —
+    // the entry is not dangling on a machine that has the file.
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+    assert!(
+        read_memory_index(machine_b.path()).contains("fact.md"),
+        "the bullet survives while B still has the file"
+    );
+
+    // B deletes its file too.
+    fs::remove_file(
+        machine_b
+            .path()
+            .join("projects/-home-a-work-app/memory/fact.md"),
+    )
+    .unwrap();
+
+    // B push: strips the bullet from the bytes it would publish; the
+    // repo is already clean, so nothing is written, but the strip is
+    // counted and warned.
+    let report = push_artifacts(
+        machine_b.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+    assert!(report.total_stripped_entries() >= 1);
+
+    // B pull #2: the stripped merge now differs from B's local index,
+    // so the apply writes the clean bytes.
+    let plan = plan_pull(machine_b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+    assert_eq!(
+        read_memory_index(machine_b.path()),
+        "",
+        "B converges on the clean index"
+    );
+    assert_eq!(repo_memory_index(repo.path()), "");
 }

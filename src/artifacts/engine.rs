@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ use crate::scm::Backend;
 
 use super::bases::{self, BaseHashes};
 use super::denylist::{is_denied, is_unsafe_rel_path};
-use super::memory_index::{is_memory_index, merge_memory_index};
+use super::memory_index::{is_memory_index, merge_memory_index_checked};
 use super::registry::{
     CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR, REGISTRY,
 };
@@ -169,6 +169,56 @@ fn deleted_here_since_sync(
             .is_ok_and(|repo_bytes| repo_unchanged_since_sync(recorded, &repo_bytes))
 }
 
+/// Every file name (and nested relative path) visible under a MEMORY.md's
+/// directory, on both sides, for dangling-entry detection.
+///
+/// Deliberately a RAW listing — no size cap, no extension filter, no
+/// readability probe: a file the sync cannot publish (oversized,
+/// excluded, unreadable) still exists on its machine, and stripping its
+/// index entry would orphan it from the memory index on the very machine
+/// that holds it. The listing being wider than what the sync copies only
+/// ever keeps an entry alive, which is the safe direction.
+///
+/// Fail-closed: any read error on either side is an error, so the caller
+/// skips the strip for that MEMORY.md this round instead of stripping
+/// against a half-empty set (a dangling verdict on partial evidence is a
+/// permanent line deletion — the repo is the only source pulls union
+/// from).
+fn memory_dir_targets(
+    local_parent: Option<&Path>,
+    repo_parent: Option<&Path>,
+) -> Result<BTreeSet<String>> {
+    fn walk(dir: &Path, base: &Path, out: &mut BTreeSet<String>) -> Result<()> {
+        for entry in fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))? {
+            let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
+            let path = entry.path();
+            let metadata =
+                fs::metadata(&path).with_context(|| format!("stating {}", path.display()))?;
+            if metadata.is_dir() {
+                walk(&path, base, out)?;
+            } else if metadata.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    out.insert(name.to_string());
+                }
+                if let Ok(rel) = path.strip_prefix(base) {
+                    // Nested memory files sync (the category source is a
+                    // recursive dir walk); record their relative path too
+                    // even though bare-name targets are the only
+                    // strippable shape today.
+                    out.insert(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut out = BTreeSet::new();
+    for parent in [local_parent, repo_parent].into_iter().flatten() {
+        walk(parent, parent, &mut out)?;
+    }
+    Ok(out)
+}
+
 /// The sync-repo root directory for one category.
 fn category_repo_root(
     desc: &CategoryDescriptor,
@@ -209,6 +259,12 @@ pub struct CategoryCounts {
     /// New lines contributed by a union merge (prompt history).
     #[serde(default)]
     pub merged_entries: usize,
+    /// Index entries removed from a MEMORY.md because their link target
+    /// exists on no machine — the file was deleted (and mirrored) or the
+    /// target was a typo. Counted wherever the strip runs, whether or
+    /// not a write landed, so the summary never hides a line removal.
+    #[serde(default)]
+    pub stripped_entries: usize,
     /// Files removed because this machine synced them before and no longer has
     /// them (only for categories that mirror deletions).
     #[serde(default)]
@@ -244,6 +300,7 @@ impl CategoryCounts {
             unchanged: 0,
             skipped: 0,
             merged_entries: 0,
+            stripped_entries: 0,
             deleted: 0,
             kept_local: 0,
             pending_push: 0,
@@ -375,6 +432,14 @@ impl ArtifactReport {
     /// received) was preserved.
     pub fn total_held_back_remote_lost(&self) -> usize {
         self.counts.iter().map(|c| c.held_back_remote_lost).sum()
+    }
+
+    /// Index entries dropped from MEMORY.md files because their link
+    /// target exists on no machine. Surfaced like the other destructive
+    /// counters: a line removal the summary hides is a line removal the
+    /// user cannot audit.
+    pub fn total_stripped_entries(&self) -> usize {
+        self.counts.iter().map(|c| c.stripped_entries).sum()
     }
 
     /// The repo-relative paths of every file the 5ff1d62 push guard
@@ -801,8 +866,36 @@ pub fn push_artifacts(
                     if existed && unions_index {
                         match fs::read(&dest) {
                             Ok(dest_bytes) => {
-                                let (merged, new_entries) =
-                                    merge_memory_index(&dest_bytes, &src_bytes);
+                                // Dangling-entry strip: deletions now
+                                // mirror, so an entry whose file exists on
+                                // no machine is stale (deleted, or a typo
+                                // target that never matched anything).
+                                // Fail-closed on listing errors — see
+                                // `memory_dir_targets`.
+                                let known =
+                                    match memory_dir_targets(file.abs.parent(), dest.parent()) {
+                                        Ok(set) => set,
+                                        Err(e) => {
+                                            hold_back(
+                                                &mut counts,
+                                                &file.abs,
+                                                "memory dir unreadable",
+                                                &e,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let (merged, new_entries, stripped) =
+                                    merge_memory_index_checked(&dest_bytes, &src_bytes, &known);
+                                if stripped > 0 {
+                                    log::warn!(
+                                        "{}: dropped {} dangling index {} (no machine has the target file)",
+                                        file.rel.display(),
+                                        stripped,
+                                        if stripped == 1 { "entry" } else { "entries" },
+                                    );
+                                    counts.stripped_entries += stripped;
+                                }
                                 pending_entries = new_entries;
                                 src_bytes = merged;
                             }
@@ -1809,7 +1902,23 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                         }
                         continue;
                     }
-                    let (merged, _) = merge_memory_index(&local_bytes, &repo_bytes);
+                    // Classification only — the apply re-derives the set
+                    // fresh and owns the counter. The plan must classify
+                    // with the strip applied or it promises a union the
+                    // apply then does not write (stripped == local).
+                    let known = match memory_dir_targets(local_path.parent(), repo_path.parent()) {
+                        Ok(set) => set,
+                        Err(e) => {
+                            log::warn!(
+                                "Skipping {} (memory dir unreadable): {e}",
+                                local_path.display()
+                            );
+                            plan.skipped += 1;
+                            continue;
+                        }
+                    };
+                    let (merged, _, _) =
+                        merge_memory_index_checked(&local_bytes, &repo_bytes, &known);
                     if merged != local_bytes {
                         plan.unions.push(write);
                     } else {
@@ -3180,8 +3289,45 @@ pub fn apply_pull(plan: &PullPlan, interactive: bool) -> Result<ArtifactReport> 
                 continue;
             }
         };
+        // The dangling-entry strip needs the dir listing before the
+        // merge dispatch (the value-producing match below cannot
+        // `continue`). Fail-closed like the read above: no listing, no
+        // strip, no write this round.
+        let index_known_targets = if desc.merge == MergeStrategy::UnionMemoryIndex
+            && is_memory_index(&write.local_path)
+        {
+            match memory_dir_targets(write.local_path.parent(), write.repo_path.parent()) {
+                Ok(set) => Some(set),
+                Err(e) => {
+                    log::warn!(
+                        "Skipping {} (memory dir unreadable): {e}",
+                        write.local_path.display()
+                    );
+                    skip_unfinished_write(&mut by_category, &mut report, write);
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         let (merged, new_entries) = match desc.merge {
-            MergeStrategy::UnionMemoryIndex => merge_memory_index(&local_bytes, &repo_bytes),
+            MergeStrategy::UnionMemoryIndex => {
+                let known = index_known_targets
+                    .as_ref()
+                    .expect("UnionMemoryIndex arm implies the listing was built");
+                let (merged, added, stripped) =
+                    merge_memory_index_checked(&local_bytes, &repo_bytes, known);
+                if stripped > 0 {
+                    log::warn!(
+                        "{}: dropped {} dangling index {} (no machine has the target file)",
+                        write.local_path.display(),
+                        stripped,
+                        if stripped == 1 { "entry" } else { "entries" },
+                    );
+                    counts_for(&mut by_category, write.category).stripped_entries += stripped;
+                }
+                (merged, added)
+            }
             _ => {
                 // Strict UTF-8 decode — `from_utf8_lossy` would silently
                 // substitute invalid sequences with U+FFFD, corrupting
