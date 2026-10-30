@@ -15,6 +15,11 @@ const DENIED_FILE_NAMES: &[&str] = &[
     "stats-cache.json",
     ".last-update-result.json",
     "mcp-needs-auth-cache.json",
+    // Claude Code's auto-mode classifier dumps this into the session
+    // directory when its LLM call fails. The dump carries the classifier's
+    // full system prompt and a large slice of the session context — debug
+    // output, not user content, and embarrassing to publish in a sync repo.
+    "auto-mode-classifier-error.txt",
 ];
 
 /// File extensions that must never sync (key material).
@@ -152,6 +157,16 @@ mod tests {
         assert!(is_denied(Path::new("stats-cache.json")));
         assert!(is_denied(Path::new(".last-update-result.json")));
         assert!(is_denied(Path::new("mcp-needs-auth-cache.json")));
+    }
+
+    #[test]
+    fn test_denies_auto_mode_classifier_dumps_in_any_session() {
+        // Session files live under projects/<project>/<session>/; the name
+        // is denied wherever it appears.
+        assert!(is_denied(Path::new("auto-mode-classifier-error.txt")));
+        assert!(is_denied(Path::new(
+            "projects/-home-x-app/session-uuid/auto-mode-classifier-error.txt"
+        )));
     }
 
     #[test]
