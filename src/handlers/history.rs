@@ -176,6 +176,12 @@ pub fn handle_history_last(operation_type: Option<&str>) -> Result<()> {
             if counts.merged_entries > 0 {
                 parts.push(format!("{} lines merged", counts.merged_entries));
             }
+            if counts.stripped_entries > 0 {
+                parts.push(format!(
+                    "{} index entries stripped (target files gone)",
+                    counts.stripped_entries
+                ));
+            }
             if counts.held_back_remote_lost > 0 {
                 parts.push(format!(
                     "{} held back (remote lost)",

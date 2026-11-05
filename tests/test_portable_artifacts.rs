@@ -138,8 +138,16 @@ fn a_memory_index_gains_the_other_machines_entries_instead_of_losing_them() {
         "# Index\n\n- [a](a.md) from A\n",
     );
     write(
+        &project_memory(machine_a.path(), "-home-a-app", "a.md"),
+        "a\n",
+    );
+    write(
         &project_memory(machine_b.path(), "-home-b-app", "MEMORY.md"),
         "# Index\n\n- [z](z.md) from B\n",
+    );
+    write(
+        &project_memory(machine_b.path(), "-home-b-app", "z.md"),
+        "z\n",
     );
 
     push_artifacts(

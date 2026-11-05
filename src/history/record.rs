@@ -146,6 +146,7 @@ mod tests {
             unchanged: 0,
             skipped: 0,
             merged_entries: 0,
+            stripped_entries: 0,
             deleted: 0,
             kept_local: 0,
             pending_push: 0,
