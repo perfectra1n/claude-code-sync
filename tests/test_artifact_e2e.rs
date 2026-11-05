@@ -790,3 +790,78 @@ fn test_sync_keeps_a_clean_held_file_from_overwriting_repo() {
         "B's unrelated new skill reached the repo: {repo_other}"
     );
 }
+
+#[test]
+#[serial]
+fn push_resurrect_escapes_the_remote_lost_guard_through_the_real_entry_point() {
+    // The 5ff1d62 escape hatch, exercised through the real `push_history`
+    // entry point — not the helpers it forwards into. The call site must
+    // root the tracked record at the Claude home (`CLAUDE_CODE_SYNC_CLAUDE_DIR`);
+    // when it rooted at `~/.claude/projects` instead, the record read as
+    // empty and every resurrect attempt failed with "cannot resurrect
+    // paths that are not in the tracked record" for a path that IS in
+    // the record. This test fails exactly there on that old shape.
+    let _restore = EnvRestore::capture();
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let machine = Machine::new(repo.path());
+    machine.activate();
+
+    // Seed one per-project memory file and sync it once.
+    let mem = machine
+        .claude()
+        .join("projects/-home-x/memory/feedback_x.md");
+    fs::create_dir_all(mem.parent().unwrap()).unwrap();
+    fs::write(&mem, "first version\n").unwrap();
+    push_history(
+        Some("e2e resurrect initial"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+        &[] as &[String],
+    )
+    .unwrap();
+
+    // The remote loses the file (another machine deleted and pushed).
+    let repo_file = repo.path().join("projects/-home-x/memory/feedback_x.md");
+    fs::remove_file(&repo_file).unwrap();
+
+    // The escape hatch: resurrect through the real push entry point.
+    push_history(
+        Some("e2e resurrect"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+        &["projects/-home-x/memory/feedback_x.md".to_string()],
+    )
+    .unwrap();
+
+    // The follow-up push republishes the file the guard was holding back.
+    let report = push_history(
+        Some("e2e resurrect republish"),
+        false,
+        None,
+        false,
+        false,
+        VerbosityLevel::Quiet,
+        &std::collections::HashSet::new(),
+        &[] as &[String],
+    )
+    .unwrap();
+    assert!(
+        repo_file.is_file(),
+        "the resurrected file must be republished by the next push"
+    );
+    assert_eq!(
+        fs::read_to_string(&repo_file).unwrap(),
+        "first version\n",
+        "the republished bytes are the local copy"
+    );
+    let _ = report;
+}
