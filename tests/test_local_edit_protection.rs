@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 use claude_code_sync::artifacts::bases;
 use claude_code_sync::artifacts::engine::{apply_pull, plan_pull, push_artifacts};
@@ -3339,5 +3340,84 @@ fn a_push_does_not_resurrect_a_file_the_remote_lost() {
         report.total_held_back_remote_lost(),
         1,
         "the push report must surface the held-back file so the user can see the refusal"
+    );
+}
+
+#[test]
+fn the_held_back_and_resurrect_helpers_root_the_record_at_the_claude_home() {
+    // `status --held-back` and `push --resurrect` both forward a
+    // `claude_dir` into `plan_held_back_remote_lost` /
+    // `prepare_resurrection`. Those helpers read the tracked record
+    // directly under the passed root (`~/.claude`), and collect
+    // artifacts from it too — so the callers must pass the Claude
+    // HOME, not `~/.claude/projects`. This pins that contract: the
+    // helpers work against the home root and fail against the
+    // projects root, which is the failure shape the wrong call
+    // site produced ("cannot resurrect paths that are not in the
+    // tracked record" for a path that IS in the record, and an
+    // always-empty held-back list).
+    let repo = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    // Seed: a per-project memory file, synced once, then lost from
+    // the repo (another machine deleted it).
+    let mem = home.path().join("projects/-home-x/memory/feedback_x.md");
+    fs::create_dir_all(mem.parent().unwrap()).unwrap();
+    fs::write(&mem, "first version\n").unwrap();
+    push_artifacts(
+        home.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+    let repo_file = repo.path().join("projects/-home-x/memory/feedback_x.md");
+    fs::remove_file(&repo_file).unwrap();
+
+    let repo_rel = "projects/-home-x/memory/feedback_x.md";
+
+    // Discovery: the held-back plan, rooted at the home, must see the
+    // tracked entry and report the remote-lost file.
+    let held = claude_code_sync::artifacts::engine::plan_held_back_remote_lost(
+        home.path(),
+        repo.path(),
+        &filter,
+    )
+    .unwrap();
+    assert_eq!(
+        held.len(),
+        1,
+        "status --held-back must surface the remote-lost tracked file"
+    );
+    assert_eq!(held[0].1, PathBuf::from(repo_rel));
+
+    // Rescue: prepare_resurrection, rooted at the home, accepts the
+    // path and drops it from the record — the next push republishes.
+    claude_code_sync::artifacts::engine::prepare_resurrection(
+        home.path(),
+        repo.path(),
+        &[repo_rel.to_string()],
+    )
+    .unwrap();
+    let remaining = claude_code_sync::artifacts::tracked::load(home.path(), repo.path());
+    assert!(
+        !remaining.contains(repo_rel),
+        "the resurrected path must leave the tracked record"
+    );
+
+    // The wrong root (`~/.claude/projects`) reads no record at all:
+    // the same call fails there. This is the shape a wrong call site
+    // produces — pinned so the contract above has a visible contrast.
+    let wrong_root = home.path().join("projects");
+    let err = claude_code_sync::artifacts::engine::prepare_resurrection(
+        &wrong_root,
+        repo.path(),
+        &[repo_rel.to_string()],
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("not in the tracked record"),
+        "the projects root reads an empty record and must refuse: {err}"
     );
 }

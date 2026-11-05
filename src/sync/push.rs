@@ -190,7 +190,10 @@ pub fn push_history(
     // or a path that was never held back. The user-facing discovery is
     // `claude-code-sync status --held-back`.
     if !resurrect.is_empty() {
-        let claude_dir = claude_projects_dir()?;
+        // The tracked record lives directly under `~/.claude`
+        // (`claude_home_dir`), not under `projects/` — pass the home root
+        // like the artifact push itself does below.
+        let claude_dir = claude_home_dir()?;
         crate::artifacts::engine::prepare_resurrection(
             &claude_dir,
             &state.sync_repo_path,
