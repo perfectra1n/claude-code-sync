@@ -424,7 +424,13 @@ fn a_remote_change_to_one_file_does_not_touch_a_local_edit_to_another() {
 #[test]
 fn a_memory_index_edited_on_both_machines_keeps_the_local_entry() {
     let index = "projects/-home-a-work-app/memory/MEMORY.md";
-    let (repo, a, b) = two_machines_in_sync(&[(index, "- [shared](shared.md) v1\n")]);
+    // The seeded bullet needs its file on at least one machine: an entry
+    // whose target exists nowhere is stale by contract (the dangling-entry
+    // strip), and the push converges that strip onto the local copy too.
+    let (repo, a, b) = two_machines_in_sync(&[
+        (index, "- [shared](shared.md) v1\n"),
+        ("projects/-home-a-work-app/memory/shared.md", "v1\n"),
+    ]);
     write(
         &a.path().join(index),
         "- [shared](shared.md) v1\n- [a](a.md) from A\n",
@@ -745,10 +751,22 @@ fn an_identical_memory_index_without_a_base_is_not_held_forever() {
 #[test]
 fn a_memory_index_union_merge_is_declared_for_undo() {
     let index = "projects/-home-a-work-app/memory/MEMORY.md";
-    let (repo, a, b) = two_machines_in_sync(&[(index, "- [a](a.md) one\n")]);
+    // The seeded bullet needs its file on at least one machine, or the
+    // dangling-entry strip treats it as stale (see
+    // a_memory_index_edited_on_both_machines_keeps_the_local_entry).
+    let (repo, a, b) = two_machines_in_sync(&[
+        (index, "- [a](a.md) one\n"),
+        ("projects/-home-a-work-app/memory/a.md", "one\n"),
+    ]);
     write(
         &a.path().join(index),
         "- [a](a.md) one\n- [b](b.md) from A\n",
+    );
+    // A's new bullet needs its file too, or the strip drops it before the
+    // union ever reaches B.
+    write(
+        &a.path().join("projects/-home-a-work-app/memory/b.md"),
+        "b\n",
     );
     sync(a.path(), repo.path());
 

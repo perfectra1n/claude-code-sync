@@ -3495,3 +3495,65 @@ fn a_memory_index_deletion_converges_on_the_observing_machine() {
     );
     assert_eq!(repo_memory_index(repo.path()), "");
 }
+
+#[test]
+fn a_push_that_strips_dangling_entries_converges_the_local_index_and_its_base() {
+    // The push-side sanitizer writes the stripped index to the repo. The
+    // base record must then anchor those sanitized bytes — recording the
+    // pre-strip local bytes instead made every later push read the file
+    // as clean (local == base) while the repo held different content:
+    // a silent, permanent local-vs-repo divergence, and each later cycle
+    // re-stripped the same lines. Two halves pin the fix: the local file
+    // converges onto the sanitized content (same statement about both
+    // sides), and the base anchors the converged bytes so the next push
+    // is a no-op. A section-pointer entry (`(global)`, a CLAUDE.md
+    // heading rather than a file) must survive all of it untouched.
+    let repo = TempDir::new().unwrap();
+    let machine = TempDir::new().unwrap();
+    let filter = all_on_filter();
+
+    let with_dangling = "# Index\n\n- [x](global) pointer\n- [dead](dead.md) D\n";
+    memory_index(machine.path(), with_dangling);
+    memory_index(repo.path(), with_dangling);
+
+    push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+
+    let sanitized = "# Index\n\n- [x](global) pointer\n";
+    assert_eq!(
+        read_memory_index(machine.path()),
+        sanitized,
+        "the local index converges onto the sanitized content"
+    );
+    assert_eq!(
+        repo_memory_index(repo.path()),
+        sanitized,
+        "the repo copy is the sanitized content"
+    );
+    let recorded = bases::load(machine.path(), repo.path());
+    assert_eq!(
+        recorded.get("projects/-home-a-work-app/memory/MEMORY.md"),
+        Some(&bases::hash_bytes(sanitized.as_bytes())),
+        "the base anchors the converged bytes, not the pre-strip local ones"
+    );
+
+    // The whole point: the next push is a no-op — no re-strip, no churn.
+    let report = push_artifacts(
+        machine.path(),
+        repo.path(),
+        &filter,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        report.total_stripped_entries(),
+        0,
+        "already converged: nothing left to strip"
+    );
+    assert_eq!(repo_memory_index(repo.path()), sanitized);
+}

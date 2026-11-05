@@ -895,6 +895,31 @@ pub fn push_artifacts(
                                         if stripped == 1 { "entry" } else { "entries" },
                                     );
                                     counts.stripped_entries += stripped;
+                                    // Converge: the strip is a statement about
+                                    // the whole index ("no machine has this
+                                    // target"), so the local copy carries the
+                                    // same stale bullet and would diverge from
+                                    // the sanitized repo copy forever. Rewrite
+                                    // the local file FIRST — if that fails,
+                                    // hold the file back entirely rather than
+                                    // publishing a repo copy the base record
+                                    // cannot describe.
+                                    let sanitized_hash = bases::hash_bytes(&merged);
+                                    if let Err(e) = fs::write(&file.abs, &merged) {
+                                        hold_back(
+                                            &mut counts,
+                                            &file.abs,
+                                            "local index rewrite failed",
+                                            &e,
+                                        );
+                                        continue;
+                                    }
+                                    // The base anchors the bytes both sides now
+                                    // hold — recording the pre-strip local
+                                    // bytes would make every later push read
+                                    // this file as dirty and re-strip the
+                                    // already-converged content.
+                                    base_hash = Some(sanitized_hash);
                                 }
                                 pending_entries = new_entries;
                                 src_bytes = merged;

@@ -123,6 +123,13 @@ fn strippable_target(target: &str) -> Option<&str> {
     }) {
         return None;
     }
+    // Only a memory-document file name is this sanitizer's business. A
+    // bare non-`.md` target is a section pointer (`(global)` pointing at
+    // a CLAUDE.md heading), not a lost sibling file — dropping it would
+    // delete real content on every machine.
+    if !base.to_ascii_lowercase().ends_with(".md") {
+        return None;
+    }
     Some(base)
 }
 
@@ -326,6 +333,8 @@ mod tests {
             "- [parens](my(file).md) parens\n",
             "- [first](https://x) then [a](a.md) dual-link\n",
             "- [empty]() empty\n",
+            "- [pointer](global) section pointer, not a file\n",
+            "- [txt](notes.txt) not a memory document\n",
             "- no link bullet\n",
         )
         .as_bytes();
