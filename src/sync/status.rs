@@ -179,8 +179,11 @@ pub fn show_status(show_conflicts: bool, show_files: bool, held_back: bool) -> R
     if held_back {
         println!();
         println!("{}", "Files the 5ff1d62 push guard would refuse:".bold());
+        // Artifact collection and the tracked record both root at
+        // `~/.claude` (`claude_home_dir`), not at `projects/` — the same
+        // root the Artifacts section above already uses for `plan_pull`.
         let held = crate::artifacts::engine::plan_held_back_remote_lost(
-            &claude_dir,
+            &super::discovery::claude_home_dir()?,
             &state.sync_repo_path,
             &filter,
         )?;
