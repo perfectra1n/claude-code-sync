@@ -125,6 +125,46 @@ pub fn show_status(show_conflicts: bool, show_files: bool, held_back: bool) -> R
                 .yellow()
             );
         }
+        // Kept-local files: edited here while the repo moved on. The
+        // category counts above fold them into "differ" — invisible as a
+        // set, and the pull's one-line hint is gone by the time anyone
+        // runs status. List them and name the exact command: sync's own
+        // push honors the hold, only a bare push publishes.
+        if !plan.kept_local.is_empty() {
+            println!();
+            println!(
+                "{}",
+                "Kept local (edited here while the repo moved on):".bold()
+            );
+            for write in plan.kept_local.iter().take(20) {
+                println!("    {}", write.category_path.display());
+            }
+            if plan.kept_local.len() > 20 {
+                println!("    ... and {} more", plan.kept_local.len() - 20);
+            }
+            println!(
+                "    Publish with: {} ({})",
+                "claude-code-sync push".bold(),
+                "sync keeps them held back".dimmed()
+            );
+        }
+        // Orphaned memory files: content on disk that no index in the
+        // same directory references. Invisible by construction — indexes
+        // are all that summaries and other machines ever read.
+        let orphans = crate::artifacts::memory_index::orphaned_memory_files(&claude_home);
+        if !orphans.is_empty() {
+            println!();
+            println!(
+                "{}",
+                "Orphaned memory files (no index references them):".bold()
+            );
+            for path in orphans.iter().take(20) {
+                println!("    {}", path.display());
+            }
+            if orphans.len() > 20 {
+                println!("    ... and {} more", orphans.len() - 20);
+            }
+        }
     } else {
         println!(
             "  {}",

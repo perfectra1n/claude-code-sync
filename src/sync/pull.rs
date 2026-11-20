@@ -807,7 +807,8 @@ pub fn pull_history(
             );
         } else {
             println!(
-                "  {} {} file{plural} kept local: edited here since the last sync — push to publish",
+                "  {} {} file{plural} kept local: edited here since the last sync — \
+                 run `claude-code-sync push` to publish (NOT sync: sync's push keeps them held back)",
                 "✋".yellow(),
                 kept,
             );
