@@ -28,10 +28,27 @@ pub fn is_memory_index(path: &std::path::Path) -> bool {
 }
 
 fn link_target(line: &str) -> Option<String> {
-    let start = line.find("](")? + 2;
-    let rest = &line[start..];
-    let end = rest.find(')')?;
-    Some(rest[..end].to_string())
+    link_targets(line).into_iter().next()
+}
+
+/// Every markdown link target on the line, left to right. A compacted
+/// line is not one reference: the grouped-line strip judges all of them,
+/// and taking only the first `](` would key the whole bundle on a
+/// single pointer.
+fn link_targets(line: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("](") {
+        let after = &rest[start + 2..];
+        match after.find(')') {
+            Some(end) => {
+                targets.push(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+            None => break,
+        }
+    }
+    targets
 }
 
 fn parse(text: &str) -> Vec<IndexLine> {
@@ -96,6 +113,116 @@ pub fn merge_memory_index(dest: &[u8], incoming: &[u8]) -> (Vec<u8>, usize) {
     }
 
     (merged.into_bytes(), added)
+}
+
+/// A link target eligible for dangling-entry detection, in normalized
+/// form. The raw `link_target` string is whatever sits between the first
+/// `](` and the next `)` — URLs, `#anchor` suffixes, `./` prefixes,
+/// percent-encoded or parenthesized names, subdirectory paths. Only a
+/// target that normalizes to a bare file name (no separators, no scheme,
+/// no encoding artifacts) can be matched against a directory listing
+/// safely; every other shape is exempt from stripping, because a wrong
+/// drop is permanent (the repo is the only source pulls union from).
+fn strippable_target(target: &str) -> Option<&str> {
+    let stripped_prefix = target.strip_prefix("./").unwrap_or(target);
+    let base = match stripped_prefix.split_once('#') {
+        Some((base, _anchor)) => base,
+        None => stripped_prefix,
+    };
+    if base.is_empty() || base == "." || base == ".." {
+        return None;
+    }
+    if base.chars().any(|c| {
+        matches!(
+            c,
+            '/' | '\\' | ':' | '%' | '(' | ')' | '<' | '>' | '?' | '&' | '='
+        )
+    }) {
+        return None;
+    }
+    // Only a memory-document file name is this sanitizer's business. A
+    // bare non-`.md` target is a section pointer (`(global)` pointing at
+    // a CLAUDE.md heading), not a lost sibling file — dropping it would
+    // delete real content on every machine.
+    if !base.to_ascii_lowercase().ends_with(".md") {
+        return None;
+    }
+    Some(base)
+}
+
+/// Remove entry lines whose link target exists in no `known_targets`
+/// set (the raw file listings of both sides). Headings, blank lines,
+/// prose and bullets without a strippable target pass through. Returns
+/// the stripped bytes and how many entries were dropped.
+pub fn strip_dangling_entries(bytes: &[u8], known_targets: &BTreeSet<String>) -> (Vec<u8>, usize) {
+    let (stripped, dropped) = strip_dangling_with_targets(bytes, known_targets);
+    (stripped, dropped.len())
+}
+
+fn strip_dangling_with_targets(
+    bytes: &[u8],
+    known_targets: &BTreeSet<String>,
+) -> (Vec<u8>, Vec<String>) {
+    let mut kept = String::new();
+    let mut dropped = Vec::new();
+    for line in String::from_utf8_lossy(bytes).lines() {
+        // A grouped line carries several pointers: it is dropped only
+        // when EVERY link on it is a strippable, dangling target — one
+        // alive pointer pins the whole line (conservative: a wrong drop
+        // is permanent, a kept line costs one stale pointer).
+        let targets = link_targets(line);
+        let dangling: std::collections::BTreeSet<String> = targets
+            .iter()
+            .filter_map(|target| {
+                strippable_target(target)
+                    .map(|base| base.to_string())
+                    .filter(|base| !known_targets.contains(base))
+            })
+            .collect();
+        // An exempt link (URL, anchor-only, subdirectory, section
+        // pointer) is a pointer we do not judge: its presence keeps the
+        // line, whatever the other links look like. A repeated target is
+        // one stale pointer, not two — deduped by the set.
+        if line.starts_with("- ") && !targets.is_empty() && dangling.len() == targets.len() {
+            dropped.extend(dangling);
+        } else {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    (kept.into_bytes(), dropped)
+}
+
+/// Union-merge, then drop entries whose target exists on no side. The
+/// single entry point the engine uses for memory indexes, so no call
+/// site can merge without stripping. The `added` count is corrected for
+/// entries the strip removed (the merged-entries counter must describe
+/// the bytes that actually landed).
+pub fn merge_memory_index_checked(
+    dest: &[u8],
+    incoming: &[u8],
+    known_targets: &BTreeSet<String>,
+) -> (Vec<u8>, usize, usize) {
+    let dest_targets: BTreeSet<String> = parse(&String::from_utf8_lossy(dest))
+        .iter()
+        .filter_map(|line| match line {
+            IndexLine::Entry { target, .. } => Some(target.clone()),
+            IndexLine::Other(_) => None,
+        })
+        .collect();
+
+    let (merged, added) = merge_memory_index(dest, incoming);
+    let (stripped_bytes, dropped) = strip_dangling_with_targets(&merged, known_targets);
+    let newly_added_dropped = dropped
+        .iter()
+        .filter(|target| !dest_targets.contains(*target))
+        .count();
+
+    (
+        stripped_bytes,
+        added.saturating_sub(newly_added_dropped),
+        dropped.len(),
+    )
 }
 
 #[cfg(test)]
@@ -184,5 +311,144 @@ mod tests {
         let text = String::from_utf8(merged).unwrap();
         assert!(text.contains("NEW") && !text.contains("OLD"));
         assert_eq!(added, 1);
+    }
+
+    fn targets(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn a_dangling_entry_is_dropped_when_no_side_has_the_file() {
+        let index = b"# Index\n\n- [a](a.md) hook A\n- [gone](gone.md) hook gone\n";
+        let (stripped, dropped) = strip_dangling_entries(index, &targets(&["a.md"]));
+        let text = String::from_utf8(stripped).unwrap();
+        assert!(text.contains("[a](a.md)"), "live entry survives: {text}");
+        assert!(!text.contains("gone.md"), "dangling entry dropped: {text}");
+        assert!(text.contains("# Index"), "headings survive");
+        assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn an_entry_present_on_either_side_is_kept() {
+        let index = b"- [a](a.md) A\n- [b](b.md) B\n";
+        // a.md exists on the "local" side only, b.md on the "repo" side
+        // only — the engine unions both listings before calling.
+        let (stripped, dropped) = strip_dangling_entries(index, &targets(&["a.md", "b.md"]));
+        let text = String::from_utf8(stripped).unwrap();
+        assert!(text.contains("[a](a.md)") && text.contains("[b](b.md)"));
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn stripping_is_idempotent() {
+        let index = b"# Index\n\n- [a](a.md) A\n- [gone](gone.md) G\n";
+        let (once, _) = strip_dangling_entries(index, &targets(&["a.md"]));
+        let (twice, dropped) = strip_dangling_entries(&once, &targets(&["a.md"]));
+        assert_eq!(once, twice);
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn non_filename_targets_are_exempt_from_stripping() {
+        // A wrong drop is permanent (the repo is the only source pulls
+        // union from), so anything that is not a bare file name is kept.
+        let index = concat!(
+            "- [spec](https://example.com/s) spec\n",
+            "- [wiki](<my file.md>) spaced\n",
+            "- [enc](my%20file.md) encoded\n",
+            "- [sub](notes/sub.md) nested\n",
+            "- [up](../shared.md) outside\n",
+            "- [parens](my(file).md) parens\n",
+            "- [first](https://x) then [a](a.md) dual-link\n",
+            "- [empty]() empty\n",
+            "- [pointer](global) section pointer, not a file\n",
+            "- [txt](notes.txt) not a memory document\n",
+            "- no link bullet\n",
+        )
+        .as_bytes();
+        let (stripped, dropped) = strip_dangling_entries(index, &targets(&[]));
+        let text = String::from_utf8(stripped).unwrap();
+        for needle in [
+            "https://example.com/s",
+            "<my file.md>",
+            "my%20file.md",
+            "notes/sub.md",
+            "../shared.md",
+            "my(file).md",
+            "empty]()",
+            "no link bullet",
+        ] {
+            assert!(text.contains(needle), "exempt shape kept: {needle}");
+        }
+        assert_eq!(dropped, 0, "nothing strippable in this index");
+    }
+
+    #[test]
+    fn an_anchor_suffix_normalizes_to_the_base_file_name() {
+        let index = b"- [a](a.md#section) anchored\n- [dead](dead.md#x) anchored dead\n";
+        let (stripped, dropped) = strip_dangling_entries(index, &targets(&["a.md"]));
+        let text = String::from_utf8(stripped).unwrap();
+        assert!(text.contains("a.md#section"), "live anchored entry kept");
+        assert!(!text.contains("dead.md"), "dead anchored entry dropped");
+        assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn checked_reports_added_entries_the_strip_actually_kept() {
+        let dest = b"- [a](a.md) A\n";
+        let incoming = b"- [a](a.md) A\n- [ghost](ghost.md) G\n- [live](live.md) L\n";
+        let (merged, added, stripped) =
+            merge_memory_index_checked(dest, incoming, &targets(&["a.md", "live.md"]));
+        let text = String::from_utf8(merged).unwrap();
+        assert!(text.contains("[live](live.md)"), "live new entry lands");
+        assert!(!text.contains("ghost.md"), "dangling new entry dropped");
+        assert_eq!(added, 1, "the dropped ghost must not count as merged");
+        assert_eq!(stripped, 1);
+    }
+
+    #[test]
+    fn checked_strips_a_dangling_entry_the_dest_already_had() {
+        let dest = b"# I\n\n- [gone](gone.md) G\n";
+        let incoming = b"";
+        let (merged, added, stripped) = merge_memory_index_checked(dest, incoming, &targets(&[]));
+        let text = String::from_utf8(merged).unwrap();
+        assert!(!text.contains("gone.md"));
+        assert_eq!(added, 0);
+        assert_eq!(stripped, 1);
+    }
+}
+
+#[cfg(test)]
+mod strip_grouped_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn targets(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_grouped_line_is_stripped_only_when_all_its_pointers_are_dangling() {
+        // One dangling pointer among alive ones: dropping the line would
+        // delete live pointers. The strip is conservative — a grouped
+        // line survives unless every link on it is dangling.
+        let index = b"- [bundle](alive.md) - [dead](dead.md); [alive2](alive2.md)\n";
+        let (stripped, dropped) =
+            strip_dangling_entries(index, &targets(&["alive.md", "alive2.md"]));
+        assert_eq!(dropped, 0, "the bundle keeps its live pointers");
+        assert!(String::from_utf8(stripped).unwrap().contains("dead.md"));
+    }
+
+    #[test]
+    fn a_grouped_line_with_every_link_dangling_is_dropped() {
+        let index = b"- [bundle](dead1.md) - [dead2](dead2.md)\n- [alive](alive.md) A\n";
+        let (stripped, dropped) = strip_dangling_entries(index, &targets(&["alive.md"]));
+        let text = String::from_utf8(stripped).unwrap();
+        assert!(
+            !text.contains("dead1.md"),
+            "all-dangling bundle dropped: {text}"
+        );
+        assert!(text.contains("alive.md"));
+        assert_eq!(dropped, 2);
     }
 }
