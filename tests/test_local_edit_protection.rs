@@ -3341,3 +3341,131 @@ fn a_push_does_not_resurrect_a_file_the_remote_lost() {
         "the push report must surface the held-back file so the user can see the refusal"
     );
 }
+
+/// Seed one project memory index (plus the target file its bullets point
+/// at) into a machine home.
+fn seed_index(root: &Path, index_text: &str, files: &[(&str, &str)]) {
+    let index = root.join("projects/-home-a-work-app/memory/MEMORY.md");
+    fs::create_dir_all(index.parent().unwrap()).unwrap();
+    fs::write(index, index_text).unwrap();
+    for (rel, text) in files {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+}
+
+fn read_index(root: &Path) -> String {
+    fs::read_to_string(root.join("projects/-home-a-work-app/memory/MEMORY.md")).unwrap()
+}
+
+#[test]
+fn diverged_memory_indexes_converge_when_the_union_clobbers_nothing() {
+    // Both machines edit their index in parallel — additions only, no
+    // shared-key conflict. The pull must UNION instead of holding the
+    // file back: the merge preserves every local line, so converging
+    // loses nothing, and one sync settles what a held-back file would
+    // otherwise keep diverged forever (three pulls, zero convergence).
+    let repo = TempDir::new().unwrap();
+    let a = TempDir::new().unwrap();
+    let b = TempDir::new().unwrap();
+    let filter = all_on_filter();
+    let no_skip = std::collections::HashSet::new();
+
+    let seed = "# Index\n\n- [shared](shared.md) v1\n";
+    let shared = ("projects/-home-a-work-app/memory/shared.md", "v1\n");
+    seed_index(a.path(), seed, &[shared]);
+    seed_index(b.path(), seed, &[shared]);
+    // Shared base: A pushes, B pulls and pushes back (still identical).
+    push_artifacts(a.path(), repo.path(), &filter, &no_skip).unwrap();
+    let plan = plan_pull(b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+    push_artifacts(b.path(), repo.path(), &filter, &no_skip).unwrap();
+
+    // Parallel additions: A pushes its entry; B edits locally.
+    seed_index(
+        a.path(),
+        "# Index\n\n- [shared](shared.md) v1\n- [from-a](from-a.md) A\n",
+        &[("projects/-home-a-work-app/memory/from-a.md", "a\n")],
+    );
+    push_artifacts(a.path(), repo.path(), &filter, &no_skip).unwrap();
+    seed_index(
+        b.path(),
+        "# Index\n\n- [shared](shared.md) v1\n- [from-b](from-b.md) B\n",
+        &[("projects/-home-a-work-app/memory/from-b.md", "b\n")],
+    );
+
+    // THE contract: no hold — the union clobbers nothing, so converge.
+    let plan = plan_pull(b.path(), repo.path(), &filter).unwrap();
+    assert!(
+        plan.kept_local.is_empty(),
+        "additions-only divergence must not be held back"
+    );
+    assert_eq!(plan.unions.len(), 1, "the diverged index must union");
+    apply_pull(&plan, false).unwrap();
+    let on_b = read_index(b.path());
+    assert!(
+        on_b.contains("from-a") && on_b.contains("from-b"),
+        "one pull converges both sides' entries: {on_b}"
+    );
+
+    // The push publishes the union; the repo holds both entries too.
+    push_artifacts(b.path(), repo.path(), &filter, &no_skip).unwrap();
+    let in_repo = fs::read_to_string(
+        repo.path()
+            .join("projects/-home-a-work-app/memory/MEMORY.md"),
+    )
+    .unwrap();
+    assert!(
+        in_repo.contains("from-a") && in_repo.contains("from-b"),
+        "the repo converges on the same round: {in_repo}"
+    );
+}
+
+#[test]
+fn a_memory_index_edit_race_on_the_same_target_stays_held() {
+    // The one case the hold exists for: both sides edited the SAME
+    // bullet (same target key, different text). The union is
+    // incoming-wins per key, so merging would silently clobber this
+    // machine's text — that must stay kept local, held for a human
+    // decision.
+    let repo = TempDir::new().unwrap();
+    let a = TempDir::new().unwrap();
+    let b = TempDir::new().unwrap();
+    let filter = all_on_filter();
+    let no_skip = std::collections::HashSet::new();
+
+    let seed = "# Index\n\n- [shared](shared.md) v1\n";
+    let shared = ("projects/-home-a-work-app/memory/shared.md", "v1\n");
+    seed_index(a.path(), seed, &[shared]);
+    seed_index(b.path(), seed, &[shared]);
+    push_artifacts(a.path(), repo.path(), &filter, &no_skip).unwrap();
+    let plan = plan_pull(b.path(), repo.path(), &filter).unwrap();
+    apply_pull(&plan, false).unwrap();
+    push_artifacts(b.path(), repo.path(), &filter, &no_skip).unwrap();
+
+    // Both edit the SAME bullet's text; A publishes first.
+    seed_index(
+        a.path(),
+        "# Index\n\n- [shared](shared.md) edited on A\n",
+        &[],
+    );
+    push_artifacts(a.path(), repo.path(), &filter, &no_skip).unwrap();
+    seed_index(
+        b.path(),
+        "# Index\n\n- [shared](shared.md) edited on B\n",
+        &[],
+    );
+
+    let plan = plan_pull(b.path(), repo.path(), &filter).unwrap();
+    assert_eq!(
+        plan.kept_local.len(),
+        1,
+        "a same-key text race must stay held (incoming-wins would clobber)"
+    );
+    assert!(plan.unions.is_empty());
+    assert!(
+        read_index(b.path()).contains("edited on B"),
+        "B's text survives the hold"
+    );
+}

@@ -14,7 +14,7 @@ use crate::scm::Backend;
 
 use super::bases::{self, BaseHashes};
 use super::denylist::{is_denied, is_unsafe_rel_path};
-use super::memory_index::{is_memory_index, merge_memory_index};
+use super::memory_index::{is_memory_index, merge_memory_index, union_preserves_dest_lines};
 use super::registry::{
     CategoryDescriptor, CategoryId, DestRoot, MergeStrategy, SourceSpec, ARTIFACTS_SUBDIR, REGISTRY,
 };
@@ -1800,10 +1800,17 @@ pub fn plan_pull(claude_dir: &Path, repo_root: &Path, filter: &FilterConfig) -> 
                     if f3 || bases::is_dirty(recorded, &local_bytes) {
                         // Edited here. If the repository still holds the
                         // last synced version, only this machine moved on:
-                        // the push publishes the edit. Otherwise both did,
-                        // and the edit is kept and held back.
+                        // the push publishes the edit. Otherwise both did.
+                        // A both-sides divergence does not have to be held:
+                        // the merge is grow-only across entries, so when it
+                        // keeps every local line (parallel additions) the
+                        // pull converges losslessly — the hold exists only
+                        // for the same-key text race, where merging would
+                        // silently clobber this machine's bullet.
                         if repo_unchanged_since_sync(recorded, &repo_bytes) {
                             plan.local_only.push(write);
+                        } else if union_preserves_dest_lines(&local_bytes, &repo_bytes) {
+                            plan.unions.push(write);
                         } else {
                             plan.kept_local.push(write);
                         }
