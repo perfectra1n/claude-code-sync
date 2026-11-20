@@ -28,10 +28,27 @@ pub fn is_memory_index(path: &std::path::Path) -> bool {
 }
 
 fn link_target(line: &str) -> Option<String> {
-    let start = line.find("](")? + 2;
-    let rest = &line[start..];
-    let end = rest.find(')')?;
-    Some(rest[..end].to_string())
+    link_targets(line).into_iter().next()
+}
+
+/// Every markdown link target on the line, left to right. A compacted
+/// line is not one reference: the grouped-line strip judges all of them,
+/// and taking only the first `](` would key the whole bundle on a
+/// single pointer.
+fn link_targets(line: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("](") {
+        let after = &rest[start + 2..];
+        match after.find(')') {
+            Some(end) => {
+                targets.push(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+            None => break,
+        }
+    }
+    targets
 }
 
 fn parse(text: &str) -> Vec<IndexLine> {
@@ -149,17 +166,28 @@ fn strip_dangling_with_targets(
     let mut kept = String::new();
     let mut dropped = Vec::new();
     for line in String::from_utf8_lossy(bytes).lines() {
-        let strippable = link_target(line).and_then(|target| {
-            strippable_target(&target).map(|base| (target.clone(), base.to_string()))
-        });
-        match strippable {
-            Some((_raw, base)) if !known_targets.contains(&base) => {
-                dropped.push(base);
-            }
-            _ => {
-                kept.push_str(line);
-                kept.push('\n');
-            }
+        // A grouped line carries several pointers: it is dropped only
+        // when EVERY link on it is a strippable, dangling target — one
+        // alive pointer pins the whole line (conservative: a wrong drop
+        // is permanent, a kept line costs one stale pointer).
+        let targets = link_targets(line);
+        let dangling: std::collections::BTreeSet<String> = targets
+            .iter()
+            .filter_map(|target| {
+                strippable_target(target)
+                    .map(|base| base.to_string())
+                    .filter(|base| !known_targets.contains(base))
+            })
+            .collect();
+        // An exempt link (URL, anchor-only, subdirectory, section
+        // pointer) is a pointer we do not judge: its presence keeps the
+        // line, whatever the other links look like. A repeated target is
+        // one stale pointer, not two — deduped by the set.
+        if line.starts_with("- ") && !targets.is_empty() && dangling.len() == targets.len() {
+            dropped.extend(dangling);
+        } else {
+            kept.push_str(line);
+            kept.push('\n');
         }
     }
     (kept.into_bytes(), dropped)
@@ -387,5 +415,40 @@ mod tests {
         assert!(!text.contains("gone.md"));
         assert_eq!(added, 0);
         assert_eq!(stripped, 1);
+    }
+}
+
+#[cfg(test)]
+mod strip_grouped_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn targets(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_grouped_line_is_stripped_only_when_all_its_pointers_are_dangling() {
+        // One dangling pointer among alive ones: dropping the line would
+        // delete live pointers. The strip is conservative — a grouped
+        // line survives unless every link on it is dangling.
+        let index = b"- [bundle](alive.md) - [dead](dead.md); [alive2](alive2.md)\n";
+        let (stripped, dropped) =
+            strip_dangling_entries(index, &targets(&["alive.md", "alive2.md"]));
+        assert_eq!(dropped, 0, "the bundle keeps its live pointers");
+        assert!(String::from_utf8(stripped).unwrap().contains("dead.md"));
+    }
+
+    #[test]
+    fn a_grouped_line_with_every_link_dangling_is_dropped() {
+        let index = b"- [bundle](dead1.md) - [dead2](dead2.md)\n- [alive](alive.md) A\n";
+        let (stripped, dropped) = strip_dangling_entries(index, &targets(&["alive.md"]));
+        let text = String::from_utf8(stripped).unwrap();
+        assert!(
+            !text.contains("dead1.md"),
+            "all-dangling bundle dropped: {text}"
+        );
+        assert!(text.contains("alive.md"));
+        assert_eq!(dropped, 2);
     }
 }
