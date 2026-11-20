@@ -104,19 +104,17 @@ pub fn merge_memory_index(dest: &[u8], incoming: &[u8]) -> (Vec<u8>, usize) {
 /// whole. Both `MEMORY.md` and aggregate indexes (`all-memories-index.md`)
 /// feed the same set: any `.md` in a memory directory can hold references.
 pub fn referenced_targets(content: &str) -> BTreeSet<String> {
-    parse(content)
-        .iter()
-        .filter_map(|line| match line {
-            IndexLine::Entry { target, .. } => {
-                let unwrapped = target.trim_start_matches('<').trim_end_matches('>');
-                let stripped_prefix = unwrapped.strip_prefix("./").unwrap_or(unwrapped);
-                let base = stripped_prefix
-                    .split_once('#')
-                    .map(|(base, _)| base)
-                    .unwrap_or(stripped_prefix);
-                Some(base.to_string())
-            }
-            IndexLine::Other(_) => None,
+    content
+        .lines()
+        .filter_map(|line| link_target(line))
+        .map(|target| {
+            let unwrapped = target.trim_start_matches('<').trim_end_matches('>');
+            let stripped_prefix = unwrapped.strip_prefix("./").unwrap_or(unwrapped);
+            let base = stripped_prefix
+                .split_once('#')
+                .map(|(base, _)| base)
+                .unwrap_or(stripped_prefix);
+            base.to_string()
         })
         .collect()
 }
@@ -126,10 +124,10 @@ pub fn referenced_targets(content: &str) -> BTreeSet<String> {
 /// mirroring how the sync engine lists memory directories.
 fn is_referenced(file_name: &str, targets: &BTreeSet<String>) -> bool {
     targets.iter().any(|t| {
-        t == file_name
+        t.eq_ignore_ascii_case(file_name)
             || t.split('/')
                 .next_back()
-                .is_some_and(|base| base == file_name)
+                .is_some_and(|base| base.eq_ignore_ascii_case(file_name))
     })
 }
 
@@ -186,6 +184,7 @@ pub fn orphaned_memory_files(claude_dir: &Path) -> Vec<PathBuf> {
             }
         }
     }
+    orphans.sort();
     orphans
 }
 
@@ -293,8 +292,15 @@ mod orphan_tests {
     fn referenced_targets_extracts_bare_and_anchored_names() {
         let text = "# Index\n\n- [a](a.md) A\n- [b](b.md#sec) B\n- [p](notes/sub.md) P\n";
         let targets = referenced_targets(text);
-        assert!(targets.contains("a.md") && targets.contains("b.md"));
-        assert!(targets.contains("sub.md") || targets.contains("notes/sub.md"));
+        assert_eq!(
+            targets,
+            BTreeSet::from([
+                "a.md".to_string(),
+                "b.md".to_string(),
+                "notes/sub.md".to_string(),
+            ]),
+            "anchors normalize to the base name; directory targets stay whole"
+        );
     }
 
     #[test]
@@ -329,6 +335,59 @@ mod orphan_tests {
     #[test]
     fn a_dir_without_memory_dir_reports_nothing() {
         let dir = TempDir::new().unwrap();
+        assert!(orphaned_memory_files(dir.path()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod orphan_review_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write(path: &std::path::Path, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn a_prose_link_protects_its_target_from_the_orphan_scan() {
+        // The requirement is "never misreport a referenced file": a link
+        // in prose or a numbered list is still a reference, even though
+        // the union merge's bullet-only parser ignores it there.
+        let dir = TempDir::new().unwrap();
+        let memory = dir.path().join("projects/-home-x/memory");
+        write(&memory.join("MEMORY.md"), "# Index\n\n- [a](a.md) A\n");
+        write(&memory.join("a.md"), "a\n");
+        write(
+            &memory.join("note.md"),
+            "See [detail](detail.md) for the audit trail.\n",
+        );
+        write(&memory.join("detail.md"), "detail\n");
+        let orphans = orphaned_memory_files(dir.path());
+        assert!(
+            orphans.is_empty(),
+            "a prose link counts as a reference: {orphans:?}"
+        );
+    }
+
+    #[test]
+    fn a_numbered_list_link_counts_as_a_reference() {
+        let dir = TempDir::new().unwrap();
+        let memory = dir.path().join("projects/-home-x/memory");
+        write(&memory.join("MEMORY.md"), "# Index\n\n- [a](a.md) A\n");
+        write(&memory.join("a.md"), "a\n");
+        write(&memory.join("list.md"), "1. [detail](detail.md) first\n");
+        write(&memory.join("detail.md"), "detail\n");
+        assert!(orphaned_memory_files(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn reference_matching_is_case_insensitive() {
+        let dir = TempDir::new().unwrap();
+        let memory = dir.path().join("projects/-home-x/memory");
+        write(&memory.join("MEMORY.md"), "# Index\n\n- [Big](Big.md) B\n");
+        write(&memory.join("big.md"), "b\n");
         assert!(orphaned_memory_files(dir.path()).is_empty());
     }
 }
