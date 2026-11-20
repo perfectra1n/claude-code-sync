@@ -12,6 +12,7 @@
 //! nothing and two machines converge.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 /// The file name whose contents are union-merged rather than overwritten.
 pub const MEMORY_INDEX_FILE: &str = "MEMORY.md";
@@ -96,6 +97,96 @@ pub fn merge_memory_index(dest: &[u8], incoming: &[u8]) -> (Vec<u8>, usize) {
     }
 
     (merged.into_bytes(), added)
+}
+
+/// Every link target any index line references — bare file names,
+/// anchor suffixes normalized to the base name, subdirectory paths kept
+/// whole. Both `MEMORY.md` and aggregate indexes (`all-memories-index.md`)
+/// feed the same set: any `.md` in a memory directory can hold references.
+pub fn referenced_targets(content: &str) -> BTreeSet<String> {
+    parse(content)
+        .iter()
+        .filter_map(|line| match line {
+            IndexLine::Entry { target, .. } => {
+                let unwrapped = target.trim_start_matches('<').trim_end_matches('>');
+                let stripped_prefix = unwrapped.strip_prefix("./").unwrap_or(unwrapped);
+                let base = stripped_prefix
+                    .split_once('#')
+                    .map(|(base, _)| base)
+                    .unwrap_or(stripped_prefix);
+                Some(base.to_string())
+            }
+            IndexLine::Other(_) => None,
+        })
+        .collect()
+}
+
+/// Whether a path's file name matches any referenced target. A target
+/// with a directory part (`notes/sub.md`) also matches on its base name,
+/// mirroring how the sync engine lists memory directories.
+fn is_referenced(file_name: &str, targets: &BTreeSet<String>) -> bool {
+    targets.iter().any(|t| {
+        t == file_name
+            || t.split('/')
+                .next_back()
+                .is_some_and(|base| base == file_name)
+    })
+}
+
+/// `*.md` files under any `projects/*/memory/` directory that no `.md`
+/// in the same directory links to. An orphaned memory file is invisible
+/// by construction — indexes are all that sync summaries and other
+/// machines ever read — so status surfaces them before they rot.
+pub fn orphaned_memory_files(claude_dir: &Path) -> Vec<PathBuf> {
+    use std::fs;
+
+    let projects = claude_dir.join("projects");
+    let Ok(entries) = fs::read_dir(&projects) else {
+        return Vec::new();
+    };
+    let mut orphans = Vec::new();
+    for project in entries.flatten() {
+        let memory = project.path().join("memory");
+        if !memory.is_dir() {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&memory) else {
+            continue;
+        };
+        let md_files: Vec<_> = files
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .collect();
+        let mut targets = BTreeSet::new();
+        // Holders: MEMORY.md always, and any aggregate index — a file
+        // that itself references others is a holder, never an orphan.
+        let mut holders = BTreeSet::new();
+        for file in &md_files {
+            if is_memory_index(file) {
+                holders.insert(file.clone());
+            }
+            if let Ok(text) = fs::read_to_string(file) {
+                let refs = referenced_targets(&text);
+                if !refs.is_empty() {
+                    holders.insert(file.clone());
+                }
+                targets.extend(refs);
+            }
+        }
+        for file in md_files {
+            if holders.contains(&file) {
+                continue;
+            }
+            let Some(name) = file.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !is_referenced(name, &targets) {
+                orphans.push(file);
+            }
+        }
+    }
+    orphans
 }
 
 #[cfg(test)]
@@ -184,5 +275,60 @@ mod tests {
         let text = String::from_utf8(merged).unwrap();
         assert!(text.contains("NEW") && !text.contains("OLD"));
         assert_eq!(added, 1);
+    }
+}
+
+#[cfg(test)]
+mod orphan_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write(path: &std::path::Path, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn referenced_targets_extracts_bare_and_anchored_names() {
+        let text = "# Index\n\n- [a](a.md) A\n- [b](b.md#sec) B\n- [p](notes/sub.md) P\n";
+        let targets = referenced_targets(text);
+        assert!(targets.contains("a.md") && targets.contains("b.md"));
+        assert!(targets.contains("sub.md") || targets.contains("notes/sub.md"));
+    }
+
+    #[test]
+    fn a_memory_file_no_index_references_is_orphaned() {
+        let dir = TempDir::new().unwrap();
+        let memory = dir.path().join("projects/-home-x/memory");
+        write(&memory.join("MEMORY.md"), "# Index\n\n- [a](a.md) A\n");
+        write(&memory.join("a.md"), "a\n");
+        write(&memory.join("ghost.md"), "nobody points here\n");
+        let orphans = orphaned_memory_files(dir.path());
+        assert_eq!(orphans.len(), 1);
+        assert!(orphans[0].ends_with("ghost.md"));
+    }
+
+    #[test]
+    fn an_aggregate_index_counts_as_a_reference_holder() {
+        let dir = TempDir::new().unwrap();
+        let memory = dir.path().join("projects/-home-x/memory");
+        write(&memory.join("MEMORY.md"), "# Index\n\n- [a](a.md) A\n");
+        write(&memory.join("a.md"), "a\n");
+        write(
+            &memory.join("all-memories-index.md"),
+            "# All\n\n- [g](ghost.md) G\n",
+        );
+        write(&memory.join("ghost.md"), "g\n");
+        assert!(
+            orphaned_memory_files(dir.path()).is_empty(),
+            "any .md in the dir can hold references, not just MEMORY.md"
+        );
+    }
+
+    #[test]
+    fn a_dir_without_memory_dir_reports_nothing() {
+        let dir = TempDir::new().unwrap();
+        assert!(orphaned_memory_files(dir.path()).is_empty());
     }
 }
