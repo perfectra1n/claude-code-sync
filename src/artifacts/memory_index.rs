@@ -29,10 +29,27 @@ pub fn is_memory_index(path: &std::path::Path) -> bool {
 }
 
 fn link_target(line: &str) -> Option<String> {
-    let start = line.find("](")? + 2;
-    let rest = &line[start..];
-    let end = rest.find(')')?;
-    Some(rest[..end].to_string())
+    link_targets(line).into_iter().next()
+}
+
+/// Every markdown link target on the line, left to right. Compacted
+/// indexes group several pointers on one line — a line is not one
+/// reference, and taking only the first `](` would declare the rest of
+/// the line's files orphaned.
+fn link_targets(line: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("](") {
+        let after = &rest[start + 2..];
+        match after.find(')') {
+            Some(end) => {
+                targets.push(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+            None => break,
+        }
+    }
+    targets
 }
 
 fn parse(text: &str) -> Vec<IndexLine> {
@@ -106,7 +123,7 @@ pub fn merge_memory_index(dest: &[u8], incoming: &[u8]) -> (Vec<u8>, usize) {
 pub fn referenced_targets(content: &str) -> BTreeSet<String> {
     content
         .lines()
-        .filter_map(|line| link_target(line))
+        .flat_map(|line| link_targets(line))
         .map(|target| {
             let unwrapped = target.trim_start_matches('<').trim_end_matches('>');
             let stripped_prefix = unwrapped.strip_prefix("./").unwrap_or(unwrapped);
@@ -143,8 +160,18 @@ pub fn orphaned_memory_files(claude_dir: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut orphans = Vec::new();
+    // Worktree homes often symlink their whole memory dir to a real
+    // home's; walking the link repeats the same physical files under
+    // another path and multiplies the report. One scan per real dir.
+    let mut scanned: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     for project in entries.flatten() {
         let memory = project.path().join("memory");
+        let Ok(real) = fs::canonicalize(&memory) else {
+            continue;
+        };
+        if !scanned.insert(real.clone()) {
+            continue;
+        }
         if !memory.is_dir() {
             continue;
         }
@@ -389,5 +416,73 @@ mod orphan_review_tests {
         write(&memory.join("MEMORY.md"), "# Index\n\n- [Big](Big.md) B\n");
         write(&memory.join("big.md"), "b\n");
         assert!(orphaned_memory_files(dir.path()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod orphan_compact_format_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write(path: &std::path::Path, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn every_link_on_a_compact_line_counts_as_a_reference() {
+        // Compacted indexes group 3-10 pointers on one line. A line is
+        // not one reference: every link on it protects its target.
+        let dir = TempDir::new().unwrap();
+        let memory = dir.path().join("projects/-home-x/memory");
+        write(
+            &memory.join("MEMORY.md"),
+            "# Index\n\n- [bundle](a.md) — also [b.md](b.md); plus [c](c.md)\n",
+        );
+        write(&memory.join("a.md"), "a\n");
+        write(&memory.join("b.md"), "b\n");
+        write(&memory.join("c.md"), "c\n");
+        assert!(
+            orphaned_memory_files(dir.path()).is_empty(),
+            "all links on a grouped line protect their files"
+        );
+    }
+
+    #[test]
+    fn a_symlinked_memory_dir_is_scanned_once() {
+        // Worktree homes symlink their memory dir to a real home's —
+        // scanning the link repeats the same physical files under
+        // another path and multiplies the orphan report.
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("projects/-home-real/memory");
+        write(&real.join("MEMORY.md"), "# Index\n\n- [a](a.md) A\n");
+        write(&real.join("a.md"), "a\n");
+        write(&real.join("ghost.md"), "orphan\n");
+        let link_home = dir.path().join("projects/-home-link");
+        fs::create_dir_all(&link_home).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, link_home.join("memory")).unwrap();
+
+        let orphans = orphaned_memory_files(dir.path());
+        let canonical: std::collections::BTreeSet<_> = orphans
+            .iter()
+            .map(|p| fs::canonicalize(p).unwrap())
+            .collect();
+        assert_eq!(
+            orphans.len(),
+            canonical.len(),
+            "one physical file, one report line: {orphans:?}"
+        );
+    }
+
+    #[test]
+    fn every_target_of_a_compact_line_is_collected() {
+        let text = "- [x](a.md) a; [y](b.md) b; [z](c.md#sec) c\n";
+        let targets = referenced_targets(text);
+        assert_eq!(
+            targets,
+            BTreeSet::from(["a.md".to_string(), "b.md".to_string(), "c.md".to_string(),])
+        );
     }
 }
